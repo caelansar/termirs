@@ -389,11 +389,11 @@ dependencies = [
 name = "rata"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "crossterm",
  "portable-pty",
  "ratatui",
  "ssh2",
+ "thiserror",
  "vt100",
 ]
 

@@ -1,9 +1,11 @@
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use anyhow::{Context, Result};
 use ssh2::{Channel, Session};
+
+use crate::error::{AppError, Result};
 
 #[derive(Clone)]
 pub struct SshClient {
@@ -12,22 +14,50 @@ pub struct SshClient {
 
 impl SshClient {
     pub fn connect(host: &str, user: &str, pass: &str) -> Result<Self> {
-        let tcp = TcpStream::connect(host).context("connect SSH host")?;
-        tcp.set_nodelay(true).ok();
-        let mut sess = Session::new().context("new SSH session")?;
-        sess.set_tcp_stream(tcp);
-        sess.handshake().context("ssh handshake")?;
-        sess.userauth_password(user, pass).context("ssh auth")?;
-        if !sess.authenticated() { anyhow::bail!("SSH authentication failed"); }
+        // Parse the host and port into a socket address
+        let socket_addr = host
+            .parse::<SocketAddr>()
+            .map_err(|e| AppError::SshConnectionError(format!("Invalid host/port: {}", e)))?;
 
-        let mut channel = sess.channel_session().context("open channel")?;
-        channel.request_pty("xterm-256color", None, Some((100, 30, 0, 0))).context("request pty")?;
-        channel.shell().context("start remote shell")?;
+        let tcp =
+            TcpStream::connect_timeout(&socket_addr, Duration::from_secs(10)).map_err(|e| {
+                AppError::SshConnectionError(format!("Failed to connect to SSH host: {}", e))
+            })?;
+        tcp.set_nodelay(true).ok();
+
+        let mut sess = Session::new().map_err(|e| {
+            AppError::SshConnectionError(format!("Failed to create SSH session: {}", e))
+        })?;
+        sess.set_tcp_stream(tcp);
+        sess.handshake().map_err(|e| {
+            AppError::SshConnectionError(format!("Failed to perform SSH handshake: {}", e))
+        })?;
+
+        sess.userauth_password(user, pass).map_err(|e| {
+            AppError::AuthenticationError(format!("Failed to authenticate with SSH: {}", e))
+        })?;
+        if !sess.authenticated() {
+            return Err(AppError::AuthenticationError(
+                "SSH authentication failed".to_string(),
+            ));
+        }
+
+        let mut channel = sess.channel_session().map_err(|e| {
+            AppError::SshConnectionError(format!("Failed to open SSH channel: {}", e))
+        })?;
+        channel
+            .request_pty("xterm-256color", None, Some((100, 30, 0, 0)))
+            .map_err(|e| AppError::SshConnectionError(format!("Failed to request PTY: {}", e)))?;
+        channel.shell().map_err(|e| {
+            AppError::SshConnectionError(format!("Failed to start remote shell: {}", e))
+        })?;
 
         // non-blocking for polling reads
         sess.set_blocking(false);
 
-        Ok(Self { channel: Arc::new(Mutex::new(channel)) })
+        Ok(Self {
+            channel: Arc::new(Mutex::new(channel)),
+        })
     }
 
     pub fn request_size(&self, cols: u16, rows: u16) {
@@ -37,7 +67,10 @@ impl SshClient {
     }
 
     pub fn write_all(&self, data: &[u8]) -> Result<()> {
-        if let Ok(mut ch) = self.channel.lock() { ch.write_all(data).context("ssh write")?; ch.flush().ok(); }
+        if let Ok(mut ch) = self.channel.lock() {
+            ch.write_all(data)?;
+            ch.flush().ok();
+        }
         Ok(())
     }
 
@@ -45,7 +78,9 @@ impl SshClient {
     pub fn read_some(&self, buf: &mut [u8]) -> usize {
         let mut n = 0usize;
         if let Ok(mut ch) = self.channel.lock() {
-            if let Ok(got) = ch.read(buf) { n = got; }
+            if let Ok(got) = ch.read(buf) {
+                n = got;
+            }
         }
         n
     }
@@ -56,4 +91,4 @@ impl SshClient {
             let _ = ch.close();
         }
     }
-} 
+}

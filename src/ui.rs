@@ -13,7 +13,10 @@ pub struct TerminalState {
 
 impl TerminalState {
     pub fn new(rows: u16, cols: u16) -> Self {
-        Self { parser: Parser::new(rows, cols, 0), last_change: Instant::now() }
+        Self {
+            parser: Parser::new(rows, cols, 0),
+            last_change: Instant::now(),
+        }
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
@@ -28,7 +31,11 @@ impl TerminalState {
 }
 
 fn map_color(c: VtColor) -> Color {
-    match c { VtColor::Default => Color::Reset, VtColor::Idx(n) => Color::Indexed(n), VtColor::Rgb(r, g, b) => Color::Rgb(r, g, b) }
+    match c {
+        VtColor::Default => Color::Reset,
+        VtColor::Idx(n) => Color::Indexed(n),
+        VtColor::Rgb(r, g, b) => Color::Rgb(r, g, b),
+    }
 }
 
 pub fn draw_terminal(area: Rect, state: &TerminalState, frame: &mut ratatui::Frame<'_>) {
@@ -51,32 +58,50 @@ pub fn draw_terminal(area: Rect, state: &TerminalState, frame: &mut ratatui::Fra
                 let underline = cell.underline();
                 let inverse = cell.inverse();
 
-                if inverse { std::mem::swap(&mut fg, &mut bg); }
+                if inverse {
+                    std::mem::swap(&mut fg, &mut bg);
+                }
 
                 let mut style = Style::default().fg(fg).bg(bg);
-                if bold { style = style.add_modifier(Modifier::BOLD); }
-                if italic { style = style.add_modifier(Modifier::ITALIC); }
-                if underline { style = style.add_modifier(Modifier::UNDERLINED); }
+                if bold {
+                    style = style.add_modifier(Modifier::BOLD);
+                }
+                if italic {
+                    style = style.add_modifier(Modifier::ITALIC);
+                }
+                if underline {
+                    style = style.add_modifier(Modifier::UNDERLINED);
+                }
 
                 let contents = cell.contents();
                 let to_append = if contents.is_empty() { " " } else { contents };
 
-                if style == current_style { current_text.push_str(to_append); }
-                else {
-                    if !current_text.is_empty() { spans.push(Span::styled(current_text.clone(), current_style)); current_text.clear(); }
+                if style == current_style {
+                    current_text.push_str(to_append);
+                } else {
+                    if !current_text.is_empty() {
+                        spans.push(Span::styled(current_text.clone(), current_style));
+                        current_text.clear();
+                    }
                     current_style = style;
                     current_text.push_str(to_append);
                 }
             } else {
-                if current_style == Style::default() { current_text.push(' '); }
-                else {
-                    if !current_text.is_empty() { spans.push(Span::styled(current_text.clone(), current_style)); current_text.clear(); }
+                if current_style == Style::default() {
+                    current_text.push(' ');
+                } else {
+                    if !current_text.is_empty() {
+                        spans.push(Span::styled(current_text.clone(), current_style));
+                        current_text.clear();
+                    }
                     current_style = Style::default();
                     current_text.push(' ');
                 }
             }
         }
-        if !current_text.is_empty() { spans.push(Span::styled(current_text, current_style)); }
+        if !current_text.is_empty() {
+            spans.push(Span::styled(current_text, current_style));
+        }
         lines.push(Line::from(spans));
     }
 
@@ -95,7 +120,13 @@ pub fn draw_terminal(area: Rect, state: &TerminalState, frame: &mut ratatui::Fra
 use ratatui::layout::{Constraint, Direction, Layout, Margin};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum FocusField { Host, Port, Username, Password, DisplayName }
+pub enum FocusField {
+    Host,
+    Port,
+    Username,
+    Password,
+    DisplayName,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectionForm {
@@ -152,11 +183,21 @@ impl ConnectionForm {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.host.trim().is_empty() { return Err("Host is required".into()); }
-        if self.port.trim().is_empty() { return Err("Port is required".into()); }
-        if self.username.trim().is_empty() { return Err("Username is required".into()); }
-        if self.password.is_empty() { return Err("Password is required".into()); }
-        if self.port.parse::<u16>().is_err() { return Err("Port must be a number".into()); }
+        if self.host.trim().is_empty() {
+            return Err("Host is required".into());
+        }
+        if self.port.trim().is_empty() {
+            return Err("Port is required".into());
+        }
+        if self.username.trim().is_empty() {
+            return Err("Username is required".into());
+        }
+        if self.password.is_empty() {
+            return Err("Password is required".into());
+        }
+        if self.port.parse::<u16>().is_err() {
+            return Err("Port must be a number".into());
+        }
         Ok(())
     }
 
@@ -169,40 +210,69 @@ pub fn draw_connection_form(area: Rect, form: &ConnectionForm, frame: &mut ratat
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // title
-            Constraint::Length(3),  // host
-            Constraint::Length(3),  // port
-            Constraint::Length(3),  // username
-            Constraint::Length(3),  // password
-            Constraint::Length(3),  // display name (optional)
-            Constraint::Length(1),  // error line
-            Constraint::Min(1),     // spacer
+            Constraint::Length(3), // title
+            Constraint::Length(3), // host
+            Constraint::Length(3), // port
+            Constraint::Length(3), // username
+            Constraint::Length(3), // password
+            Constraint::Length(3), // display name (optional)
+            Constraint::Length(1), // error line
+            Constraint::Min(1),    // spacer
         ])
         .split(area);
 
-    let mut render_input = |idx: usize, label: &str, value: &str, is_password: bool, focused: bool| {
-        let mut block = Block::default().borders(Borders::ALL).title(label);
-        if focused { block = block.border_style(Style::default().fg(Color::Cyan)); }
-        else { block = block.border_style(Style::default()); }
-        let shown = if is_password { "*".repeat(value.chars().count()) } else { value.to_string() };
-        let para = Paragraph::new(shown.clone()).block(block);
-        frame.render_widget(para, layout[idx]);
-        if focused {
-            let area_box = layout[idx].inner(Margin::new(1, 1));
-            let cursor_x = area_box.x + shown.len() as u16;
-            let cursor_y = area_box.y;
-            frame.set_cursor(cursor_x, cursor_y);
-        }
-    };
+    let mut render_input =
+        |idx: usize, label: &str, value: &str, is_password: bool, focused: bool| {
+            let mut block = Block::default().borders(Borders::ALL).title(label);
+            if focused {
+                block = block.border_style(Style::default().fg(Color::Cyan));
+            } else {
+                block = block.border_style(Style::default());
+            }
+            let shown = if is_password {
+                "*".repeat(value.chars().count())
+            } else {
+                value.to_string()
+            };
+            let para = Paragraph::new(shown.clone()).block(block);
+            frame.render_widget(para, layout[idx]);
+            if focused {
+                let area_box = layout[idx].inner(Margin::new(1, 1));
+                let cursor_x = area_box.x + shown.len() as u16;
+                let cursor_y = area_box.y;
+                frame.set_cursor(cursor_x, cursor_y);
+            }
+        };
 
     render_input(1, "Host", &form.host, false, form.focus == FocusField::Host);
     render_input(2, "Port", &form.port, false, form.focus == FocusField::Port);
-    render_input(3, "Username", &form.username, false, form.focus == FocusField::Username);
-    render_input(4, "Password", &form.password, true, form.focus == FocusField::Password);
-    render_input(5, "Display Name (optional)", &form.display_name, false, form.focus == FocusField::DisplayName);
+    render_input(
+        3,
+        "Username",
+        &form.username,
+        false,
+        form.focus == FocusField::Username,
+    );
+    render_input(
+        4,
+        "Password",
+        &form.password,
+        true,
+        form.focus == FocusField::Password,
+    );
+    render_input(
+        5,
+        "Display Name (optional)",
+        &form.display_name,
+        false,
+        form.focus == FocusField::DisplayName,
+    );
 
     if let Some(err) = &form.error {
-        let err_line = Paragraph::new(Line::from(Span::styled(err.clone(), Style::default().fg(Color::Red))));
+        let err_line = Paragraph::new(Line::from(Span::styled(
+            err.clone(),
+            Style::default().fg(Color::Red),
+        )));
         frame.render_widget(err_line, layout[6]);
     }
-} 
+}
