@@ -522,24 +522,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
 
 [[package]]
-name = "rata"
-version = "0.1.0"
-dependencies = [
- "base64",
- "chrono",
- "crossterm",
- "portable-pty",
- "ratatui",
- "ring",
- "serde",
- "ssh2",
- "thiserror",
- "toml",
- "uuid",
- "vt100",
-]
-
-[[package]]
 name = "ratatui"
 version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -798,6 +780,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5d9cf598a6d7ce700a4e6a9199da127e6819a61e64b68609683cc9a01b5683a"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "termirs"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "chrono",
+ "crossterm",
+ "portable-pty",
+ "ratatui",
+ "ring",
+ "serde",
+ "ssh2",
+ "thiserror",
+ "toml",
+ "uuid",
+ "vt100",
 ]
 
 [[package]]

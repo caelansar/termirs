@@ -219,6 +219,9 @@ impl ConfigManager {
 
     /// Add a new connection and persist it
     pub fn add_connection(&mut self, connection: Connection) -> Result<()> {
+        // Validate the connection before adding
+        connection.validate()?;
+
         // Best-effort dedup: same host/port/username
         if !self.config.connections.iter().any(|c| {
             c.host == connection.host
@@ -228,6 +231,37 @@ impl ConfigManager {
             self.config.connections.push(connection);
         }
         self.save()
+    }
+
+    /// Update an existing connection
+    pub fn update_connection(&mut self, connection: Connection) -> Result<()> {
+        // Validate the connection before updating
+        connection.validate()?;
+
+        // Find and update the connection
+        if let Some(existing_conn) = self
+            .config
+            .connections
+            .iter_mut()
+            .find(|conn| conn.id == connection.id)
+        {
+            *existing_conn = connection;
+            Ok(())
+        } else {
+            Err(AppError::ConfigError("Connection not found".to_string()))
+        }
+    }
+
+    /// Remove a connection by ID
+    pub fn remove_connection(&mut self, id: &str) -> Result<()> {
+        let initial_len = self.config.connections.len();
+        self.config.connections.retain(|conn| conn.id != id);
+
+        if self.config.connections.len() == initial_len {
+            Err(AppError::ConfigError("Connection not found".to_string()))
+        } else {
+            Ok(())
+        }
     }
 
     /// Update last_used for a connection by id and persist

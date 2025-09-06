@@ -3,10 +3,34 @@ use std::net::{SocketAddr, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ssh2::{Channel, Session};
+use ssh2::{Channel, KeyboardInteractivePrompt, Prompt, Session};
 
 use crate::config::manager::Connection;
 use crate::error::{AppError, Result};
+
+struct KbdIntPrompter {
+    password: String,
+}
+
+impl KeyboardInteractivePrompt for KbdIntPrompter {
+    fn prompt<'a>(
+        &mut self,
+        _username: &str,
+        _instructions: &str,
+        prompts: &[Prompt<'a>],
+    ) -> Vec<String> {
+        prompts
+            .iter()
+            .map(|p| {
+                if p.echo {
+                    String::new()
+                } else {
+                    self.password.clone()
+                }
+            })
+            .collect()
+    }
+}
 
 #[derive(Clone)]
 pub struct SshClient {
@@ -39,9 +63,34 @@ impl SshClient {
             AppError::SshConnectionError(format!("Failed to perform SSH handshake: {}", e))
         })?;
 
-        sess.userauth_password(user, pass).map_err(|e| {
-            AppError::AuthenticationError(format!("Failed to authenticate with SSH: {}", e))
-        })?;
+        let methods_str = sess.auth_methods(user).unwrap_or("");
+        let methods: Vec<&str> = methods_str
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let has_interactive = methods.iter().any(|m| *m == "keyboard-interactive");
+        let has_password = methods.iter().any(|m| *m == "password");
+
+        if has_interactive || has_password {
+            if has_interactive {
+                let mut prompter = KbdIntPrompter { password: pass.to_string() };
+                let _ = sess.userauth_keyboard_interactive(user, &mut prompter);
+            }
+            if !sess.authenticated() && has_password {
+                let _ = sess.userauth_password(user, pass);
+            }
+            if !sess.authenticated() {
+                return Err(AppError::AuthenticationError(
+                    "SSH authentication failed".to_string(),
+                ));
+            }
+        } else {
+            return Err(AppError::AuthenticationError(
+                "SSH authentication failed: no supported authentication methods found".to_string(),
+            ));
+        }
+
         if !sess.authenticated() {
             return Err(AppError::AuthenticationError(
                 "SSH authentication failed".to_string(),
@@ -98,4 +147,23 @@ impl SshClient {
             let _ = ch.wait_close();
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires a running ssh server"]
+    fn test_connect_docker() {
+        let conn = Connection::new(
+            "127.0.0.1".to_string(),
+            2222,
+            "dockeruser".to_string(),
+            "dockerpass".to_string(),
+        );
+        let client = SshClient::connect(&conn).unwrap();
+        client.close();
+    }
+    
 }

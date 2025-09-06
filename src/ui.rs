@@ -439,7 +439,8 @@ pub fn draw_connection_list(
                 // .bg(Color::Blue)
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
-        );
+        )
+        .highlight_symbol("▶ ");
 
     frame.render_stateful_widget(
         list,

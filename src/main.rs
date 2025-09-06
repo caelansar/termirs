@@ -41,8 +41,12 @@ enum AppMode {
     ConnectionList {
         selected: usize,
     },
-    Form {
+    FormNew {
         form: ConnectionForm,
+    },
+    FormEdit {
+        form: ConnectionForm,
+        original: Connection,
     },
     Connected {
         client: SshClient,
@@ -126,7 +130,7 @@ fn main() -> Result<()> {
                     };
                     draw_connection_list(size, &title, &items, sel, f);
                 }
-                AppMode::Form { form } => {
+                AppMode::FormNew { form } => {
                     let layout = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([Constraint::Length(3), Constraint::Min(1)])
@@ -136,6 +140,25 @@ fn main() -> Result<()> {
                         .borders(ratatui::widgets::Borders::ALL)
                         .title(
                             Line::from("New SSH Connection").style(
+                                Style::default()
+                                    .fg(Color::Cyan)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                        );
+                    f.render_widget(title_block, layout[0]);
+
+                    draw_connection_form(layout[1], &form, f);
+                }
+                AppMode::FormEdit { form, .. } => {
+                    let layout = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([Constraint::Length(3), Constraint::Min(1)])
+                        .split(size);
+
+                    let title_block = Block::default()
+                        .borders(ratatui::widgets::Borders::ALL)
+                        .title(
+                            Line::from("Edit SSH Connection").style(
                                 Style::default()
                                     .fg(Color::Cyan)
                                     .add_modifier(Modifier::BOLD),
@@ -213,7 +236,7 @@ fn main() -> Result<()> {
                                     app.mode = AppMode::ConnectionList { selected: 0 };
                                 }
                                 KeyCode::Char('n') | KeyCode::Char('N') => {
-                                    app.mode = AppMode::Form {
+                                    app.mode = AppMode::FormNew {
                                         form: ConnectionForm::new(),
                                     };
                                 }
@@ -233,7 +256,7 @@ fn main() -> Result<()> {
                                         app.mode = AppMode::ConnectionList { selected: 0 };
                                     }
                                     1 => {
-                                        app.mode = AppMode::Form {
+                                        app.mode = AppMode::FormNew {
                                             form: ConnectionForm::new(),
                                         };
                                     }
@@ -313,21 +336,49 @@ fn main() -> Result<()> {
                                         }
                                     }
                                 }
+                                KeyCode::Char('e') | KeyCode::Char('E') => {
+                                    let original = app.config.connections()[*selected].clone();
+                                    let mut form = ConnectionForm::new();
+                                    form.host = original.host.clone();
+                                    form.port = original.port.to_string();
+                                    form.username = original.username.clone();
+                                    form.display_name = original.display_name.clone();
+                                    form.password.clear(); // keep empty to mean "unchanged"
+                                    app.mode = AppMode::FormEdit { form, original };
+                                }
+                                KeyCode::Char('d') | KeyCode::Char('D') => {
+                                    let id = app.config.connections()[*selected].id.clone();
+                                    match app.config.remove_connection(&id) {
+                                        Ok(_) => {
+                                            // persist changes
+                                            if let Err(e) = app.config.save() {
+                                                app.error = Some(e);
+                                            }
+                                            let new_len = app.config.connections().len();
+                                            if new_len == 0 {
+                                                *selected = 0;
+                                            } else if *selected >= new_len {
+                                                *selected = new_len - 1;
+                                            }
+                                        }
+                                        Err(e) => app.error = Some(e),
+                                    }
+                                }
                                 KeyCode::Esc => {
                                     app.go_to_main_menu();
                                 }
                                 _ => {}
                             }
                         }
-                        AppMode::Form { form } => {
+                        AppMode::FormNew { form } => {
                             match key.code {
                                 KeyCode::Esc => {
                                     app.go_to_main_menu();
                                 }
-                                KeyCode::Tab => {
+                                KeyCode::Tab | KeyCode::Down => {
                                     form.next();
                                 }
-                                KeyCode::BackTab => {
+                                KeyCode::BackTab | KeyCode::Up => {
                                     form.prev();
                                 }
                                 KeyCode::Enter => {
@@ -347,13 +398,13 @@ fn main() -> Result<()> {
                                                     form.display_name.trim().to_string(),
                                                 );
                                             }
-                                            if let Err(e) = conn.validate() {
-                                                app.error = Some(e);
-                                                continue;
-                                            }
                                             match SshClient::connect(&conn) {
                                                 Ok(client) => {
-                                                    let _ = app.config.add_connection(conn.clone());
+                                                    if let Err(e) =
+                                                        app.config.add_connection(conn.clone())
+                                                    {
+                                                        app.error = Some(e);
+                                                    }
 
                                                     let state = Arc::new(Mutex::new(
                                                         TerminalState::new(30, 100),
@@ -400,6 +451,87 @@ fn main() -> Result<()> {
                                         Err(msg) => {
                                             app.error = Some(AppError::ValidationError(msg));
                                         }
+                                    }
+                                }
+                                KeyCode::Backspace => {
+                                    let s = form.focused_value_mut();
+                                    s.pop();
+                                }
+                                KeyCode::Char(ch) => {
+                                    let s = form.focused_value_mut();
+                                    s.push(ch);
+                                }
+                                _ => {}
+                            }
+                        }
+                        AppMode::FormEdit { form, original } => {
+                            match key.code {
+                                KeyCode::Esc => {
+                                    app.go_to_connection_list();
+                                }
+                                KeyCode::Tab | KeyCode::Down => {
+                                    form.next();
+                                }
+                                KeyCode::BackTab | KeyCode::Up => {
+                                    form.prev();
+                                }
+                                KeyCode::Enter => {
+                                    // Validate fields (password optional)
+                                    if form.host.trim().is_empty() {
+                                        app.error = Some(AppError::ValidationError(
+                                            "Host is required".into(),
+                                        ));
+                                        continue;
+                                    }
+                                    if form.port.trim().is_empty() {
+                                        app.error = Some(AppError::ValidationError(
+                                            "Port is required".into(),
+                                        ));
+                                        continue;
+                                    }
+                                    let parsed_port = match form.port.parse::<u16>() {
+                                        Ok(p) => p,
+                                        Err(_) => {
+                                            app.error = Some(AppError::ValidationError(
+                                                "Port must be a number".into(),
+                                            ));
+                                            continue;
+                                        }
+                                    };
+                                    if form.username.trim().is_empty() {
+                                        app.error = Some(AppError::ValidationError(
+                                            "Username is required".into(),
+                                        ));
+                                        continue;
+                                    }
+
+                                    let new_password = if form.password.is_empty() {
+                                        original.password.clone()
+                                    } else {
+                                        form.password.clone()
+                                    };
+
+                                    let mut updated = original.clone();
+                                    updated.host = form.host.trim().to_string();
+                                    updated.port = parsed_port;
+                                    updated.username = form.username.trim().to_string();
+                                    updated.password = new_password;
+                                    updated.display_name = form.display_name.trim().to_string();
+
+                                    if let Err(e) = updated.validate() {
+                                        app.error = Some(e);
+                                        continue;
+                                    }
+
+                                    match app.config.update_connection(updated) {
+                                        Ok(_) => {
+                                            // persist changes
+                                            if let Err(e) = app.config.save() {
+                                                app.error = Some(e);
+                                            }
+                                            app.go_to_connection_list();
+                                        }
+                                        Err(e) => app.error = Some(e),
                                     }
                                 }
                                 KeyCode::Backspace => {
@@ -464,7 +596,11 @@ fn main() -> Result<()> {
                     }
                 }
                 Event::Paste(data) => match &mut app.mode {
-                    AppMode::Form { form } => {
+                    AppMode::FormNew { form } => {
+                        let s = form.focused_value_mut();
+                        s.push_str(&data);
+                    }
+                    AppMode::FormEdit { form, .. } => {
                         let s = form.focused_value_mut();
                         s.push_str(&data);
                     }
