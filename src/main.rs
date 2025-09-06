@@ -556,7 +556,9 @@ fn main() -> Result<()> {
                                             guard.scroll_to_bottom();
                                         }
                                     }
-                                    client.write_all(&[0x1b])?;
+                                    if let Err(e) = client.write_all(&[0x1b]) {
+                                        app.error = Some(e);
+                                    }
                                 } else {
                                     client.close();
                                     app.go_to_connection_list();
@@ -568,7 +570,9 @@ fn main() -> Result<()> {
                                         guard.scroll_to_bottom();
                                     }
                                 }
-                                client.write_all(b"\r")?;
+                                if let Err(e) = client.write_all(b"\r") {
+                                    app.error = Some(e);
+                                }
                             }
                             KeyCode::Backspace => {
                                 if let Ok(mut guard) = state.lock() {
@@ -576,7 +580,9 @@ fn main() -> Result<()> {
                                         guard.scroll_to_bottom();
                                     }
                                 }
-                                client.write_all(&[0x7f])?;
+                                if let Err(e) = client.write_all(&[0x7f]) {
+                                    app.error = Some(e);
+                                }
                             }
                             KeyCode::Left => {
                                 if let Ok(mut guard) = state.lock() {
@@ -584,7 +590,9 @@ fn main() -> Result<()> {
                                         guard.scroll_to_bottom();
                                     }
                                 }
-                                client.write_all(b"\x1b[D")?;
+                                if let Err(e) = client.write_all(b"\x1b[D") {
+                                    app.error = Some(e);
+                                }
                             }
                             KeyCode::Right => {
                                 if let Ok(mut guard) = state.lock() {
@@ -592,7 +600,9 @@ fn main() -> Result<()> {
                                         guard.scroll_to_bottom();
                                     }
                                 }
-                                client.write_all(b"\x1b[C")?;
+                                if let Err(e) = client.write_all(b"\x1b[C") {
+                                    app.error = Some(e);
+                                }
                             }
                             KeyCode::Up => {
                                 if let Ok(mut guard) = state.lock() {
@@ -600,7 +610,9 @@ fn main() -> Result<()> {
                                         guard.scroll_to_bottom();
                                     }
                                 }
-                                client.write_all(b"\x1b[A")?;
+                                if let Err(e) = client.write_all(b"\x1b[A") {
+                                    app.error = Some(e);
+                                }
                             }
                             KeyCode::Down => {
                                 if let Ok(mut guard) = state.lock() {
@@ -608,7 +620,9 @@ fn main() -> Result<()> {
                                         guard.scroll_to_bottom();
                                     }
                                 }
-                                client.write_all(b"\x1b[B")?;
+                                if let Err(e) = client.write_all(b"\x1b[B") {
+                                    app.error = Some(e);
+                                }
                             }
                             KeyCode::Tab => {
                                 if let Ok(mut guard) = state.lock() {
@@ -616,7 +630,9 @@ fn main() -> Result<()> {
                                         guard.scroll_to_bottom();
                                     }
                                 }
-                                client.write_all(b"\t")?;
+                                if let Err(e) = client.write_all(b"\t") {
+                                    app.error = Some(e);
+                                }
                             }
                             KeyCode::PageUp => {
                                 if let Ok(mut guard) = state.lock() {
@@ -650,7 +666,9 @@ fn main() -> Result<()> {
                                         guard.scroll_to_bottom();
                                     }
                                 }
-                                client.write_all(&[0x03])?;
+                                if let Err(e) = client.write_all(&[0x03]) {
+                                    app.error = Some(e);
+                                }
                             }
                             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 if let Ok(mut guard) = state.lock() {
@@ -658,7 +676,9 @@ fn main() -> Result<()> {
                                         guard.scroll_to_bottom();
                                     }
                                 }
-                                client.write_all(&[0x04])?;
+                                if let Err(e) = client.write_all(&[0x04]) {
+                                    app.error = Some(e);
+                                }
                             }
                             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 if let Ok(mut guard) = state.lock() {
@@ -666,7 +686,9 @@ fn main() -> Result<()> {
                                         guard.scroll_to_bottom();
                                     }
                                 }
-                                client.write_all(&[0x15])?;
+                                if let Err(e) = client.write_all(&[0x15]) {
+                                    app.error = Some(e);
+                                }
                             }
                             KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 if let AppMode::Connected { state, .. } = &mut app.mode {
@@ -690,7 +712,9 @@ fn main() -> Result<()> {
                                 }
                                 let mut tmp = [0u8; 4];
                                 let s = ch_.encode_utf8(&mut tmp);
-                                let _ = client.write_all(s.as_bytes());
+                                if let Err(e) = client.write_all(s.as_bytes()) {
+                                    app.error = Some(e);
+                                }
                             }
                             _ => {}
                         },
@@ -711,7 +735,9 @@ fn main() -> Result<()> {
                                 guard.scroll_to_bottom();
                             }
                         }
-                        client.write_all(data.as_bytes())?;
+                        if let Err(e) = client.write_all(data.as_bytes()) {
+                            app.error = Some(e);
+                        }
                     }
                     AppMode::MainMenu { .. } => {}
                     AppMode::ConnectionList { .. } => {}

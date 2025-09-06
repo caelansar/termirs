@@ -19,6 +19,9 @@ pub enum AppError {
 
     #[error("Config error: {0}")]
     ConfigError(String),
+
+    #[error("SSH write error: {0}")]
+    SshWriteError(String),
 }
 
 /// Application result type alias

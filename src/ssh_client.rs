@@ -121,9 +121,36 @@ impl SshClient {
     }
 
     pub fn write_all(&self, data: &[u8]) -> Result<()> {
-        if let Ok(mut ch) = self.channel.lock() {
-            ch.write_all(data)?;
-            ch.flush().ok();
+        let mut written = 0usize;
+        while written < data.len() {
+            // Attempt a write with a short-lived lock to let the reader drain between retries
+            let write_result = {
+                if let Ok(mut ch) = self.channel.lock() {
+                    ch.write(&data[written..])
+                } else {
+                    return Err(AppError::SshWriteError("Failed to lock SSH channel".into()));
+                }
+            };
+
+            match write_result {
+                Ok(0) => {
+                    // Treat as WouldBlock-like; brief backoff to allow draining
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Ok(n) => {
+                    written += n;
+                }
+                Err(e) => {
+                    if e.kind() == std::io::ErrorKind::WouldBlock {
+                        std::thread::sleep(Duration::from_millis(1));
+                        continue;
+                    }
+                    return Err(AppError::SshWriteError(format!(
+                        "Failed to write to SSH channel: {}",
+                        e
+                    )));
+                }
+            }
         }
         Ok(())
     }
