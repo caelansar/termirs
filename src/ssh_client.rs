@@ -1,13 +1,12 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use ssh2::{Channel, Session};
 
+#[derive(Clone)]
 pub struct SshClient {
-    session: Session,
     pub channel: Arc<Mutex<Channel>>, // exposed for simple locking by UI loop
 }
 
@@ -28,7 +27,7 @@ impl SshClient {
         // non-blocking for polling reads
         sess.set_blocking(false);
 
-        Ok(Self { session: sess, channel: Arc::new(Mutex::new(channel)) })
+        Ok(Self { channel: Arc::new(Mutex::new(channel)) })
     }
 
     pub fn request_size(&self, cols: u16, rows: u16) {
@@ -42,6 +41,7 @@ impl SshClient {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn read_some(&self, buf: &mut [u8]) -> usize {
         let mut n = 0usize;
         if let Ok(mut ch) = self.channel.lock() {

@@ -1,6 +1,6 @@
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use ratatui::layout::{Margin, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -80,7 +80,7 @@ pub fn draw_terminal(area: Rect, state: &TerminalState, frame: &mut ratatui::Fra
         lines.push(Line::from(spans));
     }
 
-    let term_block = Block::default().borders(Borders::ALL).title("$ shell");
+    let term_block = Block::default().borders(Borders::ALL).title("$ terminal");
     let para = Paragraph::new(lines).block(term_block);
     frame.render_widget(para, area);
 
@@ -89,5 +89,120 @@ pub fn draw_terminal(area: Rect, state: &TerminalState, frame: &mut ratatui::Fra
         let cursor_x = area.x + 1 + cur_col;
         let cursor_y = area.y + 1 + cur_row;
         frame.set_cursor(cursor_x, cursor_y);
+    }
+}
+
+use ratatui::layout::{Constraint, Direction, Layout, Margin};
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum FocusField { Host, Port, Username, Password, DisplayName }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConnectionForm {
+    pub host: String,
+    pub port: String,
+    pub username: String,
+    pub password: String,
+    pub display_name: String,
+    pub focus: FocusField,
+    pub error: Option<String>,
+}
+
+impl ConnectionForm {
+    pub fn new() -> Self {
+        Self {
+            host: String::new(),
+            port: String::new(),
+            username: String::new(),
+            password: String::new(),
+            display_name: String::new(),
+            focus: FocusField::Host,
+            error: None,
+        }
+    }
+
+    pub fn next(&mut self) {
+        self.focus = match self.focus {
+            FocusField::Host => FocusField::Port,
+            FocusField::Port => FocusField::Username,
+            FocusField::Username => FocusField::Password,
+            FocusField::Password => FocusField::DisplayName,
+            FocusField::DisplayName => FocusField::Host,
+        };
+    }
+
+    pub fn prev(&mut self) {
+        self.focus = match self.focus {
+            FocusField::Host => FocusField::DisplayName,
+            FocusField::Port => FocusField::Host,
+            FocusField::Username => FocusField::Port,
+            FocusField::Password => FocusField::Username,
+            FocusField::DisplayName => FocusField::Password,
+        };
+    }
+
+    pub fn focused_value_mut(&mut self) -> &mut String {
+        match self.focus {
+            FocusField::Host => &mut self.host,
+            FocusField::Port => &mut self.port,
+            FocusField::Username => &mut self.username,
+            FocusField::Password => &mut self.password,
+            FocusField::DisplayName => &mut self.display_name,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.host.trim().is_empty() { return Err("Host is required".into()); }
+        if self.port.trim().is_empty() { return Err("Port is required".into()); }
+        if self.username.trim().is_empty() { return Err("Username is required".into()); }
+        if self.password.is_empty() { return Err("Password is required".into()); }
+        if self.port.parse::<u16>().is_err() { return Err("Port must be a number".into()); }
+        Ok(())
+    }
+
+    pub fn host_port(&self) -> String {
+        format!("{}:{}", self.host.trim(), self.port.trim())
+    }
+}
+
+pub fn draw_connection_form(area: Rect, form: &ConnectionForm, frame: &mut ratatui::Frame<'_>) {
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // title
+            Constraint::Length(3),  // host
+            Constraint::Length(3),  // port
+            Constraint::Length(3),  // username
+            Constraint::Length(3),  // password
+            Constraint::Length(3),  // display name (optional)
+            Constraint::Length(1),  // error line
+            Constraint::Min(1),     // spacer
+        ])
+        .split(area);
+
+    let mut render_input = |idx: usize, label: &str, value: &str, is_password: bool, focused: bool| {
+        let mut block = Block::default().borders(Borders::ALL).title(label);
+        if focused { block = block.border_style(Style::default().fg(Color::Cyan)); }
+        else { block = block.border_style(Style::default()); }
+        let shown = if is_password { "*".repeat(value.chars().count()) } else { value.to_string() };
+        let para = Paragraph::new(shown.clone()).block(block);
+        frame.render_widget(para, layout[idx]);
+        if focused {
+            let area_box = layout[idx].inner(Margin::new(1, 1));
+            let cursor_x = area_box.x + shown.len() as u16;
+            let cursor_y = area_box.y;
+            frame.set_cursor(cursor_x, cursor_y);
+        }
+    };
+
+    render_input(1, "Host", &form.host, false, form.focus == FocusField::Host);
+    render_input(2, "Port", &form.port, false, form.focus == FocusField::Port);
+    render_input(3, "Username", &form.username, false, form.focus == FocusField::Username);
+    render_input(4, "Password", &form.password, true, form.focus == FocusField::Password);
+    render_input(5, "Display Name (optional)", &form.display_name, false, form.focus == FocusField::DisplayName);
+
+    if let Some(err) = &form.error {
+        let err_line = Paragraph::new(Line::from(Span::styled(err.clone(), Style::default().fg(Color::Red))));
+        frame.render_widget(err_line, layout[6]);
     }
 } 
