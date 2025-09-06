@@ -144,7 +144,7 @@ impl ConfigManager {
         let home_dir = std::env::var("HOME")
             .map_err(|_| AppError::ConfigError("HOME environment variable not set".to_string()))?;
 
-        let config_dir = Path::new(&home_dir).join(".config").join("termirs");
+        let config_dir = Path::new(&home_dir).join(".config").join("termirs1");
 
         // Create config directory if it doesn't exist
         if !config_dir.exists() {
@@ -170,5 +170,41 @@ impl ConfigManager {
             .map_err(|e| AppError::ConfigError(format!("Failed to parse config file: {}", e)))?;
 
         Ok(config)
+    }
+
+    /// Persist current config to disk
+    pub fn save(&self) -> Result<()> {
+        let toml = toml::to_string_pretty(&self.config)
+            .map_err(|e| AppError::ConfigError(format!("Failed to serialize config: {}", e)))?;
+        fs::write(&self.config_path, toml)
+            .map_err(|e| AppError::ConfigError(format!("Failed to write config: {}", e)))?;
+        Ok(())
+    }
+
+    /// Return immutable slice of connections
+    pub fn connections(&self) -> &[Connection] {
+        &self.config.connections
+    }
+
+    /// Add a new connection and persist it
+    pub fn add_connection(&mut self, connection: Connection) -> Result<()> {
+        // Best-effort dedup: same host/port/username
+        if !self.config.connections.iter().any(|c| {
+            c.host == connection.host
+                && c.port == connection.port
+                && c.username == connection.username
+        }) {
+            self.config.connections.push(connection);
+        }
+        self.save()
+    }
+
+    /// Update last_used for a connection by id and persist
+    pub fn touch_last_used(&mut self, id: &str) -> Result<()> {
+        if let Some(c) = self.config.connections.iter_mut().find(|c| c.id == id) {
+            c.update_last_used();
+            self.save()?;
+        }
+        Ok(())
     }
 }

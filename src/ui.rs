@@ -323,7 +323,12 @@ pub fn draw_error_popup(area: Rect, message: &str, frame: &mut ratatui::Frame<'_
 // Add Main Menu renderer
 use ratatui::widgets::{List, ListItem};
 
-pub fn draw_main_menu(area: Rect, selected_index: usize, frame: &mut ratatui::Frame<'_>) {
+pub fn draw_main_menu(
+    area: Rect,
+    selected_index: usize,
+    conn_count: usize,
+    frame: &mut ratatui::Frame<'_>,
+) {
     // Layout: header (fixed 3) + list (min 1)
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -339,8 +344,11 @@ pub fn draw_main_menu(area: Rect, selected_index: usize, frame: &mut ratatui::Fr
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         )));
-    let header_para =
-        Paragraph::new(Line::from(Span::raw("0 saved connections"))).block(header_block);
+    let header_para = Paragraph::new(Line::from(Span::raw(format!(
+        "{} saved connections",
+        conn_count
+    ))))
+    .block(header_block);
     frame.render_widget(header_para, layout[0]);
 
     // Menu items
@@ -357,6 +365,85 @@ pub fn draw_main_menu(area: Rect, selected_index: usize, frame: &mut ratatui::Fr
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▶ ");
+
+    frame.render_stateful_widget(
+        list,
+        layout[1],
+        &mut ratatui::widgets::ListState::default().with_selected(Some(selected_index)),
+    );
+}
+
+// Render the saved connections list
+
+#[derive(Clone, Debug)]
+pub struct ConnectionListItem<'a> {
+    pub display_name: &'a str,
+    pub host: &'a str,
+    pub port: u16,
+    pub username: &'a str,
+    pub created_at: String,
+}
+
+pub fn draw_connection_list(
+    area: Rect,
+    title: &str,
+    items: &[ConnectionListItem<'_>],
+    selected_index: usize,
+    frame: &mut ratatui::Frame<'_>,
+) {
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(area);
+
+    let header_block = Block::default()
+        .borders(Borders::ALL)
+        .title(Line::from(Span::styled(
+            title,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )));
+    frame.render_widget(Paragraph::new("").block(header_block), layout[0]);
+
+    let mut list_items: Vec<ListItem> = Vec::with_capacity(items.len());
+    for it in items.iter() {
+        let indicator = "● ";
+        let header = Line::from(vec![
+            Span::styled(indicator, Style::default().fg(Color::Green)),
+            Span::styled(
+                it.display_name,
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ]);
+        let meta1 = Line::from(vec![
+            Span::raw("Host: "),
+            Span::styled(it.host, Style::default().fg(Color::Cyan)),
+            Span::raw("  Port: "),
+            Span::styled(format!("{}", it.port), Style::default().fg(Color::Cyan)),
+        ]);
+        let meta2 = Line::from(vec![
+            Span::raw("User: "),
+            Span::styled(it.username, Style::default().fg(Color::Cyan)),
+            Span::raw("  Created: "),
+            Span::styled(it.created_at.clone(), Style::default().fg(Color::Gray)),
+        ]);
+        let text = vec![header, meta1, meta2];
+        list_items.push(ListItem::new(text));
+    }
+
+    let list = List::new(list_items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Connection List"),
+        )
+        .highlight_style(
+            Style::default()
+                // .bg(Color::Blue)
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
 
     frame.render_stateful_widget(
         list,

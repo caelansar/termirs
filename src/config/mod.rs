@@ -1,2 +1,2 @@
-mod encryption;
-mod manager;
+pub mod encryption;
+pub mod manager;
