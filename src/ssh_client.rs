@@ -41,62 +41,11 @@ pub struct SshClient {
 
 impl SshClient {
     pub fn connect(connection: &Connection) -> Result<Self> {
-        Self::connect_raw(
-            &connection.host_port(),
-            &connection.username,
-            &connection.password,
-        )
+        Self::connect_raw(connection)
     }
 
-    pub fn connect_raw(host: &str, user: &str, pass: &str) -> Result<Self> {
-        // Parse the host and port into a socket address
-        let socket_addr = host
-            .parse::<SocketAddr>()
-            .map_err(|e| AppError::SshConnectionError(format!("Invalid host/port: {}", e)))?;
-
-        let tcp = TcpStream::connect_timeout(&socket_addr, Duration::from_secs(10))?;
-        tcp.set_nodelay(true).ok();
-
-        let mut sess = Session::new().map_err(|e| {
-            AppError::SshConnectionError(format!("Failed to create SSH session: {}", e))
-        })?;
-        sess.set_tcp_stream(tcp);
-        sess.handshake().map_err(|e| {
-            AppError::SshConnectionError(format!("Failed to perform SSH handshake: {}", e))
-        })?;
-
-        let methods_str = sess.auth_methods(user).unwrap_or("");
-        let methods: Vec<&str> = methods_str.split(',').filter(|s| !s.is_empty()).collect();
-
-        let has_interactive = methods.iter().any(|m| *m == "keyboard-interactive");
-        let has_password = methods.iter().any(|m| *m == "password");
-
-        if has_interactive || has_password {
-            if has_interactive {
-                let mut prompter = KbdIntPrompter {
-                    password: pass.to_string(),
-                };
-                let _ = sess.userauth_keyboard_interactive(user, &mut prompter);
-            }
-            if !sess.authenticated() && has_password {
-                let _ = sess.userauth_password(user, pass);
-            }
-            if !sess.authenticated() {
-                return Err(AppError::AuthenticationError(
-                    "SSH authentication failed".to_string(),
-                ));
-            }
-        } else {
-            return Err(AppError::AuthenticationError(
-                "SSH authentication failed: no supported authentication methods found".to_string(),
-            ));
-        }
-
-        if !sess.authenticated() {
-            return Err(AppError::AuthenticationError(
-                "SSH authentication failed".to_string(),
-            ));
-        }
+    pub fn connect_raw(connection: &Connection) -> Result<Self> {
+        let sess = Self::make_session(connection)?;
 
         let mut channel = sess.channel_session().map_err(|e| {
             AppError::SshConnectionError(format!("Failed to open SSH channel: {}", e))
@@ -157,6 +106,63 @@ impl SshClient {
         Ok(())
     }
 
+    pub fn make_session(connection: &Connection) -> Result<Session> {
+        let host = connection.host_port();
+        let user = &connection.username;
+        let pass = &connection.password;
+
+        // Parse the host and port into a socket address
+        let socket_addr = host
+            .parse::<SocketAddr>()
+            .map_err(|e| AppError::SshConnectionError(format!("Invalid host/port: {}", e)))?;
+
+        let tcp = TcpStream::connect_timeout(&socket_addr, Duration::from_secs(10))?;
+        tcp.set_nodelay(true).ok();
+
+        let mut sess = Session::new().map_err(|e| {
+            AppError::SshConnectionError(format!("Failed to create SSH session: {}", e))
+        })?;
+        sess.set_tcp_stream(tcp);
+        sess.handshake().map_err(|e| {
+            AppError::SshConnectionError(format!("Failed to perform SSH handshake: {}", e))
+        })?;
+
+        let methods_str = sess.auth_methods(user).unwrap_or("");
+        let methods: Vec<&str> = methods_str.split(',').filter(|s| !s.is_empty()).collect();
+
+        let has_interactive = methods.iter().any(|m| *m == "keyboard-interactive");
+        let has_password = methods.iter().any(|m| *m == "password");
+
+        if has_interactive || has_password {
+            if has_interactive {
+                let mut prompter = KbdIntPrompter {
+                    password: pass.to_string(),
+                };
+                let _ = sess.userauth_keyboard_interactive(user, &mut prompter);
+            }
+            if !sess.authenticated() && has_password {
+                let _ = sess.userauth_password(user, pass);
+            }
+            if !sess.authenticated() {
+                return Err(AppError::AuthenticationError(
+                    "SSH authentication failed".to_string(),
+                ));
+            }
+        } else {
+            return Err(AppError::AuthenticationError(
+                "SSH authentication failed: no supported authentication methods found".to_string(),
+            ));
+        }
+
+        if !sess.authenticated() {
+            return Err(AppError::AuthenticationError(
+                "SSH authentication failed".to_string(),
+            ));
+        }
+
+        Ok(sess)
+    }
+
     #[allow(dead_code)]
     pub fn read_some(&self, buf: &mut [u8]) -> usize {
         let mut n = 0usize;
@@ -186,48 +192,7 @@ impl SshClient {
         #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
 
-        // Connect blocking session
-        let socket_addr = connection
-            .host_port()
-            .parse::<std::net::SocketAddr>()
-            .map_err(|e| AppError::SshConnectionError(format!("Invalid host/port: {}", e)))?;
-        let tcp = std::net::TcpStream::connect_timeout(&socket_addr, Duration::from_secs(10))?;
-        tcp.set_nodelay(true).ok();
-
-        let mut sess = Session::new().map_err(|e| {
-            AppError::SshConnectionError(format!("Failed to create SSH session: {}", e))
-        })?;
-        sess.set_tcp_stream(tcp);
-        sess.handshake().map_err(|e| {
-            AppError::SshConnectionError(format!("Failed to perform SSH handshake: {}", e))
-        })?;
-
-        let user = &connection.username;
-        let pass = &connection.password;
-        let methods_str = sess.auth_methods(user).unwrap_or("");
-        let methods: Vec<&str> = methods_str.split(',').filter(|s| !s.is_empty()).collect();
-        let has_interactive = methods.iter().any(|m| *m == "keyboard-interactive");
-        let has_password = methods.iter().any(|m| *m == "password");
-        if has_interactive || has_password {
-            if has_interactive {
-                let mut prompter = KbdIntPrompter {
-                    password: pass.to_string(),
-                };
-                let _ = sess.userauth_keyboard_interactive(user, &mut prompter);
-            }
-            if !sess.authenticated() && has_password {
-                let _ = sess.userauth_password(user, pass);
-            }
-            if !sess.authenticated() {
-                return Err(AppError::AuthenticationError(
-                    "SSH authentication failed".to_string(),
-                ));
-            }
-        } else {
-            return Err(AppError::AuthenticationError(
-                "SSH authentication failed: no supported authentication methods found".to_string(),
-            ));
-        }
+        let sess = Self::make_session(connection)?;
 
         // Prepare local file and metadata
         let mut file = File::open(local_path)?;
@@ -251,6 +216,8 @@ impl SshClient {
             .map_err(|e| AppError::SshConnectionError(format!("SCP send failed: {}", e)))?;
 
         copy(&mut file, &mut ch)?;
+
+        // close the channel after sending
         let _ = ch.send_eof();
         let _ = ch.wait_eof();
         let _ = ch.close();

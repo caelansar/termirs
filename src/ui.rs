@@ -553,7 +553,159 @@ impl ScpForm {
     }
 }
 
-pub fn draw_scp_popup(area: Rect, form: &ScpForm, frame: &mut ratatui::Frame<'_>) {
+// ===== Dropdown Component =====
+
+#[derive(Clone, Debug)]
+pub struct DropdownState {
+    pub options: Vec<String>,
+    pub selected: usize,
+    pub visible: bool,
+    pub anchor_rect: Rect,    // The input field this dropdown is anchored to
+    pub scroll_offset: usize, // Track the scroll position
+    pub max_visible_items: usize, // Maximum items to show at once
+}
+
+impl DropdownState {
+    pub fn new(options: Vec<String>, anchor_rect: Rect) -> Self {
+        Self {
+            options,
+            selected: 0,
+            visible: true,
+            anchor_rect,
+            scroll_offset: 0,
+            max_visible_items: 8, // Default to 8 visible items
+        }
+    }
+
+    pub fn next(&mut self) {
+        if !self.options.is_empty() {
+            self.selected = (self.selected + 1) % self.options.len();
+            self.update_scroll();
+        }
+    }
+
+    pub fn prev(&mut self) {
+        if !self.options.is_empty() {
+            self.selected = if self.selected == 0 {
+                self.options.len() - 1
+            } else {
+                self.selected - 1
+            };
+            self.update_scroll();
+        }
+    }
+
+    /// Update scroll offset to keep selected item visible
+    fn update_scroll(&mut self) {
+        if self.options.is_empty() {
+            return;
+        }
+
+        // If selected item is above the visible window, scroll up
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
+        }
+        // If selected item is below the visible window, scroll down
+        else if self.selected >= self.scroll_offset + self.max_visible_items {
+            self.scroll_offset = self.selected.saturating_sub(self.max_visible_items - 1);
+        }
+    }
+
+    pub fn get_selected(&self) -> Option<&String> {
+        self.options.get(self.selected)
+    }
+
+    pub fn hide(&mut self) {
+        self.visible = false;
+    }
+}
+
+pub fn draw_dropdown(dropdown: &DropdownState, frame: &mut ratatui::Frame<'_>) {
+    if !dropdown.visible || dropdown.options.is_empty() {
+        return;
+    }
+
+    // Calculate dropdown position and size
+    let visible_items = dropdown.options.len().min(dropdown.max_visible_items);
+    let dropdown_height = visible_items as u16 + 2; // +2 for borders
+
+    // Position dropdown below the anchor field
+    let x = dropdown.anchor_rect.x;
+    let y = dropdown.anchor_rect.y + dropdown.anchor_rect.height;
+    let width = dropdown.anchor_rect.width;
+
+    let dropdown_rect = Rect {
+        x,
+        y,
+        width,
+        height: dropdown_height,
+    };
+
+    // Clear the area first
+    frame.render_widget(Clear, dropdown_rect);
+
+    // Get the visible slice of options based on scroll offset
+    let end_index =
+        (dropdown.scroll_offset + dropdown.max_visible_items).min(dropdown.options.len());
+    let visible_options = &dropdown.options[dropdown.scroll_offset..end_index];
+
+    // Create list items for visible options only
+    let list_items: Vec<ListItem> = visible_options
+        .iter()
+        .enumerate()
+        .map(|(visible_index, option)| {
+            let actual_index = dropdown.scroll_offset + visible_index;
+            let style = if actual_index == dropdown.selected {
+                Style::default()
+                    .fg(Color::LightCyan)
+                    // .bg(Color::LightBlue)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(Line::from(Span::styled(option.clone(), style)))
+        })
+        .collect();
+
+    // Create title with scroll indicators
+    let title = if dropdown.options.len() > dropdown.max_visible_items {
+        let has_more_above = dropdown.scroll_offset > 0;
+        let has_more_below =
+            dropdown.scroll_offset + dropdown.max_visible_items < dropdown.options.len();
+
+        let scroll_indicator = match (has_more_above, has_more_below) {
+            (true, true) => " ↑↓",
+            (true, false) => " ↑",
+            (false, true) => " ↓",
+            (false, false) => "",
+        };
+
+        format!(
+            "Options ({}/{}){}",
+            dropdown.selected + 1,
+            dropdown.options.len(),
+            scroll_indicator
+        )
+    } else {
+        format!(
+            "Options ({}/{})",
+            dropdown.selected + 1,
+            dropdown.options.len()
+        )
+    };
+
+    // Create the list widget
+    let list = List::new(list_items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan))
+            .title(title),
+    );
+
+    frame.render_widget(list, dropdown_rect);
+}
+
+pub fn draw_scp_popup(area: Rect, form: &ScpForm, frame: &mut ratatui::Frame<'_>) -> (Rect, Rect) {
     let popup_w = area.width.saturating_sub(10).max(40);
     let popup_h = 9u16.min(area.height.saturating_sub(2)).max(7);
     let x = area.x + (area.width.saturating_sub(popup_w)) / 2;
@@ -587,7 +739,10 @@ pub fn draw_scp_popup(area: Rect, form: &ScpForm, frame: &mut ratatui::Frame<'_>
         ])
         .split(inner);
 
-    let mut render_input = |idx: usize, label: &str, value: &str, focused: bool| {
+    let local_path_rect: Rect;
+    let remote_path_rect: Rect;
+
+    let mut render_input = |idx: usize, label: &str, value: &str, focused: bool| -> Rect {
         let mut block = Block::default().borders(Borders::ALL).title(label);
         if focused {
             block = block.border_style(Style::default().fg(Color::Cyan));
@@ -600,15 +755,16 @@ pub fn draw_scp_popup(area: Rect, form: &ScpForm, frame: &mut ratatui::Frame<'_>
             let cursor_y = area_box.y;
             frame.set_cursor(cursor_x, cursor_y);
         }
+        layout[idx]
     };
 
-    render_input(
+    local_path_rect = render_input(
         0,
         "Local Path",
         &form.local_path,
         form.focus == ScpFocusField::LocalPath,
     );
-    render_input(
+    remote_path_rect = render_input(
         1,
         "Remote Path",
         &form.remote_path,
@@ -616,8 +772,10 @@ pub fn draw_scp_popup(area: Rect, form: &ScpForm, frame: &mut ratatui::Frame<'_>
     );
 
     let hint = Paragraph::new(Line::from(Span::styled(
-        "Enter: Send   Esc: Cancel   Tab/Shift+Tab: Switch Field",
+        "Enter: Send   Esc: Cancel   Tab: Complete/Switch   Up/Down: Switch Field",
         Style::default().fg(Color::Gray),
     )));
     frame.render_widget(hint, layout[2]);
+
+    (local_path_rect, remote_path_rect)
 }

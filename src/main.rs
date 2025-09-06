@@ -15,7 +15,7 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Margin};
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::Block;
@@ -23,9 +23,9 @@ use ratatui::widgets::Block;
 use error::{AppError, Result};
 use ssh_client::SshClient;
 use ui::{
-    ConnectionForm, ConnectionListItem, ScpForm, TerminalState, draw_connection_form,
-    draw_connection_list, draw_error_popup, draw_info_popup, draw_main_menu, draw_scp_popup,
-    draw_terminal,
+    ConnectionForm, ConnectionListItem, DropdownState, ScpForm, TerminalState,
+    draw_connection_form, draw_connection_list, draw_dropdown, draw_error_popup, draw_info_popup,
+    draw_main_menu, draw_scp_popup, draw_terminal,
 };
 
 use config::manager::{ConfigManager, Connection};
@@ -58,6 +58,7 @@ pub(crate) struct App {
     pub(crate) info: Option<String>,
     pub(crate) config: ConfigManager,
     pub(crate) scp_form: Option<ScpForm>,
+    pub(crate) dropdown: Option<DropdownState>,
 }
 
 impl App {
@@ -68,6 +69,7 @@ impl App {
             info: None,
             config: ConfigManager::new()?,
             scp_form: None,
+            dropdown: None,
         })
     }
 
@@ -208,8 +210,21 @@ fn main() -> Result<()> {
             }
 
             // Overlay SCP popup if any
+            let mut scp_input_rects: Option<(Rect, Rect)> = None;
             if let Some(form) = &app.scp_form {
-                draw_scp_popup(size, form, f);
+                scp_input_rects = Some(draw_scp_popup(size, form, f));
+            }
+
+            // Update dropdown anchor rect if SCP popup is visible and dropdown exists
+            if let (Some(dropdown), Some((local_rect, _remote_rect))) =
+                (&mut app.dropdown, scp_input_rects)
+            {
+                dropdown.anchor_rect = local_rect;
+            }
+
+            // Overlay dropdown if any
+            if let Some(dropdown) = &app.dropdown {
+                draw_dropdown(dropdown, f);
             }
         })?;
 
