@@ -671,7 +671,7 @@ fn main() -> Result<()> {
                                 }
                                 let mut tmp = [0u8; 4];
                                 let s = ch_.encode_utf8(&mut tmp);
-                                client.write_all(s.as_bytes())?;
+                                let _ = client.write_all(s.as_bytes());
                             }
                             _ => {}
                         },
