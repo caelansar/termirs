@@ -11,8 +11,14 @@ pub enum AppError {
     #[error("Authentication error: {0}")]
     AuthenticationError(String),
 
-    #[error("Form validation error: {0}")]
-    FormValidationError(String),
+    #[error("Validation error: {0}")]
+    ValidationError(String),
+
+    #[error("Encryption error: {0}")]
+    EncryptionError(String),
+
+    #[error("Config error: {0}")]
+    ConfigError(String),
 }
 
 /// Application result type alias

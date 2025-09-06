@@ -1,0 +1,174 @@
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::error::{AppError, Result};
+
+/// Application settings
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AppSettings {
+    pub default_port: u16,
+    pub connection_timeout: u64,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            default_port: 22,
+            connection_timeout: 20,
+        }
+    }
+}
+
+/// Represents an SSH connection configuration
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Connection {
+    pub id: String,
+    pub display_name: String,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub encrypted_password: String,
+    pub created_at: DateTime<Utc>,
+    pub last_used: Option<DateTime<Utc>>,
+}
+
+impl Connection {
+    /// Creates a new connection with the given parameters
+    pub fn new(host: String, port: u16, username: String, encrypted_password: String) -> Self {
+        let display_name = host.clone(); // Default display name is the host
+        Self {
+            id: Uuid::new_v4().to_string(),
+            display_name,
+            host,
+            port,
+            username,
+            encrypted_password,
+            created_at: Utc::now(),
+            last_used: None,
+        }
+    }
+
+    /// Validates the connection parameters
+    pub fn validate(&self) -> Result<()> {
+        if self.host.trim().is_empty() {
+            return Err(AppError::ValidationError(
+                "Host cannot be empty".to_string(),
+            ));
+        }
+
+        if self.port == 0 {
+            return Err(AppError::ValidationError(
+                "Port must be greater than 0".to_string(),
+            ));
+        }
+
+        if self.username.trim().is_empty() {
+            return Err(AppError::ValidationError(
+                "Username cannot be empty".to_string(),
+            ));
+        }
+
+        if self.encrypted_password.trim().is_empty() {
+            return Err(AppError::ValidationError(
+                "Password cannot be empty".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Updates the last used timestamp
+    pub fn update_last_used(&mut self) {
+        self.last_used = Some(Utc::now());
+    }
+
+    /// Sets a custom display name
+    pub fn set_display_name(&mut self, name: String) {
+        self.display_name = name;
+    }
+}
+
+/// Main configuration structure
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Config {
+    pub connections: Vec<Connection>,
+    pub settings: AppSettings,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            connections: Vec::new(),
+            settings: AppSettings::default(),
+        }
+    }
+}
+
+/// Configuration manager for handling application settings and connection storage
+pub struct ConfigManager {
+    config_path: PathBuf,
+    config: Config,
+}
+
+impl ConfigManager {
+    /// Create a new configuration manager
+    pub fn new() -> Result<Self> {
+        let config_path = Self::get_config_path()?;
+        let config = Self::load_config_from_path(&config_path)?;
+
+        Ok(Self {
+            config_path,
+            config,
+        })
+    }
+
+    /// Create a configuration manager with a custom config path (useful for testing)
+    pub fn with_path<P: AsRef<Path>>(config_path: P) -> Result<Self> {
+        let config_path = config_path.as_ref().to_path_buf();
+        let config = Self::load_config_from_path(&config_path)?;
+
+        Ok(Self {
+            config_path,
+            config,
+        })
+    }
+
+    /// Get the default configuration file path
+    fn get_config_path() -> Result<PathBuf> {
+        let home_dir = std::env::var("HOME")
+            .map_err(|_| AppError::ConfigError("HOME environment variable not set".to_string()))?;
+
+        let config_dir = Path::new(&home_dir).join(".config").join("termirs");
+
+        // Create config directory if it doesn't exist
+        if !config_dir.exists() {
+            fs::create_dir_all(&config_dir).map_err(|e| {
+                AppError::ConfigError(format!("Failed to create config directory: {}", e))
+            })?;
+        }
+
+        Ok(config_dir.join("config.toml"))
+    }
+
+    /// Load configuration from the specified path
+    fn load_config_from_path(config_path: &Path) -> Result<Config> {
+        if !config_path.exists() {
+            // Return default config if file doesn't exist
+            return Ok(Config::default());
+        }
+
+        let config_content = fs::read_to_string(config_path)
+            .map_err(|e| AppError::ConfigError(format!("Failed to read config file: {}", e)))?;
+
+        let config: Config = toml::from_str(&config_content)
+            .map_err(|e| AppError::ConfigError(format!("Failed to parse config file: {}", e)))?;
+
+        Ok(config)
+    }
+}

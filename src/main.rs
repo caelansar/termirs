@@ -1,3 +1,4 @@
+mod config;
 mod error;
 mod ssh_client;
 mod ui;
@@ -220,7 +221,7 @@ fn main() -> Result<()> {
                                             }
                                         }
                                         Err(msg) => {
-                                            app.error = Some(AppError::FormValidationError(msg));
+                                            app.error = Some(AppError::ValidationError(msg));
                                         }
                                     }
                                 }
