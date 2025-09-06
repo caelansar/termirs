@@ -553,6 +553,12 @@ fn main() -> Result<()> {
                                     .map(|g| g.parser.screen().alternate_screen())
                                     .unwrap_or(false);
                                 if in_alt {
+                                    // jump to bottom before sending input
+                                    if let Ok(mut guard) = state.lock() {
+                                        if guard.parser.screen().scrollback() > 0 {
+                                            guard.scroll_to_bottom();
+                                        }
+                                    }
                                     client.write_all(&[0x1b])?;
                                 } else {
                                     client.close();
@@ -560,33 +566,109 @@ fn main() -> Result<()> {
                                 }
                             }
                             KeyCode::Enter => {
+                                if let Ok(mut guard) = state.lock() {
+                                    if guard.parser.screen().scrollback() > 0 {
+                                        guard.scroll_to_bottom();
+                                    }
+                                }
                                 client.write_all(b"\r")?;
                             }
                             KeyCode::Backspace => {
+                                if let Ok(mut guard) = state.lock() {
+                                    if guard.parser.screen().scrollback() > 0 {
+                                        guard.scroll_to_bottom();
+                                    }
+                                }
                                 client.write_all(&[0x7f])?;
                             }
                             KeyCode::Left => {
+                                if let Ok(mut guard) = state.lock() {
+                                    if guard.parser.screen().scrollback() > 0 {
+                                        guard.scroll_to_bottom();
+                                    }
+                                }
                                 client.write_all(b"\x1b[D")?;
                             }
                             KeyCode::Right => {
+                                if let Ok(mut guard) = state.lock() {
+                                    if guard.parser.screen().scrollback() > 0 {
+                                        guard.scroll_to_bottom();
+                                    }
+                                }
                                 client.write_all(b"\x1b[C")?;
                             }
                             KeyCode::Up => {
+                                if let Ok(mut guard) = state.lock() {
+                                    if guard.parser.screen().scrollback() > 0 {
+                                        guard.scroll_to_bottom();
+                                    }
+                                }
                                 client.write_all(b"\x1b[A")?;
                             }
                             KeyCode::Down => {
+                                if let Ok(mut guard) = state.lock() {
+                                    if guard.parser.screen().scrollback() > 0 {
+                                        guard.scroll_to_bottom();
+                                    }
+                                }
                                 client.write_all(b"\x1b[B")?;
                             }
                             KeyCode::Tab => {
+                                if let Ok(mut guard) = state.lock() {
+                                    if guard.parser.screen().scrollback() > 0 {
+                                        guard.scroll_to_bottom();
+                                    }
+                                }
                                 client.write_all(b"\t")?;
                             }
+                            KeyCode::PageUp => {
+                                if let Ok(mut guard) = state.lock() {
+                                    let rows = guard.parser.screen().size().0;
+                                    let page = (rows.saturating_sub(1)) as i32;
+                                    guard.scroll_by(page);
+                                }
+                            }
+                            KeyCode::PageDown => {
+                                if let Ok(mut guard) = state.lock() {
+                                    let rows = guard.parser.screen().size().0;
+                                    let page = (rows.saturating_sub(1)) as i32;
+                                    guard.scroll_by(-page);
+                                }
+                            }
+                            KeyCode::Home => {
+                                if let Ok(mut guard) = state.lock() {
+                                    // jump to top of scrollback
+                                    let top = usize::MAX; // set_scrollback will clamp
+                                    guard.parser.screen_mut().set_scrollback(top);
+                                }
+                            }
+                            KeyCode::End => {
+                                if let Ok(mut guard) = state.lock() {
+                                    guard.scroll_to_bottom();
+                                }
+                            }
                             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                if let Ok(mut guard) = state.lock() {
+                                    if guard.parser.screen().scrollback() > 0 {
+                                        guard.scroll_to_bottom();
+                                    }
+                                }
                                 client.write_all(&[0x03])?;
                             }
                             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                if let Ok(mut guard) = state.lock() {
+                                    if guard.parser.screen().scrollback() > 0 {
+                                        guard.scroll_to_bottom();
+                                    }
+                                }
                                 client.write_all(&[0x04])?;
                             }
                             KeyCode::Char(ch_) => {
+                                if let Ok(mut guard) = state.lock() {
+                                    if guard.parser.screen().scrollback() > 0 {
+                                        guard.scroll_to_bottom();
+                                    }
+                                }
                                 let mut tmp = [0u8; 4];
                                 let s = ch_.encode_utf8(&mut tmp);
                                 client.write_all(s.as_bytes())?;
@@ -604,7 +686,12 @@ fn main() -> Result<()> {
                         let s = form.focused_value_mut();
                         s.push_str(&data);
                     }
-                    AppMode::Connected { client, .. } => {
+                    AppMode::Connected { client, state } => {
+                        if let Ok(mut guard) = state.lock() {
+                            if guard.parser.screen().scrollback() > 0 {
+                                guard.scroll_to_bottom();
+                            }
+                        }
                         client.write_all(data.as_bytes())?;
                     }
                     AppMode::MainMenu { .. } => {}
@@ -613,7 +700,23 @@ fn main() -> Result<()> {
                 Event::Mouse(MouseEvent {
                     kind: MouseEventKind::ScrollDown,
                     ..
-                }) => {}
+                }) => {
+                    if let AppMode::Connected { state, .. } = &mut app.mode {
+                        if let Ok(mut guard) = state.lock() {
+                            guard.scroll_by(-3);
+                        }
+                    }
+                }
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::ScrollUp,
+                    ..
+                }) => {
+                    if let AppMode::Connected { state, .. } = &mut app.mode {
+                        if let Ok(mut guard) = state.lock() {
+                            guard.scroll_by(3);
+                        }
+                    }
+                }
                 Event::Resize(_, _) => {}
                 _ => {}
             }

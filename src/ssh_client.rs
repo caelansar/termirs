@@ -64,17 +64,16 @@ impl SshClient {
         })?;
 
         let methods_str = sess.auth_methods(user).unwrap_or("");
-        let methods: Vec<&str> = methods_str
-            .split(',')
-            .filter(|s| !s.is_empty())
-            .collect();
+        let methods: Vec<&str> = methods_str.split(',').filter(|s| !s.is_empty()).collect();
 
         let has_interactive = methods.iter().any(|m| *m == "keyboard-interactive");
         let has_password = methods.iter().any(|m| *m == "password");
 
         if has_interactive || has_password {
             if has_interactive {
-                let mut prompter = KbdIntPrompter { password: pass.to_string() };
+                let mut prompter = KbdIntPrompter {
+                    password: pass.to_string(),
+                };
                 let _ = sess.userauth_keyboard_interactive(user, &mut prompter);
             }
             if !sess.authenticated() && has_password {
@@ -165,5 +164,4 @@ mod tests {
         let client = SshClient::connect(&conn).unwrap();
         client.close();
     }
-    
 }

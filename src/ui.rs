@@ -14,7 +14,7 @@ pub struct TerminalState {
 impl TerminalState {
     pub fn new(rows: u16, cols: u16) -> Self {
         Self {
-            parser: Parser::new(rows, cols, 0),
+            parser: Parser::new(rows, cols, 10_000),
             last_change: Instant::now(),
         }
     }
@@ -27,6 +27,16 @@ impl TerminalState {
     pub fn process_bytes(&mut self, data: &[u8]) {
         self.parser.process(data);
         self.last_change = Instant::now();
+    }
+
+    pub fn scroll_by(&mut self, delta_lines: i32) {
+        let current = self.parser.screen().scrollback() as i32;
+        let target = current.saturating_add(delta_lines).max(0) as usize;
+        self.parser.screen_mut().set_scrollback(target);
+    }
+
+    pub fn scroll_to_bottom(&mut self) {
+        self.parser.screen_mut().set_scrollback(0);
     }
 }
 
