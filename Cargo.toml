@@ -9,3 +9,4 @@ ratatui = { version = "0.27", default-features = false, features = ["crossterm"]
 crossterm = "0.27"
 portable-pty = "0.8"
 vt100 = "0.16"
+ssh2 = "0.9"
