@@ -223,11 +223,21 @@ fn main() -> Result<()> {
                     // Map a few special keys; otherwise forward UTF-8
                     match key.code {
                         KeyCode::Esc => {
-                            // exit with Ctrl-C or Esc Esc
-                            disable_raw_mode().ok();
-                            execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture).ok();
-                            drop(child);
-                            return Ok(());
+                            // Exit only when not in alternate screen (i.e., likely at main shell)
+                            let in_alt = app_state
+                                .lock()
+                                .ok()
+                                .map(|g| g.parser.screen().alternate_screen())
+                                .unwrap_or(false);
+                            if in_alt {
+                                writer.write_all(&[0x1b])?; // forward ESC to app like vim
+                                writer.flush()?;
+                            } else {
+                                disable_raw_mode().ok();
+                                execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture).ok();
+                                drop(child);
+                                return Ok(());
+                            }
                         }
                         KeyCode::Enter => {
                             writer.write_all(b"\r")?;
@@ -237,11 +247,11 @@ fn main() -> Result<()> {
                             writer.write_all(&[0x7f])?; // DEL
                             writer.flush()?;
                         }
-                        KeyCode::Left => writer.write_all(b"\x1b[D")?,
-                        KeyCode::Right => writer.write_all(b"\x1b[C")?,
-                        KeyCode::Up => writer.write_all(b"\x1b[A")?,
-                        KeyCode::Down => writer.write_all(b"\x1b[B")?,
-                        KeyCode::Tab => writer.write_all(b"\t")?,
+                        KeyCode::Left => { writer.write_all(b"\x1b[D")?; }
+                        KeyCode::Right => { writer.write_all(b"\x1b[C")?; }
+                        KeyCode::Up => { writer.write_all(b"\x1b[A")?; }
+                        KeyCode::Down => { writer.write_all(b"\x1b[B")?; }
+                        KeyCode::Tab => { writer.write_all(b"\t")?; }
                         KeyCode::Char('c') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
                             writer.write_all(&[0x03])?; // ETX
                         }
