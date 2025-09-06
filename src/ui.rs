@@ -319,3 +319,48 @@ pub fn draw_error_popup(area: Rect, message: &str, frame: &mut ratatui::Frame<'_
     .block(block);
     frame.render_widget(body, popup);
 }
+
+// Add Main Menu renderer
+use ratatui::widgets::{List, ListItem};
+
+pub fn draw_main_menu(area: Rect, selected_index: usize, frame: &mut ratatui::Frame<'_>) {
+    // Layout: header (fixed 3) + list (min 1)
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(area);
+
+    // Header with saved connections count (fixed to 0 for now)
+    let header_block = Block::default()
+        .borders(Borders::ALL)
+        .title(Line::from(Span::styled(
+            "TermiRS SSH Client",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )));
+    let header_para =
+        Paragraph::new(Line::from(Span::raw("0 saved connections"))).block(header_block);
+    frame.render_widget(header_para, layout[0]);
+
+    // Menu items
+    let items = vec![
+        ListItem::new("[V] View Saved Connections"),
+        ListItem::new("[N] Create New Connection"),
+        ListItem::new("[Q] Quit"),
+    ];
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL))
+        .highlight_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▶ ");
+
+    frame.render_stateful_widget(
+        list,
+        layout[1],
+        &mut ratatui::widgets::ListState::default().with_selected(Some(selected_index)),
+    );
+}

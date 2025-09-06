@@ -86,6 +86,7 @@ impl SshClient {
         if let Ok(mut ch) = self.channel.lock() {
             let _ = ch.send_eof();
             let _ = ch.close();
+            let _ = ch.wait_close();
         }
     }
 }

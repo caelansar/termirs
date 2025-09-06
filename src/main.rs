@@ -25,10 +25,16 @@ use ratatui::widgets::Block;
 
 use error::{AppError, Result};
 use ssh_client::SshClient;
-use ui::{ConnectionForm, TerminalState, draw_connection_form, draw_error_popup, draw_terminal};
+use ui::{
+    ConnectionForm, TerminalState, draw_connection_form, draw_error_popup, draw_main_menu,
+    draw_terminal,
+};
 
 #[derive(Clone)]
 enum AppMode {
+    MainMenu {
+        selected: usize,
+    },
     Form {
         form: ConnectionForm,
     },
@@ -47,9 +53,7 @@ struct App {
 impl App {
     fn new() -> Self {
         Self {
-            mode: AppMode::Form {
-                form: ConnectionForm::new(),
-            },
+            mode: AppMode::MainMenu { selected: 0 },
             error: None,
         }
     }
@@ -58,8 +62,12 @@ impl App {
         self.mode = AppMode::Connected { client, state };
     }
 
+    fn go_to_main_menu(&mut self) {
+        self.mode = AppMode::MainMenu { selected: 0 };
+    }
+
     #[allow(dead_code)]
-    fn go_to_main_menu(&mut self) {}
+    fn go_to_connection_list(&mut self) {}
 }
 
 fn main() -> Result<()> {
@@ -81,6 +89,9 @@ fn main() -> Result<()> {
         terminal.draw(|f| {
             let size = f.size();
             match &app.mode {
+                AppMode::MainMenu { selected } => {
+                    draw_main_menu(size, *selected, f);
+                }
                 AppMode::Form { form } => {
                     let layout = Layout::default()
                         .direction(Direction::Vertical)
@@ -151,9 +162,29 @@ fn main() -> Result<()> {
                     }
 
                     match &mut app.mode {
-                        AppMode::Form { form } => {
+                        AppMode::MainMenu { selected } => {
+                            const NUM_ITEMS: usize = 3;
                             match key.code {
-                                KeyCode::Esc => {
+                                KeyCode::Char('k') | KeyCode::Up => {
+                                    *selected = if *selected == 0 {
+                                        NUM_ITEMS - 1
+                                    } else {
+                                        *selected - 1
+                                    };
+                                }
+                                KeyCode::Char('j') | KeyCode::Down => {
+                                    *selected = (*selected + 1) % NUM_ITEMS;
+                                }
+                                KeyCode::Char('v') | KeyCode::Char('V') => {
+                                    app.error =
+                                        Some(AppError::ConfigError("Not implemented yet".into()));
+                                }
+                                KeyCode::Char('n') | KeyCode::Char('N') => {
+                                    app.mode = AppMode::Form {
+                                        form: ConnectionForm::new(),
+                                    };
+                                }
+                                KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
                                     // restore terminal
                                     disable_raw_mode().ok();
                                     execute!(
@@ -163,6 +194,37 @@ fn main() -> Result<()> {
                                     )
                                     .ok();
                                     return Ok(());
+                                }
+                                KeyCode::Enter => match *selected {
+                                    0 => {
+                                        app.error = Some(AppError::ConfigError(
+                                            "Not implemented yet".into(),
+                                        ));
+                                    }
+                                    1 => {
+                                        app.mode = AppMode::Form {
+                                            form: ConnectionForm::new(),
+                                        };
+                                    }
+                                    2 => {
+                                        disable_raw_mode().ok();
+                                        execute!(
+                                            terminal.backend_mut(),
+                                            LeaveAlternateScreen,
+                                            DisableMouseCapture
+                                        )
+                                        .ok();
+                                        return Ok(());
+                                    }
+                                    _ => {}
+                                },
+                                _ => {}
+                            }
+                        }
+                        AppMode::Form { form } => {
+                            match key.code {
+                                KeyCode::Esc => {
+                                    app.go_to_main_menu();
                                 }
                                 KeyCode::Tab => {
                                     form.next();
@@ -246,15 +308,8 @@ fn main() -> Result<()> {
                                 if in_alt {
                                     client.write_all(&[0x1b])?;
                                 } else {
-                                    disable_raw_mode().ok();
-                                    execute!(
-                                        std::io::stdout(),
-                                        LeaveAlternateScreen,
-                                        DisableMouseCapture
-                                    )
-                                    .ok();
                                     client.close();
-                                    return Ok(());
+                                    app.go_to_main_menu();
                                 }
                             }
                             KeyCode::Enter => {
@@ -301,6 +356,7 @@ fn main() -> Result<()> {
                     AppMode::Connected { client, .. } => {
                         client.write_all(data.as_bytes())?;
                     }
+                    AppMode::MainMenu { .. } => {}
                 },
                 Event::Mouse(MouseEvent {
                     kind: MouseEventKind::ScrollDown,
