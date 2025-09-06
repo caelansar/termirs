@@ -59,11 +59,13 @@ pub fn draw_terminal(area: Rect, state: &TerminalState, frame: &mut ratatui::Fra
                 if underline { style = style.add_modifier(Modifier::UNDERLINED); }
 
                 let contents = cell.contents();
-                if style == current_style { current_text.push_str(contents); }
+                let to_append = if contents.is_empty() { " " } else { contents };
+
+                if style == current_style { current_text.push_str(to_append); }
                 else {
                     if !current_text.is_empty() { spans.push(Span::styled(current_text.clone(), current_style)); current_text.clear(); }
                     current_style = style;
-                    current_text.push_str(contents);
+                    current_text.push_str(to_append);
                 }
             } else {
                 if current_style == Style::default() { current_text.push(' '); }
