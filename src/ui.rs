@@ -200,10 +200,6 @@ impl ConnectionForm {
         }
         Ok(())
     }
-
-    pub fn host_port(&self) -> String {
-        format!("{}:{}", self.host.trim(), self.port.trim())
-    }
 }
 
 pub fn draw_connection_form(area: Rect, form: &ConnectionForm, frame: &mut ratatui::Frame<'_>) {

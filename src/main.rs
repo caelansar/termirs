@@ -31,7 +31,6 @@ use ui::{
     draw_error_popup, draw_main_menu, draw_terminal,
 };
 
-use config::encryption::PasswordEncryption;
 use config::manager::{ConfigManager, Connection};
 
 #[derive(Clone)]
@@ -275,17 +274,7 @@ fn main() -> Result<()> {
                                 }
                                 KeyCode::Enter => {
                                     let conn = app.config.connections()[*selected].clone();
-                                    let pass = match PasswordEncryption::new()
-                                        .decrypt_password(&conn.encrypted_password)
-                                    {
-                                        Ok(p) => p,
-                                        Err(e) => {
-                                            app.error = Some(e);
-                                            continue;
-                                        }
-                                    };
-                                    let host_port = format!("{}:{}", conn.host, conn.port);
-                                    match SshClient::connect(&host_port, &conn.username, &pass) {
+                                    match SshClient::connect(&conn) {
                                         Ok(client) => {
                                             let state =
                                                 Arc::new(Mutex::new(TerminalState::new(30, 100)));
@@ -344,34 +333,27 @@ fn main() -> Result<()> {
                                 KeyCode::Enter => {
                                     match form.validate() {
                                         Ok(_) => {
-                                            let host = form.host_port();
                                             let user = form.username.trim().to_string();
                                             let pass = form.password.clone();
-                                            match SshClient::connect(&host, &user, &pass) {
+
+                                            let mut conn = Connection::new(
+                                                form.host.trim().to_string(),
+                                                form.port.parse::<u16>().unwrap_or(22),
+                                                user,
+                                                pass,
+                                            );
+                                            if !form.display_name.trim().is_empty() {
+                                                conn.set_display_name(
+                                                    form.display_name.trim().to_string(),
+                                                );
+                                            }
+                                            if let Err(e) = conn.validate() {
+                                                app.error = Some(e);
+                                                continue;
+                                            }
+                                            match SshClient::connect(&conn) {
                                                 Ok(client) => {
-                                                    // Persist the connection for later reuse
-                                                    let enc = PasswordEncryption::new();
-                                                    match form.port.parse::<u16>() {
-                                                        Ok(port) => {
-                                                            let mut conn = Connection::new(
-                                                                form.host.trim().to_string(),
-                                                                port,
-                                                                user.clone(),
-                                                                enc.encrypt_password(&pass)
-                                                                    .unwrap_or_default(),
-                                                            );
-                                                            if !form.display_name.trim().is_empty()
-                                                            {
-                                                                conn.set_display_name(
-                                                                    form.display_name
-                                                                        .trim()
-                                                                        .to_string(),
-                                                                );
-                                                            }
-                                                            let _ = app.config.add_connection(conn);
-                                                        }
-                                                        Err(_) => {}
-                                                    }
+                                                    let _ = app.config.add_connection(conn.clone());
 
                                                     let state = Arc::new(Mutex::new(
                                                         TerminalState::new(30, 100),

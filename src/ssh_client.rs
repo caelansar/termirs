@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use ssh2::{Channel, Session};
 
+use crate::config::manager::Connection;
 use crate::error::{AppError, Result};
 
 #[derive(Clone)]
@@ -13,7 +14,15 @@ pub struct SshClient {
 }
 
 impl SshClient {
-    pub fn connect(host: &str, user: &str, pass: &str) -> Result<Self> {
+    pub fn connect(connection: &Connection) -> Result<Self> {
+        Self::connect_raw(
+            &connection.host_port(),
+            &connection.username,
+            &connection.password,
+        )
+    }
+
+    pub fn connect_raw(host: &str, user: &str, pass: &str) -> Result<Self> {
         // Parse the host and port into a socket address
         let socket_addr = host
             .parse::<SocketAddr>()

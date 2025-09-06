@@ -25,6 +25,27 @@ impl Default for AppSettings {
     }
 }
 
+fn serialize_password<S>(plain: &String, serializer: S) -> std::result::Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let enc = crate::config::encryption::PasswordEncryption::new();
+    let encrypted = enc
+        .encrypt_password(plain)
+        .map_err(serde::ser::Error::custom)?;
+    serializer.serialize_str(&encrypted)
+}
+
+fn deserialize_password<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let encrypted = String::deserialize(deserializer)?;
+    let enc = crate::config::encryption::PasswordEncryption::new();
+    enc.decrypt_password(&encrypted)
+        .map_err(serde::de::Error::custom)
+}
+
 /// Represents an SSH connection configuration
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Connection {
@@ -33,14 +54,19 @@ pub struct Connection {
     pub host: String,
     pub port: u16,
     pub username: String,
-    pub encrypted_password: String,
+    #[serde(
+        alias = "encrypted_password",
+        serialize_with = "serialize_password",
+        deserialize_with = "deserialize_password"
+    )]
+    pub password: String,
     pub created_at: DateTime<Utc>,
     pub last_used: Option<DateTime<Utc>>,
 }
 
 impl Connection {
     /// Creates a new connection with the given parameters
-    pub fn new(host: String, port: u16, username: String, encrypted_password: String) -> Self {
+    pub fn new(host: String, port: u16, username: String, password: String) -> Self {
         let display_name = host.clone(); // Default display name is the host
         Self {
             id: Uuid::new_v4().to_string(),
@@ -48,10 +74,14 @@ impl Connection {
             host,
             port,
             username,
-            encrypted_password,
+            password,
             created_at: Utc::now(),
             last_used: None,
         }
+    }
+
+    pub fn host_port(&self) -> String {
+        format!("{}:{}", self.host, self.port)
     }
 
     /// Validates the connection parameters
@@ -74,7 +104,7 @@ impl Connection {
             ));
         }
 
-        if self.encrypted_password.trim().is_empty() {
+        if self.password.trim().is_empty() {
             return Err(AppError::ValidationError(
                 "Password cannot be empty".to_string(),
             ));
@@ -129,6 +159,7 @@ impl ConfigManager {
     }
 
     /// Create a configuration manager with a custom config path (useful for testing)
+    #[allow(dead_code)]
     pub fn with_path<P: AsRef<Path>>(config_path: P) -> Result<Self> {
         let config_path = config_path.as_ref().to_path_buf();
         let config = Self::load_config_from_path(&config_path)?;
@@ -206,5 +237,26 @@ impl ConfigManager {
             self.save()?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_serialize_deserialize_connection() {
+        let conn = Connection::new(
+            "test".to_string(),
+            22,
+            "root".to_string(),
+            "password".to_string(),
+        );
+        let serialized = toml::to_string(&conn).unwrap();
+        println!("serialized: {}", serialized);
+
+        let deserialized: Connection = toml::from_str(&serialized).unwrap();
+        println!("deserialized: {:?}", deserialized);
+        assert_eq!(conn.password, deserialized.password);
     }
 }
