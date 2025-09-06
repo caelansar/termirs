@@ -20,8 +20,27 @@ use ratatui::Terminal;
 use ssh_client::SshClient;
 use ui::{TerminalState, draw_terminal, ConnectionForm, draw_connection_form};
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum AppMode { Form, Connected }
+#[derive(Clone)]
+enum AppMode {
+     Form {data: ConnectionForm},
+     Connected {client: SshClient, state: Arc<Mutex<TerminalState>>},
+}
+
+struct App {
+    mode: AppMode,
+}
+
+impl App {
+    fn new() -> Self {
+        Self {
+            mode: AppMode::Form {data: ConnectionForm::new()},
+        }
+    }
+
+    fn go_to_connected(&mut self, client: SshClient, state: Arc<Mutex<TerminalState>>) {
+        self.mode = AppMode::Connected { client, state };
+    }
+}
 
 fn main() -> Result<()> {
 	// Setup Crossterm terminal
@@ -31,21 +50,17 @@ fn main() -> Result<()> {
 	let backend = CrosstermBackend::new(stdout);
 	let mut terminal = Terminal::new(backend)?;
 
-	// App state
-	let mut mode = AppMode::Form;
-	let mut form = ConnectionForm::new();
-	let mut client: Option<SshClient> = None;
-	let mut app_state: Option<Arc<Mutex<TerminalState>>> = None;
+    let mut app = App::new();
 
 	// UI event/render loop
 	let mut last_tick = Instant::now();
-	let tick_rate = Duration::from_millis(16);
+	let tick_rate = Duration::from_millis(10);
 
 	loop {
 		terminal.draw(|f| {
 			let size = f.size();
-			match mode {
-				AppMode::Form => {
+			match &app.mode {
+				AppMode::Form { data: form } => {
 					let layout = Layout::default()
 						.direction(Direction::Vertical)
 						.constraints([ Constraint::Length(3), Constraint::Min(1) ])
@@ -57,7 +72,7 @@ fn main() -> Result<()> {
 
 					draw_connection_form(layout[1], &form, f);
 				}
-				AppMode::Connected => {
+				AppMode::Connected { client, state} => {
 					let layout = Layout::default()
 						.direction(Direction::Vertical)
 						.constraints([ Constraint::Length(3), Constraint::Min(1) ])
@@ -67,16 +82,14 @@ fn main() -> Result<()> {
 						.title(Line::from("title").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
 					f.render_widget(title_block, layout[0]);
 
-					if let (Some(app), Some(cli)) = (app_state.as_ref(), client.as_ref()) {
 						let inner = layout[1].inner(Margin::new(1, 1));
-						if let Ok(mut guard) = app.lock() {
+						if let Ok(mut guard) = state.lock() {
 							if guard.parser.screen().size() != (inner.height, inner.width) {
 								guard.resize(inner.height, inner.width);
-								cli.request_size(inner.width, inner.height);
+								client.request_size(inner.width, inner.height);
 							}
 							draw_terminal(layout[1], &guard, f);
 						}
-					}
 				}
 			}
 		})?;
@@ -85,8 +98,8 @@ fn main() -> Result<()> {
 		while crossterm::event::poll(Duration::from_millis(1))? {
 			match event::read()? {
 				Event::Key(key) if key.kind == KeyEventKind::Press => {
-					match mode {
-						AppMode::Form => {
+					match &mut app.mode {
+						AppMode::Form  {data: form}=> {
 							match key.code {
 								KeyCode::Esc => {
 									disable_raw_mode().ok();
@@ -102,11 +115,11 @@ fn main() -> Result<()> {
 											let user = form.username.trim().to_string();
 											let pass = form.password.clone();
 											match SshClient::connect(&host, &user, &pass) {
-												Ok(cli) => {
-													let app = Arc::new(Mutex::new(TerminalState::new(30, 100)));
+												Ok(client) => {
+													let state = Arc::new(Mutex::new(TerminalState::new(30, 100)));
 													// Reader thread
-													let app_reader = app.clone();
-													let client_reader = cli.channel.clone();
+													let app_reader = state.clone();
+													let client_reader = client.channel.clone();
 													thread::spawn(move || {
 														let mut buf = [0u8; 8192];
 														loop {
@@ -121,10 +134,8 @@ fn main() -> Result<()> {
 														}
 													}
 													});
-													client = Some(cli);
-													app_state = Some(app);
 													form.error = None;
-													mode = AppMode::Connected;
+													app.go_to_connected(client, state);
 												}
 												Err(e) => { form.error = Some(format!("{}", e)); }
 											}
@@ -139,39 +150,37 @@ fn main() -> Result<()> {
 								_ => {}
 							}
 						}
-						AppMode::Connected => {
-							if let Some(cli) = client.as_ref() {
+						AppMode::Connected { client, state} => {
 								match key.code {
 									KeyCode::Esc => {
-										let in_alt = app_state.as_ref().and_then(|a| a.lock().ok()).map(|g| g.parser.screen().alternate_screen()).unwrap_or(false);
-										if in_alt { cli.write_all(&[0x1b])?; }
+										let in_alt = state.lock().ok().map(|g| g.parser.screen().alternate_screen()).unwrap_or(false);
+										if in_alt { client.write_all(&[0x1b])?; }
 										else {
 											disable_raw_mode().ok();
 											execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture).ok();
-											cli.close();
+											client.close();
 											return Ok(());
 										}
 									}
-									KeyCode::Enter => { cli.write_all(b"\r")?; }
-									KeyCode::Backspace => { cli.write_all(&[0x7f])?; }
-									KeyCode::Left => { cli.write_all(b"\x1b[D")?; }
-									KeyCode::Right => { cli.write_all(b"\x1b[C")?; }
-									KeyCode::Up => { cli.write_all(b"\x1b[A")?; }
-									KeyCode::Down => { cli.write_all(b"\x1b[B")?; }
-									KeyCode::Tab => { cli.write_all(b"\t")?; }
-									KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => { cli.write_all(&[0x03])?; }
-									KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => { cli.write_all(&[0x04])?; }
-									KeyCode::Char(ch_) => { let mut tmp=[0u8;4]; let s=ch_.encode_utf8(&mut tmp); cli.write_all(s.as_bytes())?; }
+									KeyCode::Enter => { client.write_all(b"\r")?; }
+									KeyCode::Backspace => { client.write_all(&[0x7f])?; }
+									KeyCode::Left => { client.write_all(b"\x1b[D")?; }
+									KeyCode::Right => { client.write_all(b"\x1b[C")?; }
+									KeyCode::Up => { client.write_all(b"\x1b[A")?; }
+									KeyCode::Down => { client.write_all(b"\x1b[B")?; }
+									KeyCode::Tab => { client.write_all(b"\t")?; }
+									KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => { client.write_all(&[0x03])?; }
+									KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => { client.write_all(&[0x04])?; }
+									KeyCode::Char(ch_) => { let mut tmp=[0u8;4]; let s=ch_.encode_utf8(&mut tmp); client.write_all(s.as_bytes())?; }
 									_ => {}
 								}
-							}
 						}
 					}
 				}
 				Event::Paste(data) => {
-					match mode {
-						AppMode::Form => { let s = form.focused_value_mut(); s.push_str(&data); }
-						AppMode::Connected => { if let Some(cli) = client.as_ref() { cli.write_all(data.as_bytes())?; } }
+					match &mut app.mode {
+						AppMode::Form { data: form } => { let s = form.focused_value_mut(); s.push_str(&data); }
+						AppMode::Connected { client, ..} => { client.write_all(data.as_bytes())?; }
 					}
 				}
 				Event::Mouse(MouseEvent { kind: MouseEventKind::ScrollDown, .. }) => {}
