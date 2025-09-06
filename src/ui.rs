@@ -326,6 +326,57 @@ pub fn draw_error_popup(area: Rect, message: &str, frame: &mut ratatui::Frame<'_
     frame.render_widget(body, popup);
 }
 
+// Info popup renderer
+pub fn draw_info_popup(area: Rect, message: &str, frame: &mut ratatui::Frame<'_>) {
+    let popup_w = area.width.saturating_sub(4);
+    let inner_w = popup_w.saturating_sub(2).max(1);
+    let estimated_lines: u16 = message
+        .lines()
+        .map(|l| {
+            let len = l.chars().count() as u16;
+            if len == 0 {
+                1
+            } else {
+                (len + inner_w - 1) / inner_w
+            }
+        })
+        .sum();
+    let content_h = estimated_lines.max(1) + 4; // title + message + hint
+    let popup_h = content_h.min(area.height.saturating_sub(2));
+    let x = area.x + (area.width.saturating_sub(popup_w)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_h)) / 2;
+    let popup = Rect {
+        x,
+        y,
+        width: popup_w,
+        height: popup_h,
+    };
+
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Line::from(Span::styled(
+            "Info",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )));
+    let body = Paragraph::new(vec![
+        Line::from(Span::styled(
+            message.to_string(),
+            Style::default().fg(Color::Green),
+        )),
+        Line::from(Span::raw("")),
+        Line::from(Span::styled(
+            "Press Enter or Esc to dismiss",
+            Style::default().fg(Color::Gray),
+        )),
+    ])
+    .wrap(ratatui::widgets::Wrap { trim: true })
+    .block(block);
+    frame.render_widget(body, popup);
+}
+
 // Add Main Menu renderer
 use ratatui::widgets::{List, ListItem};
 
@@ -457,4 +508,116 @@ pub fn draw_connection_list(
         layout[1],
         &mut ratatui::widgets::ListState::default().with_selected(Some(selected_index)),
     );
+}
+
+// ===== SCP Popup =====
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ScpFocusField {
+    LocalPath,
+    RemotePath,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScpForm {
+    pub local_path: String,
+    pub remote_path: String,
+    pub focus: ScpFocusField,
+}
+
+impl ScpForm {
+    pub fn new() -> Self {
+        Self {
+            local_path: String::new(),
+            remote_path: String::new(),
+            focus: ScpFocusField::LocalPath,
+        }
+    }
+
+    pub fn next(&mut self) {
+        self.focus = match self.focus {
+            ScpFocusField::LocalPath => ScpFocusField::RemotePath,
+            ScpFocusField::RemotePath => ScpFocusField::LocalPath,
+        };
+    }
+
+    pub fn prev(&mut self) {
+        self.next();
+    }
+
+    pub fn focused_value_mut(&mut self) -> &mut String {
+        match self.focus {
+            ScpFocusField::LocalPath => &mut self.local_path,
+            ScpFocusField::RemotePath => &mut self.remote_path,
+        }
+    }
+}
+
+pub fn draw_scp_popup(area: Rect, form: &ScpForm, frame: &mut ratatui::Frame<'_>) {
+    let popup_w = area.width.saturating_sub(10).max(40);
+    let popup_h = 9u16.min(area.height.saturating_sub(2)).max(7);
+    let x = area.x + (area.width.saturating_sub(popup_w)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_h)) / 2;
+    let popup = Rect {
+        x,
+        y,
+        width: popup_w,
+        height: popup_h,
+    };
+
+    frame.render_widget(Clear, popup);
+
+    let outer = Block::default()
+        .borders(Borders::ALL)
+        .title(Line::from(Span::styled(
+            "SCP: Send File",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )));
+    frame.render_widget(outer, popup);
+
+    let inner = popup.inner(Margin::new(1, 1));
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // local
+            Constraint::Length(3), // remote
+            Constraint::Length(1), // hint
+        ])
+        .split(inner);
+
+    let mut render_input = |idx: usize, label: &str, value: &str, focused: bool| {
+        let mut block = Block::default().borders(Borders::ALL).title(label);
+        if focused {
+            block = block.border_style(Style::default().fg(Color::Cyan));
+        }
+        let para = Paragraph::new(value.to_string()).block(block);
+        frame.render_widget(para, layout[idx]);
+        if focused {
+            let area_box = layout[idx].inner(Margin::new(1, 1));
+            let cursor_x = area_box.x + value.chars().count() as u16;
+            let cursor_y = area_box.y;
+            frame.set_cursor(cursor_x, cursor_y);
+        }
+    };
+
+    render_input(
+        0,
+        "Local Path",
+        &form.local_path,
+        form.focus == ScpFocusField::LocalPath,
+    );
+    render_input(
+        1,
+        "Remote Path",
+        &form.remote_path,
+        form.focus == ScpFocusField::RemotePath,
+    );
+
+    let hint = Paragraph::new(Line::from(Span::styled(
+        "Enter: Send   Esc: Cancel   Tab/Shift+Tab: Switch Field",
+        Style::default().fg(Color::Gray),
+    )));
+    frame.render_widget(hint, layout[2]);
 }

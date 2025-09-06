@@ -1,5 +1,7 @@
+use std::fs::File;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -172,6 +174,88 @@ impl SshClient {
             let _ = ch.close();
             let _ = ch.wait_close();
         }
+    }
+
+    /// Perform a blocking SCP file upload using a fresh authenticated session
+    pub fn scp_send_file(
+        connection: &Connection,
+        local_path: &str,
+        remote_path: &str,
+    ) -> Result<()> {
+        use std::io::copy;
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+
+        // Connect blocking session
+        let socket_addr = connection
+            .host_port()
+            .parse::<std::net::SocketAddr>()
+            .map_err(|e| AppError::SshConnectionError(format!("Invalid host/port: {}", e)))?;
+        let tcp = std::net::TcpStream::connect_timeout(&socket_addr, Duration::from_secs(10))?;
+        tcp.set_nodelay(true).ok();
+
+        let mut sess = Session::new().map_err(|e| {
+            AppError::SshConnectionError(format!("Failed to create SSH session: {}", e))
+        })?;
+        sess.set_tcp_stream(tcp);
+        sess.handshake().map_err(|e| {
+            AppError::SshConnectionError(format!("Failed to perform SSH handshake: {}", e))
+        })?;
+
+        let user = &connection.username;
+        let pass = &connection.password;
+        let methods_str = sess.auth_methods(user).unwrap_or("");
+        let methods: Vec<&str> = methods_str.split(',').filter(|s| !s.is_empty()).collect();
+        let has_interactive = methods.iter().any(|m| *m == "keyboard-interactive");
+        let has_password = methods.iter().any(|m| *m == "password");
+        if has_interactive || has_password {
+            if has_interactive {
+                let mut prompter = KbdIntPrompter {
+                    password: pass.to_string(),
+                };
+                let _ = sess.userauth_keyboard_interactive(user, &mut prompter);
+            }
+            if !sess.authenticated() && has_password {
+                let _ = sess.userauth_password(user, pass);
+            }
+            if !sess.authenticated() {
+                return Err(AppError::AuthenticationError(
+                    "SSH authentication failed".to_string(),
+                ));
+            }
+        } else {
+            return Err(AppError::AuthenticationError(
+                "SSH authentication failed: no supported authentication methods found".to_string(),
+            ));
+        }
+
+        // Prepare local file and metadata
+        let mut file = File::open(local_path)?;
+        let meta = file.metadata()?;
+        let size = meta.len();
+        let perms_i32: i32 = {
+            #[cfg(unix)]
+            {
+                (meta.permissions().mode() as i32) & 0o777
+            }
+            #[cfg(not(unix))]
+            {
+                0o644
+            }
+        };
+
+        // Start SCP send
+        let remote = Path::new(remote_path);
+        let mut ch = sess
+            .scp_send(remote, perms_i32, size, None)
+            .map_err(|e| AppError::SshConnectionError(format!("SCP send failed: {}", e)))?;
+
+        copy(&mut file, &mut ch)?;
+        let _ = ch.send_eof();
+        let _ = ch.wait_eof();
+        let _ = ch.close();
+        let _ = ch.wait_close();
+        Ok(())
     }
 }
 

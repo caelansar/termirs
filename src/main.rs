@@ -23,8 +23,9 @@ use ratatui::widgets::Block;
 use error::{AppError, Result};
 use ssh_client::SshClient;
 use ui::{
-    ConnectionForm, ConnectionListItem, TerminalState, draw_connection_form, draw_connection_list,
-    draw_error_popup, draw_main_menu, draw_terminal,
+    ConnectionForm, ConnectionListItem, ScpForm, TerminalState, draw_connection_form,
+    draw_connection_list, draw_error_popup, draw_info_popup, draw_main_menu, draw_scp_popup,
+    draw_terminal,
 };
 
 use config::manager::{ConfigManager, Connection};
@@ -54,7 +55,9 @@ pub(crate) enum AppMode {
 pub(crate) struct App {
     pub(crate) mode: AppMode,
     pub(crate) error: Option<AppError>,
+    pub(crate) info: Option<String>,
     pub(crate) config: ConfigManager,
+    pub(crate) scp_form: Option<ScpForm>,
 }
 
 impl App {
@@ -62,7 +65,9 @@ impl App {
         Ok(Self {
             mode: AppMode::MainMenu { selected: 0 },
             error: None,
+            info: None,
             config: ConfigManager::new()?,
+            scp_form: None,
         })
     }
 
@@ -195,6 +200,16 @@ fn main() -> Result<()> {
             // Overlay error popup if any
             if let Some(err) = &app.error {
                 draw_error_popup(size, &err.to_string(), f);
+            }
+
+            // Overlay info popup if any
+            if let Some(msg) = &app.info {
+                draw_info_popup(size, msg, f);
+            }
+
+            // Overlay SCP popup if any
+            if let Some(form) = &app.scp_form {
+                draw_scp_popup(size, form, f);
             }
         })?;
 

@@ -8,6 +8,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crate::config::manager::Connection;
 use crate::error::AppError;
 use crate::ssh_client::SshClient;
+use crate::ui::ScpForm;
 use crate::ui::TerminalState;
 use crate::{App, AppMode};
 
@@ -29,6 +30,64 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) -> KeyFlow {
         match key.code {
             KeyCode::Enter | KeyCode::Esc => {
                 app.error = None;
+            }
+            _ => {}
+        }
+        return KeyFlow::Continue;
+    }
+
+    // If info popup is visible, handle dismissal only
+    if app.info.is_some() {
+        match key.code {
+            KeyCode::Enter | KeyCode::Esc => {
+                app.info = None;
+            }
+            _ => {}
+        }
+        return KeyFlow::Continue;
+    }
+
+    // If SCP popup is visible, handle its input
+    if let Some(form) = &mut app.scp_form {
+        match key.code {
+            KeyCode::Esc => {
+                app.scp_form = None;
+            }
+            KeyCode::Tab | KeyCode::Down => {
+                form.next();
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                form.prev();
+            }
+            KeyCode::Enter => {
+                let submitted = form.clone();
+                app.scp_form = None;
+                let local = submitted.local_path.trim().to_string();
+                let remote = submitted.remote_path.trim().to_string();
+                if local.is_empty() || remote.is_empty() {
+                    app.error = Some(AppError::ValidationError(
+                        "Local and remote path are required".into(),
+                    ));
+                    return KeyFlow::Continue;
+                }
+                let conn = app.config.connections()[current_selected(app)].clone();
+                match SshClient::scp_send_file(&conn, &local, &remote) {
+                    Ok(_) => {
+                        app.info =
+                            Some(format!("SCP upload completed from {} to {}", local, remote));
+                    }
+                    Err(e) => {
+                        app.error = Some(e);
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                let s = form.focused_value_mut();
+                s.pop();
+            }
+            KeyCode::Char(ch) => {
+                let s = form.focused_value_mut();
+                s.push(ch);
             }
             _ => {}
         }
@@ -131,6 +190,9 @@ fn handle_connection_list_key(app: &mut App, key: KeyEvent) -> KeyFlow {
         return KeyFlow::Continue;
     }
     match key.code {
+        KeyCode::Char('s') | KeyCode::Char('S') => {
+            app.scp_form = Some(ScpForm::new());
+        }
         KeyCode::Char('k') | KeyCode::Up => {
             if let AppMode::ConnectionList { selected } = &mut app.mode {
                 *selected = if *selected == 0 {
