@@ -153,9 +153,10 @@ fn main() -> Result<()> {
                         AppMode::Form { form } => {
                             match key.code {
                                 KeyCode::Esc => {
+                                    // restore terminal
                                     disable_raw_mode().ok();
                                     execute!(
-                                        std::io::stdout(),
+                                        terminal.backend_mut(),
                                         LeaveAlternateScreen,
                                         DisableMouseCapture
                                     )
@@ -219,7 +220,7 @@ fn main() -> Result<()> {
                                             }
                                         }
                                         Err(msg) => {
-                                            form.error = Some(msg);
+                                            app.error = Some(AppError::FormValidationError(msg));
                                         }
                                     }
                                 }

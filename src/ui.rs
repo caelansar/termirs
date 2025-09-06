@@ -267,14 +267,6 @@ pub fn draw_connection_form(area: Rect, form: &ConnectionForm, frame: &mut ratat
         false,
         form.focus == FocusField::DisplayName,
     );
-
-    if let Some(err) = &form.error {
-        let err_line = Paragraph::new(Line::from(Span::styled(
-            err.clone(),
-            Style::default().fg(Color::Red),
-        )));
-        frame.render_widget(err_line, layout[6]);
-    }
 }
 
 // Error popup renderer
