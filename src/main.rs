@@ -9,10 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use chrono::Local;
-use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
-    MouseEvent, MouseEventKind,
-};
+use crossterm::event::{self, DisableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -87,7 +84,7 @@ fn main() -> Result<()> {
     // Setup Crossterm terminal
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen, DisableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -663,6 +660,28 @@ fn main() -> Result<()> {
                                 }
                                 client.write_all(&[0x04])?;
                             }
+                            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                if let Ok(mut guard) = state.lock() {
+                                    if guard.parser.screen().scrollback() > 0 {
+                                        guard.scroll_to_bottom();
+                                    }
+                                }
+                                client.write_all(&[0x15])?;
+                            }
+                            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                if let AppMode::Connected { state, .. } = &mut app.mode {
+                                    if let Ok(mut guard) = state.lock() {
+                                        guard.scroll_by(-1);
+                                    }
+                                }
+                            }
+                            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                if let AppMode::Connected { state, .. } = &mut app.mode {
+                                    if let Ok(mut guard) = state.lock() {
+                                        guard.scroll_by(1);
+                                    }
+                                }
+                            }
                             KeyCode::Char(ch_) => {
                                 if let Ok(mut guard) = state.lock() {
                                     if guard.parser.screen().scrollback() > 0 {
@@ -697,26 +716,6 @@ fn main() -> Result<()> {
                     AppMode::MainMenu { .. } => {}
                     AppMode::ConnectionList { .. } => {}
                 },
-                Event::Mouse(MouseEvent {
-                    kind: MouseEventKind::ScrollDown,
-                    ..
-                }) => {
-                    if let AppMode::Connected { state, .. } = &mut app.mode {
-                        if let Ok(mut guard) = state.lock() {
-                            guard.scroll_by(-3);
-                        }
-                    }
-                }
-                Event::Mouse(MouseEvent {
-                    kind: MouseEventKind::ScrollUp,
-                    ..
-                }) => {
-                    if let AppMode::Connected { state, .. } = &mut app.mode {
-                        if let Ok(mut guard) = state.lock() {
-                            guard.scroll_by(3);
-                        }
-                    }
-                }
                 Event::Resize(_, _) => {}
                 _ => {}
             }
