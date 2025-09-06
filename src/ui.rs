@@ -276,3 +276,54 @@ pub fn draw_connection_form(area: Rect, form: &ConnectionForm, frame: &mut ratat
         frame.render_widget(err_line, layout[6]);
     }
 }
+
+// Error popup renderer
+use ratatui::widgets::Clear;
+
+pub fn draw_error_popup(area: Rect, message: &str, frame: &mut ratatui::Frame<'_>) {
+    let popup_w = area.width.saturating_sub(4);
+    let inner_w = popup_w.saturating_sub(2).max(1);
+    let estimated_lines: u16 = message
+        .lines()
+        .map(|l| {
+            let len = l.chars().count() as u16;
+            if len == 0 {
+                1
+            } else {
+                (len + inner_w - 1) / inner_w
+            }
+        })
+        .sum();
+    let content_h = estimated_lines.max(1) + 4; // title + message + hint
+    let popup_h = content_h.min(area.height.saturating_sub(2));
+    let x = area.x + (area.width.saturating_sub(popup_w)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_h)) / 2;
+    let popup = Rect {
+        x,
+        y,
+        width: popup_w,
+        height: popup_h,
+    };
+
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Line::from(Span::styled(
+            "Error",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )));
+    let body = Paragraph::new(vec![
+        Line::from(Span::styled(
+            message.to_string(),
+            Style::default().fg(Color::Red),
+        )),
+        Line::from(Span::raw("")),
+        Line::from(Span::styled(
+            "Press Enter or Esc to dismiss",
+            Style::default().fg(Color::Gray),
+        )),
+    ])
+    .wrap(ratatui::widgets::Wrap { trim: true })
+    .block(block);
+    frame.render_widget(body, popup);
+}

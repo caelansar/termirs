@@ -19,10 +19,7 @@ impl SshClient {
             .parse::<SocketAddr>()
             .map_err(|e| AppError::SshConnectionError(format!("Invalid host/port: {}", e)))?;
 
-        let tcp =
-            TcpStream::connect_timeout(&socket_addr, Duration::from_secs(10)).map_err(|e| {
-                AppError::SshConnectionError(format!("Failed to connect to SSH host: {}", e))
-            })?;
+        let tcp = TcpStream::connect_timeout(&socket_addr, Duration::from_secs(10))?;
         tcp.set_nodelay(true).ok();
 
         let mut sess = Session::new().map_err(|e| {

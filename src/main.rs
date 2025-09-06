@@ -22,14 +22,14 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::Block;
 
-use error::Result;
+use error::{AppError, Result};
 use ssh_client::SshClient;
-use ui::{ConnectionForm, TerminalState, draw_connection_form, draw_terminal};
+use ui::{ConnectionForm, TerminalState, draw_connection_form, draw_error_popup, draw_terminal};
 
 #[derive(Clone)]
 enum AppMode {
     Form {
-        data: ConnectionForm,
+        form: ConnectionForm,
     },
     Connected {
         client: SshClient,
@@ -37,22 +37,28 @@ enum AppMode {
     },
 }
 
+/// App is the main application
 struct App {
     mode: AppMode,
+    error: Option<AppError>,
 }
 
 impl App {
     fn new() -> Self {
         Self {
             mode: AppMode::Form {
-                data: ConnectionForm::new(),
+                form: ConnectionForm::new(),
             },
+            error: None,
         }
     }
 
     fn go_to_connected(&mut self, client: SshClient, state: Arc<Mutex<TerminalState>>) {
         self.mode = AppMode::Connected { client, state };
     }
+
+    #[allow(dead_code)]
+    fn go_to_main_menu(&mut self) {}
 }
 
 fn main() -> Result<()> {
@@ -70,10 +76,11 @@ fn main() -> Result<()> {
     let tick_rate = Duration::from_millis(10);
 
     loop {
+        // main entry point for drawing to the terminal
         terminal.draw(|f| {
             let size = f.size();
             match &app.mode {
-                AppMode::Form { data: form } => {
+                AppMode::Form { form } => {
                     let layout = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([Constraint::Length(3), Constraint::Min(1)])
@@ -119,14 +126,31 @@ fn main() -> Result<()> {
                     }
                 }
             }
+
+            // Overlay error popup if any
+            if let Some(err) = &app.error {
+                draw_error_popup(size, &err.to_string(), f);
+            }
         })?;
 
         // Input handling
         while crossterm::event::poll(Duration::from_millis(1))? {
+            // true guarantees that read function call won't block.
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    // If error popup is visible, handle dismissal only
+                    if app.error.is_some() {
+                        match key.code {
+                            KeyCode::Enter | KeyCode::Esc => {
+                                app.error = None;
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
                     match &mut app.mode {
-                        AppMode::Form { data: form } => {
+                        AppMode::Form { form } => {
                             match key.code {
                                 KeyCode::Esc => {
                                     disable_raw_mode().ok();
@@ -190,7 +214,7 @@ fn main() -> Result<()> {
                                                     app.go_to_connected(client, state);
                                                 }
                                                 Err(e) => {
-                                                    form.error = Some(format!("{}", e));
+                                                    app.error = Some(e);
                                                 }
                                             }
                                         }
@@ -268,7 +292,7 @@ fn main() -> Result<()> {
                     }
                 }
                 Event::Paste(data) => match &mut app.mode {
-                    AppMode::Form { data: form } => {
+                    AppMode::Form { form } => {
                         let s = form.focused_value_mut();
                         s.push_str(&data);
                     }
