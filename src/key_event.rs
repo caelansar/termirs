@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -62,6 +62,19 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) -> KeyFlow {
                 app.dropdown = None;
             }
         }
+    }
+
+    // If SCP progress is visible, handle cancellation
+    if app.scp_progress.is_some() {
+        match key.code {
+            KeyCode::Esc => {
+                app.scp_progress = None;
+                app.scp_receiver = None; // Clean up the receiver
+                app.info = Some("SCP transfer cancelled".to_string());
+            }
+            _ => {}
+        }
+        return KeyFlow::Continue;
     }
 
     // If error popup is visible, handle dismissal only
@@ -142,15 +155,43 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) -> KeyFlow {
                     return KeyFlow::Continue;
                 }
                 if let Some(conn) = app.config.connections().get(current_selected(app)) {
-                    match SshClient::scp_send_file(conn, &local, &remote) {
-                        Ok(_) => {
-                            app.info =
-                                Some(format!("SCP upload completed from {} to {}", local, remote));
-                        }
-                        Err(e) => {
-                            app.error = Some(e);
-                        }
-                    }
+                    // Create channel for communication with background thread
+                    let (sender, receiver) = mpsc::channel();
+
+                    // Start SCP transfer in background and show progress
+                    let connection_name = conn.display_name.clone();
+                    app.scp_progress = Some(crate::ScpProgress::new(
+                        local.clone(),
+                        remote.clone(),
+                        connection_name,
+                    ));
+                    app.scp_receiver = Some(receiver);
+                    app.scp_form = None; // Hide the form
+
+                    // Start background transfer
+                    let conn_clone = conn.clone();
+                    let local_clone = local.clone();
+                    let remote_clone = remote.clone();
+
+                    thread::spawn(move || {
+                        // Perform the actual SCP transfer
+                        let result = match SshClient::scp_send_file(
+                            &conn_clone,
+                            &local_clone,
+                            &remote_clone,
+                        ) {
+                            Ok(_) => crate::ScpResult::Success {
+                                local_path: local_clone,
+                                remote_path: remote_clone,
+                            },
+                            Err(e) => crate::ScpResult::Error {
+                                error: e.to_string(),
+                            },
+                        };
+
+                        // Send result back to main thread
+                        let _ = sender.send(result);
+                    });
                 }
             }
             KeyCode::Backspace => {

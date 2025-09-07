@@ -4,7 +4,7 @@ mod key_event;
 mod ssh_client;
 mod ui;
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use chrono::Local;
@@ -25,10 +25,22 @@ use ssh_client::SshClient;
 use ui::{
     ConnectionForm, ConnectionListItem, DropdownState, ScpForm, TerminalState,
     draw_connection_form, draw_connection_list, draw_dropdown, draw_error_popup, draw_info_popup,
-    draw_main_menu, draw_scp_popup, draw_terminal,
+    draw_main_menu, draw_scp_popup, draw_scp_progress_popup, draw_terminal,
 };
 
 use config::manager::{ConfigManager, Connection};
+
+/// Result of SCP transfer operation
+#[derive(Debug, Clone)]
+pub(crate) enum ScpResult {
+    Success {
+        local_path: String,
+        remote_path: String,
+    },
+    Error {
+        error: String,
+    },
+}
 
 #[derive(Clone)]
 pub(crate) enum AppMode {
@@ -51,6 +63,42 @@ pub(crate) enum AppMode {
     },
 }
 
+/// SCP transfer progress state
+#[derive(Clone, Debug)]
+pub(crate) struct ScpProgress {
+    pub(crate) local_path: String,
+    pub(crate) remote_path: String,
+    pub(crate) connection_name: String,
+    pub(crate) start_time: std::time::Instant,
+    pub(crate) spinner_state: usize, // For rotating spinner animation
+}
+
+impl ScpProgress {
+    pub(crate) fn new(local_path: String, remote_path: String, connection_name: String) -> Self {
+        Self {
+            local_path,
+            remote_path,
+            connection_name,
+            start_time: std::time::Instant::now(),
+            spinner_state: 0,
+        }
+    }
+
+    pub(crate) fn next_spinner_frame(&mut self) {
+        self.spinner_state = (self.spinner_state + 1) % 4;
+    }
+
+    pub(crate) fn get_spinner_char(&self) -> char {
+        match self.spinner_state {
+            0 => '|',
+            1 => '/',
+            2 => '-',
+            3 => '\\',
+            _ => '|',
+        }
+    }
+}
+
 /// App is the main application
 pub(crate) struct App {
     pub(crate) mode: AppMode,
@@ -59,6 +107,8 @@ pub(crate) struct App {
     pub(crate) config: ConfigManager,
     pub(crate) scp_form: Option<ScpForm>,
     pub(crate) dropdown: Option<DropdownState>,
+    pub(crate) scp_progress: Option<ScpProgress>,
+    pub(crate) scp_receiver: Option<mpsc::Receiver<ScpResult>>,
 }
 
 impl App {
@@ -70,6 +120,8 @@ impl App {
             config: ConfigManager::new()?,
             scp_form: None,
             dropdown: None,
+            scp_progress: None,
+            scp_receiver: None,
         })
     }
 
@@ -226,6 +278,11 @@ fn main() -> Result<()> {
             if let Some(dropdown) = &app.dropdown {
                 draw_dropdown(dropdown, f);
             }
+
+            // Overlay SCP progress if any
+            if let Some(progress) = &app.scp_progress {
+                draw_scp_progress_popup(size, progress, f);
+            }
         })?;
 
         // Input handling
@@ -253,8 +310,51 @@ fn main() -> Result<()> {
             }
         }
 
+        // Check for SCP results from background thread
+        if let Some(receiver) = &app.scp_receiver {
+            match receiver.try_recv() {
+                Ok(result) => {
+                    // Clear progress and receiver
+                    app.scp_progress = None;
+                    app.scp_receiver = None;
+
+                    // Handle the result
+                    match result {
+                        ScpResult::Success {
+                            local_path,
+                            remote_path,
+                        } => {
+                            app.info = Some(format!(
+                                "SCP upload completed from {} to {}",
+                                local_path, remote_path
+                            ));
+                        }
+                        ScpResult::Error { error } => {
+                            app.error = Some(AppError::SshConnectionError(error));
+                        }
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    // No result yet, continue waiting
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    // Thread ended without sending result (shouldn't happen)
+                    app.scp_progress = None;
+                    app.scp_receiver = None;
+                    app.error = Some(AppError::SshConnectionError(
+                        "SCP transfer thread disconnected unexpectedly".to_string(),
+                    ));
+                }
+            }
+        }
+
         if last_tick.elapsed() >= tick_rate {
             last_tick = Instant::now();
+
+            // Update spinner animation for SCP progress
+            if let Some(progress) = &mut app.scp_progress {
+                progress.next_spinner_frame();
+            }
         }
     }
 }
