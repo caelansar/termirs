@@ -3,7 +3,9 @@ use std::time::Instant;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{
+    Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 use vt100::{Color as VtColor, Parser};
 
 pub struct TerminalState {
@@ -563,10 +565,12 @@ pub struct DropdownState {
     pub anchor_rect: Rect,    // The input field this dropdown is anchored to
     pub scroll_offset: usize, // Track the scroll position
     pub max_visible_items: usize, // Maximum items to show at once
+    pub scrollbar_state: ScrollbarState, // State for the scrollbar widget
 }
 
 impl DropdownState {
     pub fn new(options: Vec<String>, anchor_rect: Rect) -> Self {
+        let content_length = options.len();
         Self {
             options,
             selected: 0,
@@ -574,6 +578,7 @@ impl DropdownState {
             anchor_rect,
             scroll_offset: 0,
             max_visible_items: 8, // Default to 8 visible items
+            scrollbar_state: ScrollbarState::new(content_length).position(0),
         }
     }
 
@@ -609,14 +614,13 @@ impl DropdownState {
         else if self.selected >= self.scroll_offset + self.max_visible_items {
             self.scroll_offset = self.selected.saturating_sub(self.max_visible_items - 1);
         }
+
+        // Update scrollbar state to reflect current position
+        self.scrollbar_state = self.scrollbar_state.position(self.selected);
     }
 
     pub fn get_selected(&self) -> Option<&String> {
         self.options.get(self.selected)
-    }
-
-    pub fn hide(&mut self) {
-        self.visible = false;
     }
 }
 
@@ -644,6 +648,36 @@ pub fn draw_dropdown(dropdown: &DropdownState, frame: &mut ratatui::Frame<'_>) {
     // Clear the area first
     frame.render_widget(Clear, dropdown_rect);
 
+    // Split the dropdown area to make room for scrollbar if needed
+    let show_scrollbar = dropdown.options.len() > dropdown.max_visible_items;
+    let (list_area, scrollbar_area) = if show_scrollbar {
+        // Get the inner area (inside borders) first
+        let inner_area = Rect {
+            x: dropdown_rect.x + 1,
+            y: dropdown_rect.y + 1,
+            width: dropdown_rect.width.saturating_sub(2),
+            height: dropdown_rect.height.saturating_sub(2),
+        };
+
+        // Reserve 1 column for scrollbar on the right inside the borders
+        let list_area = Rect {
+            x: dropdown_rect.x,
+            y: dropdown_rect.y,
+            width: dropdown_rect.width.saturating_sub(1), // Make room for scrollbar
+            height: dropdown_rect.height,
+        };
+
+        let scrollbar_area = Rect {
+            x: inner_area.x + inner_area.width.saturating_sub(1), // Position inside right border
+            y: inner_area.y,
+            width: 1,
+            height: inner_area.height,
+        };
+        (list_area, Some(scrollbar_area))
+    } else {
+        (dropdown_rect, None)
+    };
+
     // Get the visible slice of options based on scroll offset
     let end_index =
         (dropdown.scroll_offset + dropdown.max_visible_items).min(dropdown.options.len());
@@ -667,32 +701,12 @@ pub fn draw_dropdown(dropdown: &DropdownState, frame: &mut ratatui::Frame<'_>) {
         })
         .collect();
 
-    // Create title with scroll indicators
-    let title = if dropdown.options.len() > dropdown.max_visible_items {
-        let has_more_above = dropdown.scroll_offset > 0;
-        let has_more_below =
-            dropdown.scroll_offset + dropdown.max_visible_items < dropdown.options.len();
-
-        let scroll_indicator = match (has_more_above, has_more_below) {
-            (true, true) => " ↑↓",
-            (true, false) => " ↑",
-            (false, true) => " ↓",
-            (false, false) => "",
-        };
-
-        format!(
-            "Options ({}/{}){}",
-            dropdown.selected + 1,
-            dropdown.options.len(),
-            scroll_indicator
-        )
-    } else {
-        format!(
-            "Options ({}/{})",
-            dropdown.selected + 1,
-            dropdown.options.len()
-        )
-    };
+    // Create title - simpler now since we have visual scrollbar
+    let title = format!(
+        "Options ({}/{})",
+        dropdown.selected + 1,
+        dropdown.options.len()
+    );
 
     // Create the list widget
     let list = List::new(list_items).block(
@@ -702,7 +716,24 @@ pub fn draw_dropdown(dropdown: &DropdownState, frame: &mut ratatui::Frame<'_>) {
             .title(title),
     );
 
-    frame.render_widget(list, dropdown_rect);
+    frame.render_widget(list, list_area);
+
+    // Render scrollbar if needed
+    if let Some(scrollbar_area) = scrollbar_area {
+        let scrollbar = Scrollbar::default()
+            .orientation(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None) // Remove symbols to fit better inside borders
+            .end_symbol(None)
+            .track_symbol(Some("│"))
+            .thumb_symbol("█")
+            .style(Style::default().fg(Color::Cyan));
+
+        frame.render_stateful_widget(
+            scrollbar,
+            scrollbar_area,
+            &mut dropdown.scrollbar_state.clone(),
+        );
+    }
 }
 
 pub fn draw_scp_popup(area: Rect, form: &ScpForm, frame: &mut ratatui::Frame<'_>) -> (Rect, Rect) {
