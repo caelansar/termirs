@@ -219,7 +219,6 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) -> KeyFlow {
     }
 
     match &mut app.mode {
-        AppMode::MainMenu { .. } => handle_main_menu_key(app, key),
         AppMode::ConnectionList { .. } => handle_connection_list_key(app, key),
         AppMode::FormNew { .. } => handle_form_new_key(app, key),
         AppMode::FormEdit { .. } => handle_form_edit_key(app, key),
@@ -248,72 +247,18 @@ pub fn handle_paste_event(app: &mut App, data: &str) {
                 app.error = Some(e);
             }
         }
-        AppMode::MainMenu { .. } => {}
         AppMode::ConnectionList { .. } => {}
     }
 }
 
-fn handle_main_menu_key(app: &mut App, key: KeyEvent) -> KeyFlow {
-    const NUM_ITEMS: usize = 3;
+fn handle_connection_list_key(app: &mut App, key: KeyEvent) -> KeyFlow {
+    let len = app.config.connections().len();
     match key.code {
-        KeyCode::Char('k') | KeyCode::Up => {
-            if let AppMode::MainMenu { selected } = &mut app.mode {
-                *selected = if *selected == 0 {
-                    NUM_ITEMS - 1
-                } else {
-                    *selected - 1
-                };
-            }
-        }
-        KeyCode::Char('j') | KeyCode::Down => {
-            if let AppMode::MainMenu { selected } = &mut app.mode {
-                *selected = (*selected + 1) % NUM_ITEMS;
-            }
-        }
-        KeyCode::Char('v') | KeyCode::Char('V') => {
-            app.mode = AppMode::ConnectionList { selected: 0 };
-        }
         KeyCode::Char('n') | KeyCode::Char('N') => {
             app.mode = AppMode::FormNew {
                 form: crate::ui::ConnectionForm::new(),
             };
         }
-        KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
-            return KeyFlow::Quit;
-        }
-        KeyCode::Enter => {
-            if let AppMode::MainMenu { selected } = &mut app.mode {
-                match *selected {
-                    0 => {
-                        app.mode = AppMode::ConnectionList { selected: 0 };
-                    }
-                    1 => {
-                        app.mode = AppMode::FormNew {
-                            form: crate::ui::ConnectionForm::new(),
-                        };
-                    }
-                    2 => {
-                        return KeyFlow::Quit;
-                    }
-                    _ => {}
-                }
-            }
-        }
-        _ => {}
-    }
-    KeyFlow::Continue
-}
-
-fn handle_connection_list_key(app: &mut App, key: KeyEvent) -> KeyFlow {
-    let len = app.config.connections().len();
-    if len == 0 {
-        match key.code {
-            KeyCode::Esc => app.go_to_main_menu(),
-            _ => {}
-        }
-        return KeyFlow::Continue;
-    }
-    match key.code {
         KeyCode::Char('s') | KeyCode::Char('S') => {
             app.scp_form = Some(ScpForm::new());
         }
@@ -399,7 +344,7 @@ fn handle_connection_list_key(app: &mut App, key: KeyEvent) -> KeyFlow {
             }
         }
         KeyCode::Esc => {
-            app.go_to_main_menu();
+            return KeyFlow::Quit;
         }
         _ => {}
     }
@@ -409,7 +354,7 @@ fn handle_connection_list_key(app: &mut App, key: KeyEvent) -> KeyFlow {
 fn handle_form_new_key(app: &mut App, key: KeyEvent) -> KeyFlow {
     match key.code {
         KeyCode::Esc => {
-            app.go_to_main_menu();
+            app.go_to_connection_list();
         }
         KeyCode::Tab | KeyCode::Down => {
             if let AppMode::FormNew { form } = &mut app.mode {

@@ -25,7 +25,7 @@ use ssh_client::SshClient;
 use ui::{
     ConnectionForm, ConnectionListItem, DropdownState, ScpForm, TerminalState,
     draw_connection_form, draw_connection_list, draw_dropdown, draw_error_popup, draw_info_popup,
-    draw_main_menu, draw_scp_popup, draw_scp_progress_popup, draw_terminal,
+    draw_scp_popup, draw_scp_progress_popup, draw_terminal,
 };
 
 use config::manager::{ConfigManager, Connection};
@@ -44,9 +44,6 @@ pub(crate) enum ScpResult {
 
 #[derive(Clone)]
 pub(crate) enum AppMode {
-    MainMenu {
-        selected: usize,
-    },
     ConnectionList {
         selected: usize,
     },
@@ -120,7 +117,7 @@ pub(crate) struct App {
 impl App {
     fn new() -> Result<Self> {
         Ok(Self {
-            mode: AppMode::MainMenu { selected: 0 },
+            mode: AppMode::ConnectionList { selected: 0 },
             error: None,
             info: None,
             config: ConfigManager::new()?,
@@ -133,10 +130,6 @@ impl App {
 
     pub(crate) fn go_to_connected(&mut self, client: SshClient, state: Arc<Mutex<TerminalState>>) {
         self.mode = AppMode::Connected { client, state };
-    }
-
-    pub(crate) fn go_to_main_menu(&mut self) {
-        self.mode = AppMode::MainMenu { selected: 0 };
     }
 
     pub(crate) fn go_to_connection_list(&mut self) {
@@ -163,10 +156,6 @@ fn main() -> Result<()> {
         terminal.draw(|f| {
             let size = f.size();
             match &app.mode {
-                AppMode::MainMenu { selected } => {
-                    let conns = app.config.connections();
-                    draw_main_menu(size, *selected, conns.len(), f);
-                }
                 AppMode::ConnectionList { selected } => {
                     let conns = app.config.connections();
                     let title = format!("Saved Connections ({} connections)", conns.len());
