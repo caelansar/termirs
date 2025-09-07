@@ -39,6 +39,14 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) -> KeyFlow {
                 dropdown.prev();
                 return KeyFlow::Continue;
             }
+            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                dropdown.next();
+                return KeyFlow::Continue;
+            }
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                dropdown.prev();
+                return KeyFlow::Continue;
+            }
             KeyCode::Enter => {
                 // Select the current option and apply it to the focused field
                 if let Some(selected_option) = dropdown.get_selected().cloned() {
@@ -115,7 +123,9 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) -> KeyFlow {
                                 form.local_path = completed;
                             } else {
                                 // Show dropdown with available options when no change
-                                if let Some(options) = list_completion_options(&current) {
+                                if let Some(options) = list_completion_options(&current)
+                                    && options.len() > 1
+                                {
                                     // We need to calculate the anchor rect for the dropdown
                                     // For now, we'll use a placeholder rect - this will be updated in the UI rendering
                                     let anchor_rect = ratatui::layout::Rect {
@@ -130,7 +140,7 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) -> KeyFlow {
                             }
                         }
                         None => {
-                            app.info = Some("No matches found".to_string());
+                            // app.info = Some("No matches found".to_string());
                         }
                     }
                 } else {
