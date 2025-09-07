@@ -175,7 +175,7 @@ impl ConfigManager {
         let home_dir = std::env::var("HOME")
             .map_err(|_| AppError::ConfigError("HOME environment variable not set".to_string()))?;
 
-        let config_dir = Path::new(&home_dir).join(".config").join("termirs1");
+        let config_dir = Path::new(&home_dir).join(".config").join("termirs");
 
         // Create config directory if it doesn't exist
         if !config_dir.exists() {

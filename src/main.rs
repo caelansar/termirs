@@ -71,6 +71,7 @@ pub(crate) struct ScpProgress {
     pub(crate) connection_name: String,
     pub(crate) start_time: std::time::Instant,
     pub(crate) spinner_state: usize, // For rotating spinner animation
+    pub(crate) tick_counter: usize,  // Counter to slow down spinner updates
 }
 
 impl ScpProgress {
@@ -81,11 +82,16 @@ impl ScpProgress {
             connection_name,
             start_time: std::time::Instant::now(),
             spinner_state: 0,
+            tick_counter: 0,
         }
     }
 
-    pub(crate) fn next_spinner_frame(&mut self) {
-        self.spinner_state = (self.spinner_state + 1) % 4;
+    pub(crate) fn tick(&mut self) {
+        self.tick_counter += 1;
+        // Update spinner every 20 ticks (200ms at 10ms tick rate)
+        if self.tick_counter % 20 == 0 {
+            self.spinner_state = (self.spinner_state + 1) % 4;
+        }
     }
 
     pub(crate) fn get_spinner_char(&self) -> char {
@@ -353,7 +359,7 @@ fn main() -> Result<()> {
 
             // Update spinner animation for SCP progress
             if let Some(progress) = &mut app.scp_progress {
-                progress.next_spinner_frame();
+                progress.tick();
             }
         }
     }

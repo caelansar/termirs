@@ -175,6 +175,7 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) -> KeyFlow {
 
                     thread::spawn(move || {
                         // Perform the actual SCP transfer
+                        // thread::sleep(Duration::from_secs(5)); // for testing - simulate transfer time
                         let result = match SshClient::scp_send_file(
                             &conn_clone,
                             &local_clone,
