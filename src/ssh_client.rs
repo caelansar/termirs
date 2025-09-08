@@ -1,13 +1,14 @@
+use std::env;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ssh2::{Channel, KeyboardInteractivePrompt, Prompt, Session};
 
-use crate::config::manager::Connection;
+use crate::config::manager::{AuthMethod, Connection};
 use crate::error::{AppError, Result};
 
 struct KbdIntPrompter {
@@ -41,10 +42,6 @@ pub struct SshClient {
 
 impl SshClient {
     pub fn connect(connection: &Connection) -> Result<Self> {
-        Self::connect_raw(connection)
-    }
-
-    pub fn connect_raw(connection: &Connection) -> Result<Self> {
         let sess = Self::make_session(connection)?;
 
         let mut channel = sess.channel_session().map_err(|e| {
@@ -106,10 +103,49 @@ impl SshClient {
         Ok(())
     }
 
+    fn try_publickey_auth(
+        sess: &Session,
+        username: &str,
+        private_key_path: &str,
+        passphrase: Option<&str>,
+    ) -> bool {
+        let key_path = if private_key_path.starts_with("~/") {
+            if let Some(home) = env::var_os("HOME") {
+                PathBuf::from(home).join(&private_key_path[2..])
+            } else {
+                return false;
+            }
+        } else {
+            PathBuf::from(private_key_path)
+        };
+
+        // 1) Try without a passphrase first (works for unencrypted keys)
+        if sess
+            .userauth_pubkey_file(username, None, &key_path, None)
+            .is_ok()
+        {
+            if sess.authenticated() {
+                return true;
+            }
+        }
+
+        // 2) If that failed and we have a passphrase, try with it
+        if let Some(pp) = passphrase {
+            if sess
+                .userauth_pubkey_file(username, None, &key_path, Some(pp))
+                .is_ok()
+            {
+                if sess.authenticated() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     pub fn make_session(connection: &Connection) -> Result<Session> {
         let host = connection.host_port();
         let user = &connection.username;
-        let pass = &connection.password;
 
         // Parse the host and port into a socket address
         let socket_addr = host
@@ -134,14 +170,17 @@ impl SshClient {
         let has_password = methods.iter().any(|m| *m == "password");
 
         if has_interactive || has_password {
-            if has_interactive {
-                let mut prompter = KbdIntPrompter {
-                    password: pass.to_string(),
-                };
-                let _ = sess.userauth_keyboard_interactive(user, &mut prompter);
-            }
-            if !sess.authenticated() && has_password {
-                let _ = sess.userauth_password(user, pass);
+            // Extract password from auth_method if it's a password authentication
+            if let AuthMethod::Password(password) = &connection.auth_method {
+                if has_interactive {
+                    let mut prompter = KbdIntPrompter {
+                        password: password.clone(),
+                    };
+                    let _ = sess.userauth_keyboard_interactive(user, &mut prompter);
+                }
+                if !sess.authenticated() && has_password {
+                    let _ = sess.userauth_password(user, password);
+                }
             }
             if !sess.authenticated() {
                 return Err(AppError::AuthenticationError(
@@ -149,9 +188,31 @@ impl SshClient {
                 ));
             }
         } else {
-            return Err(AppError::AuthenticationError(
-                "SSH authentication failed: no supported authentication methods found".to_string(),
-            ));
+            if methods.iter().any(|m| *m == "publickey") {
+                if let AuthMethod::PublicKey {
+                    private_key_path,
+                    passphrase,
+                } = &connection.auth_method
+                {
+                    if !Self::try_publickey_auth(
+                        &sess,
+                        user,
+                        private_key_path,
+                        passphrase.as_deref(),
+                    ) {
+                        return Err(AppError::AuthenticationError(
+                            "SSH publickey authentication failed".to_string(),
+                        ));
+                    } else {
+                        return Ok(sess);
+                    }
+                }
+            }
+
+            return Err(AppError::AuthenticationError(format!(
+                "SSH authentication failed: no supported authentication methods found, methods: {}",
+                methods_str
+            )));
         }
 
         if !sess.authenticated() {
@@ -228,6 +289,8 @@ impl SshClient {
 
 #[cfg(test)]
 mod tests {
+    use crate::config::manager::AuthMethod;
+
     use super::*;
 
     #[test]
@@ -237,7 +300,24 @@ mod tests {
             "127.0.0.1".to_string(),
             2222,
             "dockeruser".to_string(),
-            "dockerpass".to_string(),
+            AuthMethod::Password("dockerpass".to_string()),
+        );
+        let client = SshClient::connect(&conn).unwrap();
+        client.close();
+    }
+
+    #[test]
+    #[ignore = "requires a running orbstack ssh server"]
+    fn test_connect_orbstack() {
+        // https://docs.orbstack.dev/machines/ssh#connection-details
+        let conn = Connection::new(
+            "127.0.0.1".to_string(),
+            32222,
+            "default".to_string(),
+            AuthMethod::PublicKey {
+                private_key_path: "~/.orbstack/ssh/id_ed25519".to_string(),
+                passphrase: None,
+            },
         );
         let client = SshClient::connect(&conn).unwrap();
         client.close();

@@ -10,6 +10,7 @@ use std::time::Duration;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::prelude::Backend;
 
+use crate::config::manager::AuthMethod;
 use crate::config::manager::Connection;
 use crate::error::AppError;
 use crate::ssh_client::SshClient;
@@ -391,7 +392,7 @@ fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> K
                             form.host.trim().to_string(),
                             form.port.parse::<u16>().unwrap_or(22),
                             user,
-                            pass,
+                            AuthMethod::Password(pass),
                         );
                         if !form.display_name.trim().is_empty() {
                             conn.set_display_name(form.display_name.trim().to_string());
@@ -497,7 +498,11 @@ fn handle_form_edit_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
                 }
 
                 let new_password = if form.password.is_empty() {
-                    original.password.clone()
+                    // Extract password from original connection's auth_method
+                    match &original.auth_method {
+                        AuthMethod::Password(password) => password.clone(),
+                        _ => String::new(), // Default to empty if not password auth
+                    }
                 } else {
                     form.password.clone()
                 };
@@ -506,7 +511,7 @@ fn handle_form_edit_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
                 updated.host = form.host.trim().to_string();
                 updated.port = parsed_port;
                 updated.username = form.username.trim().to_string();
-                updated.password = new_password;
+                updated.auth_method = AuthMethod::Password(new_password);
                 updated.display_name = form.display_name.trim().to_string();
 
                 if let Err(e) = updated.validate() {

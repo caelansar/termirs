@@ -391,6 +391,8 @@ pub struct ConnectionListItem<'a> {
     pub port: u16,
     pub username: &'a str,
     pub created_at: String,
+    pub auth_method: &'a str,
+    pub last_used: Option<String>,
 }
 
 pub fn draw_connection_list(
@@ -437,7 +439,16 @@ pub fn draw_connection_list(
             Span::raw("  Created: "),
             Span::styled(it.created_at.clone(), Style::default().fg(Color::Gray)),
         ]);
-        let text = vec![header, meta1, meta2];
+        let meta3 = Line::from(vec![
+            Span::raw("Auth: "),
+            Span::styled(it.auth_method, Style::default().fg(Color::Cyan)),
+            Span::raw("  Last Used: "),
+            Span::styled(
+                it.last_used.clone().unwrap_or_default(),
+                Style::default().fg(Color::Gray),
+            ),
+        ]);
+        let text = vec![header, meta1, meta2, meta3];
         list_items.push(ListItem::new(text));
     }
 

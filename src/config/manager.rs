@@ -46,6 +46,42 @@ where
         .map_err(serde::de::Error::custom)
 }
 
+fn serialize_password_option<S>(
+    plain: &Option<String>,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    if let Some(plain) = plain {
+        let enc = crate::config::encryption::PasswordEncryption::new();
+        let encrypted = enc
+            .encrypt_password(plain)
+            .map_err(serde::ser::Error::custom)?;
+        serializer.serialize_str(&encrypted)
+    } else {
+        serializer.serialize_none()
+    }
+}
+
+fn deserialize_password_option<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let maybe_encrypted = Option::<String>::deserialize(deserializer)?;
+    match maybe_encrypted {
+        Some(encrypted) => {
+            let enc = crate::config::encryption::PasswordEncryption::new();
+            enc.decrypt_password(&encrypted)
+                .map(Some)
+                .map_err(serde::de::Error::custom)
+        }
+        None => Ok(None),
+    }
+}
+
 /// Represents an SSH connection configuration
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Connection {
@@ -54,19 +90,36 @@ pub struct Connection {
     pub host: String,
     pub port: u16,
     pub username: String,
-    #[serde(
-        alias = "encrypted_password",
-        serialize_with = "serialize_password",
-        deserialize_with = "deserialize_password"
-    )]
-    pub password: String,
+    pub auth_method: AuthMethod,
     pub created_at: DateTime<Utc>,
     pub last_used: Option<DateTime<Utc>>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum AuthMethod {
+    #[serde(rename = "password")]
+    Password(
+        #[serde(
+            serialize_with = "serialize_password",
+            deserialize_with = "deserialize_password"
+        )]
+        String,
+    ),
+    #[serde(rename = "public_key")]
+    PublicKey {
+        private_key_path: String,
+        #[serde(
+            default,
+            serialize_with = "serialize_password_option",
+            deserialize_with = "deserialize_password_option"
+        )]
+        passphrase: Option<String>,
+    },
+}
+
 impl Connection {
     /// Creates a new connection with the given parameters
-    pub fn new(host: String, port: u16, username: String, password: String) -> Self {
+    pub fn new(host: String, port: u16, username: String, auth_method: AuthMethod) -> Self {
         let display_name = host.clone(); // Default display name is the host
         Self {
             id: Uuid::new_v4().to_string(),
@@ -74,7 +127,7 @@ impl Connection {
             host,
             port,
             username,
-            password,
+            auth_method,
             created_at: Utc::now(),
             last_used: None,
         }
@@ -104,7 +157,9 @@ impl Connection {
             ));
         }
 
-        if self.password.trim().is_empty() {
+        if let AuthMethod::Password(password) = &self.auth_method
+            && password.trim().is_empty()
+        {
             return Err(AppError::ValidationError(
                 "Password cannot be empty".to_string(),
             ));
@@ -279,18 +334,56 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_serialize_deserialize_connection() {
+    fn test_serialize_deserialize_connection_public_key() {
         let conn = Connection::new(
             "test".to_string(),
             22,
             "root".to_string(),
-            "password".to_string(),
+            AuthMethod::PublicKey {
+                private_key_path: "path".to_string(),
+                passphrase: None,
+            },
         );
         let serialized = toml::to_string(&conn).unwrap();
         println!("serialized: {}", serialized);
 
         let deserialized: Connection = toml::from_str(&serialized).unwrap();
         println!("deserialized: {:?}", deserialized);
-        assert_eq!(conn.password, deserialized.password);
+        assert_eq!(conn.auth_method, deserialized.auth_method);
+    }
+
+    #[test]
+    fn test_serialize_deserialize_connection_password() {
+        let conn = Connection::new(
+            "test".to_string(),
+            22,
+            "root".to_string(),
+            AuthMethod::Password("password".to_string()),
+        );
+        let serialized = toml::to_string(&conn).unwrap();
+        println!("serialized: {}", serialized);
+
+        let deserialized: Connection = toml::from_str(&serialized).unwrap();
+        println!("deserialized: {:?}", deserialized);
+        assert_eq!(conn.auth_method, deserialized.auth_method);
+    }
+
+    #[test]
+    fn test_serialize_config() {
+        let conn = Connection::new(
+            "test".to_string(),
+            22,
+            "root".to_string(),
+            AuthMethod::PublicKey {
+                private_key_path: "path".to_string(),
+                passphrase: None,
+            },
+        );
+        let config = Config {
+            connections: vec![conn],
+            settings: AppSettings::default(),
+        };
+        let serialized = toml::to_string(&config).unwrap();
+        println!("serialized: {}", serialized);
     }
 }

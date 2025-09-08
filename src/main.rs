@@ -32,6 +32,8 @@ use ui::{
 
 use config::manager::{ConfigManager, Connection};
 
+use crate::config::manager::AuthMethod;
+
 /// Result of SCP transfer operation
 #[derive(Debug, Clone)]
 pub(crate) enum ScpResult {
@@ -197,6 +199,13 @@ fn main() -> Result<()> {
                                 .with_timezone(&Local)
                                 .format("%Y-%m-%d %H:%M")
                                 .to_string(),
+                            auth_method: match &c.auth_method {
+                                AuthMethod::Password(_) => "password",
+                                AuthMethod::PublicKey { .. } => "public key",
+                            },
+                            last_used: c.last_used.map(|d| {
+                                d.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string()
+                            }),
                         })
                         .collect();
                     let sel = if items.is_empty() {
