@@ -218,7 +218,7 @@ pub fn draw_connection_form(area: Rect, form: &ConnectionForm, frame: &mut ratat
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // title
+            Constraint::Length(1), // title
             Constraint::Length(3), // host
             Constraint::Length(3), // port
             Constraint::Length(3), // username

@@ -1,12 +1,14 @@
 use std::env;
 use std::fs;
 use std::io::Read;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::prelude::Backend;
 
 use crate::config::manager::Connection;
 use crate::error::AppError;
@@ -22,7 +24,7 @@ pub enum KeyFlow {
 }
 
 /// Top-level key event handler, including error popup dismissal and dispatch by AppMode
-pub fn handle_key_event(app: &mut App, key: KeyEvent) -> KeyFlow {
+pub fn handle_key_event<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> KeyFlow {
     // Only handle actual key presses (ignore repeats/releases)
     if key.kind != KeyEventKind::Press {
         return KeyFlow::Continue;
@@ -119,7 +121,7 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) -> KeyFlow {
                     let current = form.local_path.clone();
                     match autocomplete_local_path(&current) {
                         Some(completed) => {
-                            if completed != current {
+                            if !current.ends_with('/') && completed != current {
                                 form.local_path = completed;
                             } else {
                                 // Show dropdown with available options when no change
@@ -157,7 +159,7 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) -> KeyFlow {
                 let submitted = form.clone();
                 app.scp_form = None;
                 let local = submitted.local_path.trim().to_string();
-                let remote = submitted.remote_path.trim().to_string();
+                let mut remote = submitted.remote_path.trim().to_string();
                 if local.is_empty() || remote.is_empty() {
                     app.error = Some(AppError::ValidationError(
                         "Local and remote path are required".into(),
@@ -177,6 +179,14 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) -> KeyFlow {
                     ));
                     app.scp_receiver = Some(receiver);
                     app.scp_form = None; // Hide the form
+
+                    let local_path = Path::new(&local);
+                    let remote_is_dir = remote.ends_with('/');
+                    if remote_is_dir {
+                        local_path
+                            .file_name()
+                            .map(|n| remote.push_str(n.to_string_lossy().as_ref()));
+                    }
 
                     // Start background transfer
                     let conn_clone = conn.clone();
@@ -227,7 +237,7 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) -> KeyFlow {
 }
 
 /// Paste event handler; dispatches by AppMode
-pub fn handle_paste_event(app: &mut App, data: &str) {
+pub fn handle_paste_event<B: Backend + Write>(app: &mut App<B>, data: &str) {
     match &mut app.mode {
         AppMode::FormNew { form } => {
             let s = form.focused_value_mut();
@@ -237,7 +247,11 @@ pub fn handle_paste_event(app: &mut App, data: &str) {
             let s = form.focused_value_mut();
             s.push_str(data);
         }
-        AppMode::Connected { client, state } => {
+        AppMode::Connected {
+            name: _,
+            client,
+            state,
+        } => {
             if let Ok(mut guard) = state.lock() {
                 if guard.parser.screen().scrollback() > 0 {
                     guard.scroll_to_bottom();
@@ -251,7 +265,7 @@ pub fn handle_paste_event(app: &mut App, data: &str) {
     }
 }
 
-fn handle_connection_list_key(app: &mut App, key: KeyEvent) -> KeyFlow {
+fn handle_connection_list_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> KeyFlow {
     let len = app.config.connections().len();
     match key.code {
         KeyCode::Char('n') | KeyCode::Char('N') => {
@@ -307,7 +321,7 @@ fn handle_connection_list_key(app: &mut App, key: KeyEvent) -> KeyFlow {
                         }
                     });
                     let _ = app.config.touch_last_used(&conn.id);
-                    app.go_to_connected(client, state);
+                    app.go_to_connected(conn.display_name.clone(), client, state);
                 }
                 Err(e) => {
                     app.error = Some(e);
@@ -343,7 +357,7 @@ fn handle_connection_list_key(app: &mut App, key: KeyEvent) -> KeyFlow {
                 Err(e) => app.error = Some(e),
             }
         }
-        KeyCode::Esc => {
+        KeyCode::Esc | KeyCode::Char('q') => {
             return KeyFlow::Quit;
         }
         _ => {}
@@ -351,7 +365,7 @@ fn handle_connection_list_key(app: &mut App, key: KeyEvent) -> KeyFlow {
     KeyFlow::Continue
 }
 
-fn handle_form_new_key(app: &mut App, key: KeyEvent) -> KeyFlow {
+fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> KeyFlow {
     match key.code {
         KeyCode::Esc => {
             app.go_to_connection_list();
@@ -415,7 +429,7 @@ fn handle_form_new_key(app: &mut App, key: KeyEvent) -> KeyFlow {
                                     }
                                 });
                                 form.error = None;
-                                app.go_to_connected(client, state);
+                                app.go_to_connected(conn.display_name.clone(), client, state);
                             }
                             Err(e) => {
                                 app.error = Some(e);
@@ -445,7 +459,7 @@ fn handle_form_new_key(app: &mut App, key: KeyEvent) -> KeyFlow {
     KeyFlow::Continue
 }
 
-fn handle_form_edit_key(app: &mut App, key: KeyEvent) -> KeyFlow {
+fn handle_form_edit_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> KeyFlow {
     match key.code {
         KeyCode::Esc => {
             app.go_to_connection_list();
@@ -528,8 +542,13 @@ fn handle_form_edit_key(app: &mut App, key: KeyEvent) -> KeyFlow {
     KeyFlow::Continue
 }
 
-fn handle_connected_key(app: &mut App, key: KeyEvent) -> KeyFlow {
-    if let AppMode::Connected { client, state } = &mut app.mode {
+fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> KeyFlow {
+    if let AppMode::Connected {
+        name: _,
+        client,
+        state,
+    } = &mut app.mode
+    {
         match key.code {
             KeyCode::Esc => {
                 let in_alt = state
@@ -708,7 +727,7 @@ fn handle_connected_key(app: &mut App, key: KeyEvent) -> KeyFlow {
     KeyFlow::Continue
 }
 
-fn current_selected(app: &App) -> usize {
+fn current_selected<B: Backend + Write>(app: &App<B>) -> usize {
     if let AppMode::ConnectionList { selected } = app.mode {
         let len = app.config.connections().len();
         if len == 0 { 0 } else { selected.min(len - 1) }

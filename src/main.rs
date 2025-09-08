@@ -4,6 +4,7 @@ mod key_event;
 mod ssh_client;
 mod ui;
 
+use std::io::Write;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -16,6 +17,7 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
+use ratatui::prelude::Backend;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::Block;
@@ -55,6 +57,7 @@ pub(crate) enum AppMode {
         original: Connection,
     },
     Connected {
+        name: String,
         client: SshClient,
         state: Arc<Mutex<TerminalState>>,
     },
@@ -103,7 +106,7 @@ impl ScpProgress {
 }
 
 /// App is the main application
-pub(crate) struct App {
+pub(crate) struct App<B: Backend + Write> {
     pub(crate) mode: AppMode,
     pub(crate) error: Option<AppError>,
     pub(crate) info: Option<String>,
@@ -112,10 +115,23 @@ pub(crate) struct App {
     pub(crate) dropdown: Option<DropdownState>,
     pub(crate) scp_progress: Option<ScpProgress>,
     pub(crate) scp_receiver: Option<mpsc::Receiver<ScpResult>>,
+    terminal: Terminal<B>,
 }
 
-impl App {
-    fn new() -> Result<Self> {
+impl<B: Backend + Write> Drop for App<B> {
+    fn drop(&mut self) {
+        disable_raw_mode().ok();
+        execute!(
+            self.terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )
+        .ok();
+    }
+}
+
+impl<B: Backend + Write> App<B> {
+    fn new(terminal: Terminal<B>) -> Result<Self> {
         Ok(Self {
             mode: AppMode::ConnectionList { selected: 0 },
             error: None,
@@ -125,11 +141,21 @@ impl App {
             dropdown: None,
             scp_progress: None,
             scp_receiver: None,
+            terminal,
         })
     }
 
-    pub(crate) fn go_to_connected(&mut self, client: SshClient, state: Arc<Mutex<TerminalState>>) {
-        self.mode = AppMode::Connected { client, state };
+    pub(crate) fn go_to_connected(
+        &mut self,
+        name: String,
+        client: SshClient,
+        state: Arc<Mutex<TerminalState>>,
+    ) {
+        self.mode = AppMode::Connected {
+            name,
+            client,
+            state,
+        };
     }
 
     pub(crate) fn go_to_connection_list(&mut self) {
@@ -143,9 +169,9 @@ fn main() -> Result<()> {
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen, DisableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let terminal = Terminal::new(backend)?;
 
-    let mut app = App::new()?;
+    let mut app = App::new(terminal)?;
 
     // UI event/render loop
     let mut last_tick = Instant::now();
@@ -153,7 +179,7 @@ fn main() -> Result<()> {
 
     loop {
         // main entry point for drawing to the terminal
-        terminal.draw(|f| {
+        app.terminal.draw(|f| {
             let size = f.size();
             match &app.mode {
                 AppMode::ConnectionList { selected } => {
@@ -218,7 +244,11 @@ fn main() -> Result<()> {
 
                     draw_connection_form(layout[1], &form, f);
                 }
-                AppMode::Connected { client, state } => {
+                AppMode::Connected {
+                    name,
+                    client,
+                    state,
+                } => {
                     let layout = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([Constraint::Length(3), Constraint::Min(1)])
@@ -227,7 +257,7 @@ fn main() -> Result<()> {
                     let title_block = Block::default()
                         .borders(ratatui::widgets::Borders::ALL)
                         .title(
-                            Line::from("title").style(
+                            Line::from(format!("Connected to {}", name)).style(
                                 Style::default()
                                     .fg(Color::Cyan)
                                     .add_modifier(Modifier::BOLD),
@@ -287,13 +317,7 @@ fn main() -> Result<()> {
                 Event::Key(key) => match crate::key_event::handle_key_event(&mut app, key) {
                     crate::key_event::KeyFlow::Continue => {}
                     crate::key_event::KeyFlow::Quit => {
-                        disable_raw_mode().ok();
-                        execute!(
-                            terminal.backend_mut(),
-                            LeaveAlternateScreen,
-                            DisableMouseCapture
-                        )
-                        .ok();
+                        drop(app);
                         return Ok(());
                     }
                 },
