@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
@@ -63,16 +63,13 @@ pub fn draw_terminal(area: Rect, state: &TerminalState, frame: &mut ratatui::Fra
 
         for col in 0..width {
             if let Some(cell) = screen.cell(row, col) {
-                let mut fg = map_color(cell.fgcolor());
-                let mut bg = map_color(cell.bgcolor());
+                let fg = map_color(cell.fgcolor());
+                let bg = map_color(cell.bgcolor());
                 let bold = cell.bold();
                 let italic = cell.italic();
                 let underline = cell.underline();
                 let inverse = cell.inverse();
-
-                if inverse {
-                    std::mem::swap(&mut fg, &mut bg);
-                }
+                let dim = cell.dim();
 
                 let mut style = Style::default().fg(fg).bg(bg);
                 if bold {
@@ -83,6 +80,13 @@ pub fn draw_terminal(area: Rect, state: &TerminalState, frame: &mut ratatui::Fra
                 }
                 if underline {
                     style = style.add_modifier(Modifier::UNDERLINED);
+                }
+                if dim {
+                    style = style.add_modifier(Modifier::DIM);
+                }
+                if inverse {
+                    // Apply reverse video using a style modifier so default colors are inverted correctly
+                    style = style.add_modifier(Modifier::REVERSED);
                 }
 
                 let contents = cell.contents();
@@ -213,7 +217,7 @@ impl ConnectionForm {
         if self.password.is_empty() && self.private_key_path.is_empty() {
             return Err("Password or private key is required".into());
         }
-        if self.port.len() > 0 && self.port.parse::<u16>().is_err() {
+        if !self.port.is_empty() && self.port.parse::<u16>().is_err() {
             return Err("Port must be a number".into());
         }
         Ok(())
@@ -334,7 +338,7 @@ pub fn draw_error_popup(area: Rect, message: &str, frame: &mut ratatui::Frame<'_
         Line::from(Span::raw("")),
         Line::from(Span::styled(
             "Press Enter or Esc to dismiss",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(Color::White).add_modifier(Modifier::DIM),
         )),
     ])
     .wrap(ratatui::widgets::Wrap { trim: true })
@@ -385,7 +389,7 @@ pub fn draw_info_popup(area: Rect, message: &str, frame: &mut ratatui::Frame<'_>
         Line::from(Span::raw("")),
         Line::from(Span::styled(
             "Press Enter or Esc to dismiss",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(Color::White).add_modifier(Modifier::DIM),
         )),
     ])
     .wrap(ratatui::widgets::Wrap { trim: true })
@@ -418,7 +422,7 @@ pub fn draw_connection_list(
 ) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .constraints([Constraint::Length(3), Constraint::Min(1), Constraint::Length(1)])
         .split(area);
 
     let header_block = Block::default()
@@ -485,6 +489,23 @@ pub fn draw_connection_list(
         layout[1],
         &mut ratatui::widgets::ListState::default().with_selected(Some(selected_index)),
     );
+
+    let footer = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(layout[2]);
+
+    let left = Paragraph::new(Line::from(Span::styled(
+        "Enter: Connect   Esc: Cancel   K/↑: Up   J/↓: Down   N: New   S: SCP   D: Delete   E: Edit",
+        Style::default().fg(Color::White).add_modifier(Modifier::DIM),
+    ))).alignment(Alignment::Left);
+    let right = Paragraph::new(Line::from(Span::styled(
+        format!("TermiRs v{}", env!("CARGO_PKG_VERSION")),
+        Style::default().fg(Color::White).add_modifier(Modifier::DIM),
+    ))).alignment(Alignment::Right);
+
+    frame.render_widget(left, footer[0]);
+    frame.render_widget(right, footer[1]);
 }
 
 // ===== SCP Popup =====
@@ -870,7 +891,7 @@ pub fn draw_scp_popup(area: Rect, form: &ScpForm, frame: &mut ratatui::Frame<'_>
 
     let hint = Paragraph::new(Line::from(Span::styled(
         "Enter: Send   Esc: Cancel   Tab: Complete   Up/Down: Switch Field",
-        Style::default().fg(Color::Gray),
+        Style::default().fg(Color::White).add_modifier(Modifier::DIM),
     )));
     frame.render_widget(hint, layout[2]);
 

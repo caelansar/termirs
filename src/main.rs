@@ -22,6 +22,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::Block;
 
+use config::manager::{AuthMethod, ConfigManager, Connection};
 use error::{AppError, Result};
 use ssh_client::SshClient;
 use ui::{
@@ -29,10 +30,6 @@ use ui::{
     draw_connection_form, draw_connection_list, draw_dropdown, draw_error_popup, draw_info_popup,
     draw_scp_popup, draw_scp_progress_popup, draw_terminal,
 };
-
-use config::manager::{ConfigManager, Connection};
-
-use crate::config::manager::AuthMethod;
 
 /// Result of SCP transfer operation
 #[derive(Debug, Clone)]

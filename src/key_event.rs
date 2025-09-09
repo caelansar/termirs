@@ -595,12 +595,18 @@ fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
     {
         match key.code {
             KeyCode::Esc => {
-                let in_alt = state
+                let (in_alt, app_cursor) = state
                     .lock()
                     .ok()
-                    .map(|g| g.parser.screen().alternate_screen())
-                    .unwrap_or(false);
-                if in_alt {
+                    .map(|g| {
+                        (
+                            g.parser.screen().alternate_screen(),
+                            g.parser.screen().application_cursor(),
+                        )
+                    })
+                    .unwrap_or((false, false));
+                // If an interactive full-screen/app-cursor mode is active, forward ESC to remote
+                if in_alt || app_cursor {
                     if let Ok(mut guard) = state.lock() {
                         if guard.parser.screen().scrollback() > 0 {
                             guard.scroll_to_bottom();
@@ -641,7 +647,13 @@ fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
                         guard.scroll_to_bottom();
                     }
                 }
-                if let Err(e) = client.write_all(b"\x1b[D") {
+                let app_cursor = state
+                    .lock()
+                    .ok()
+                    .map(|g| g.parser.screen().application_cursor())
+                    .unwrap_or(false);
+                let seq = if app_cursor { b"\x1bOD" } else { b"\x1b[D" };
+                if let Err(e) = client.write_all(seq) {
                     app.error = Some(e);
                 }
             }
@@ -651,7 +663,13 @@ fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
                         guard.scroll_to_bottom();
                     }
                 }
-                if let Err(e) = client.write_all(b"\x1b[C") {
+                let app_cursor = state
+                    .lock()
+                    .ok()
+                    .map(|g| g.parser.screen().application_cursor())
+                    .unwrap_or(false);
+                let seq = if app_cursor { b"\x1bOC" } else { b"\x1b[C" };
+                if let Err(e) = client.write_all(seq) {
                     app.error = Some(e);
                 }
             }
@@ -661,7 +679,13 @@ fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
                         guard.scroll_to_bottom();
                     }
                 }
-                if let Err(e) = client.write_all(b"\x1b[A") {
+                let app_cursor = state
+                    .lock()
+                    .ok()
+                    .map(|g| g.parser.screen().application_cursor())
+                    .unwrap_or(false);
+                let seq = if app_cursor { b"\x1bOA" } else { b"\x1b[A" };
+                if let Err(e) = client.write_all(seq) {
                     app.error = Some(e);
                 }
             }
@@ -671,7 +695,13 @@ fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
                         guard.scroll_to_bottom();
                     }
                 }
-                if let Err(e) = client.write_all(b"\x1b[B") {
+                let app_cursor = state
+                    .lock()
+                    .ok()
+                    .map(|g| g.parser.screen().application_cursor())
+                    .unwrap_or(false);
+                let seq = if app_cursor { b"\x1bOB" } else { b"\x1b[B" };
+                if let Err(e) = client.write_all(seq) {
                     app.error = Some(e);
                 }
             }
