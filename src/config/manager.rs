@@ -25,7 +25,7 @@ impl Default for AppSettings {
     }
 }
 
-fn serialize_password<S>(plain: &String, serializer: S) -> std::result::Result<S::Ok, S::Error>
+fn serialize_password<S>(plain: &str, serializer: S) -> std::result::Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
@@ -180,21 +180,11 @@ impl Connection {
 }
 
 /// Main configuration structure
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Config {
     pub connections: Vec<Connection>,
     pub settings: AppSettings,
 }
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            connections: Vec::new(),
-            settings: AppSettings::default(),
-        }
-    }
-}
-
 /// Configuration manager for handling application settings and connection storage
 pub struct ConfigManager {
     config_path: PathBuf,
@@ -211,6 +201,10 @@ impl ConfigManager {
             config_path,
             config,
         })
+    }
+
+    pub fn default_port(&self) -> u16 {
+        self.config.settings.default_port
     }
 
     /// Create a configuration manager with a custom config path (useful for testing)
@@ -379,8 +373,14 @@ mod tests {
                 passphrase: None,
             },
         );
+        let conn1 = Connection::new(
+            "test1".to_string(),
+            23,
+            "root".to_string(),
+            AuthMethod::Password("password".to_string()),
+        );
         let config = Config {
-            connections: vec![conn],
+            connections: vec![conn, conn1],
             settings: AppSettings::default(),
         };
         let serialized = toml::to_string(&config).unwrap();

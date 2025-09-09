@@ -11,6 +11,10 @@ use ssh2::{Channel, KeyboardInteractivePrompt, Prompt, Session};
 use crate::config::manager::{AuthMethod, Connection};
 use crate::error::{AppError, Result};
 
+const AUTH_PUBLICKEY: &str = "publickey";
+const AUTH_PASSWORD: &str = "password";
+const AUTH_KEYBOARD: &str = "keyboard-interactive";
+
 struct KbdIntPrompter {
     password: String,
 }
@@ -103,44 +107,28 @@ impl SshClient {
         Ok(())
     }
 
-    fn try_publickey_auth(
+    fn userauth_pubkey(
         sess: &Session,
         username: &str,
         private_key_path: &str,
         passphrase: Option<&str>,
-    ) -> bool {
+    ) -> Result<()> {
         let key_path = if private_key_path.starts_with("~/") {
-            if let Some(home) = env::var_os("HOME") {
-                PathBuf::from(home).join(&private_key_path[2..])
-            } else {
-                return false;
-            }
+            let home = env::var_os("HOME").ok_or_else(|| {
+                AppError::SshConnectionError("HOME environment variable is not set".to_string())
+            })?;
+            PathBuf::from(home).join(&private_key_path[2..])
         } else {
             PathBuf::from(private_key_path)
         };
 
-        // 1) Try without a passphrase first (works for unencrypted keys)
-        if sess
-            .userauth_pubkey_file(username, None, &key_path, None)
-            .is_ok()
-        {
-            if sess.authenticated() {
-                return true;
-            }
-        }
-
-        // 2) If that failed and we have a passphrase, try with it
-        if let Some(pp) = passphrase {
-            if sess
-                .userauth_pubkey_file(username, None, &key_path, Some(pp))
-                .is_ok()
-            {
-                if sess.authenticated() {
-                    return true;
-                }
-            }
-        }
-        false
+        sess.userauth_pubkey_file(username, None, &key_path, passphrase)
+            .map_err(|e| {
+                AppError::SshConnectionError(format!(
+                    "Failed to authenticate with public key: {}",
+                    e
+                ))
+            })
     }
 
     pub fn make_session(connection: &Connection) -> Result<Session> {
@@ -164,56 +152,52 @@ impl SshClient {
         })?;
 
         let methods_str = sess.auth_methods(user).unwrap_or("");
-        let methods: Vec<&str> = methods_str.split(',').filter(|s| !s.is_empty()).collect();
+        let mut methods: Vec<&str> = methods_str.split(',').filter(|s| !s.is_empty()).collect();
 
-        let has_interactive = methods.iter().any(|m| *m == "keyboard-interactive");
-        let has_password = methods.iter().any(|m| *m == "password");
+        let priority = |method: &str| -> u8 {
+            match method {
+                AUTH_PUBLICKEY => 0,
+                AUTH_KEYBOARD => 1,
+                AUTH_PASSWORD => 2,
+                _ => 3,
+            }
+        };
+        methods.sort_by_key(|m| priority(m));
 
-        if has_interactive || has_password {
-            // Extract password from auth_method if it's a password authentication
-            if let AuthMethod::Password(password) = &connection.auth_method {
-                if has_interactive {
-                    let mut prompter = KbdIntPrompter {
-                        password: password.clone(),
-                    };
-                    let _ = sess.userauth_keyboard_interactive(user, &mut prompter);
-                }
-                if !sess.authenticated() && has_password {
-                    let _ = sess.userauth_password(user, password);
-                }
-            }
-            if !sess.authenticated() {
-                return Err(AppError::AuthenticationError(
-                    "SSH authentication failed".to_string(),
-                ));
-            }
-        } else {
-            if methods.iter().any(|m| *m == "publickey") {
+        // Try methods in priority order, stop at the first success
+        let _ = methods.into_iter().any(|method| match method {
+            AUTH_PUBLICKEY => {
                 if let AuthMethod::PublicKey {
                     private_key_path,
                     passphrase,
                 } = &connection.auth_method
                 {
-                    if !Self::try_publickey_auth(
-                        &sess,
-                        user,
-                        private_key_path,
-                        passphrase.as_deref(),
-                    ) {
-                        return Err(AppError::AuthenticationError(
-                            "SSH publickey authentication failed".to_string(),
-                        ));
-                    } else {
-                        return Ok(sess);
-                    }
+                    Self::userauth_pubkey(&sess, user, private_key_path, passphrase.as_deref())
+                        .is_ok()
+                } else {
+                    false
                 }
             }
-
-            return Err(AppError::AuthenticationError(format!(
-                "SSH authentication failed: no supported authentication methods found, methods: {}",
-                methods_str
-            )));
-        }
+            AUTH_KEYBOARD => {
+                if let AuthMethod::Password(password) = &connection.auth_method {
+                    let mut prompter = KbdIntPrompter {
+                        password: password.clone(),
+                    };
+                    sess.userauth_keyboard_interactive(user, &mut prompter)
+                        .is_ok()
+                } else {
+                    false
+                }
+            }
+            AUTH_PASSWORD => {
+                if let AuthMethod::Password(password) = &connection.auth_method {
+                    sess.userauth_password(user, password).is_ok()
+                } else {
+                    false
+                }
+            }
+            _ => false, // skip unknown methods
+        });
 
         if !sess.authenticated() {
             return Err(AppError::AuthenticationError(

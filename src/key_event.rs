@@ -167,7 +167,7 @@ pub fn handle_key_event<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
                     ));
                     return KeyFlow::Continue;
                 }
-                if let Some(conn) = app.config.connections().get(current_selected(app)) {
+                if let Some(conn) = app.config.connections().get(app.current_selected()) {
                     // Create channel for communication with background thread
                     let (sender, receiver) = mpsc::channel();
 
@@ -252,6 +252,7 @@ pub fn handle_paste_event<B: Backend + Write>(app: &mut App<B>, data: &str) {
             name: _,
             client,
             state,
+            ..
         } => {
             if let Ok(mut guard) = state.lock() {
                 if guard.parser.screen().scrollback() > 0 {
@@ -292,7 +293,7 @@ fn handle_connection_list_key<B: Backend + Write>(app: &mut App<B>, key: KeyEven
             }
         }
         KeyCode::Enter => {
-            let conn = app.config.connections()[current_selected(app)].clone();
+            let conn = app.config.connections()[app.current_selected()].clone();
             match SshClient::connect(&conn) {
                 Ok(client) => {
                     let state = Arc::new(Mutex::new(TerminalState::new(30, 100)));
@@ -322,7 +323,12 @@ fn handle_connection_list_key<B: Backend + Write>(app: &mut App<B>, key: KeyEven
                         }
                     });
                     let _ = app.config.touch_last_used(&conn.id);
-                    app.go_to_connected(conn.display_name.clone(), client, state);
+                    app.go_to_connected(
+                        conn.display_name.clone(),
+                        client,
+                        state,
+                        app.current_selected(),
+                    );
                 }
                 Err(e) => {
                     app.error = Some(e);
@@ -330,32 +336,48 @@ fn handle_connection_list_key<B: Backend + Write>(app: &mut App<B>, key: KeyEven
             }
         }
         KeyCode::Char('e') | KeyCode::Char('E') => {
-            let original = app.config.connections()[current_selected(app)].clone();
+            let original = app.config.connections()[app.current_selected()].clone();
             let mut form = crate::ui::ConnectionForm::new();
             form.host = original.host.clone();
             form.port = original.port.to_string();
             form.username = original.username.clone();
             form.display_name = original.display_name.clone();
-            form.password.clear();
-            app.mode = AppMode::FormEdit { form, original };
+            form.private_key_path = match &original.auth_method {
+                AuthMethod::PublicKey {
+                    private_key_path, ..
+                } => private_key_path.clone(),
+                _ => String::new(),
+            };
+            form.password = match &original.auth_method {
+                AuthMethod::Password(password) => password.clone(),
+                _ => String::new(),
+            };
+
+            app.mode = AppMode::FormEdit {
+                form,
+                original,
+                current_selected: app.current_selected(),
+            };
         }
         KeyCode::Char('d') | KeyCode::Char('D') => {
-            let id = app.config.connections()[current_selected(app)].id.clone();
-            match app.config.remove_connection(&id) {
-                Ok(_) => {
-                    if let Err(e) = app.config.save() {
-                        app.error = Some(e);
-                    }
-                    let new_len = app.config.connections().len();
-                    if let AppMode::ConnectionList { selected } = &mut app.mode {
-                        if new_len == 0 {
-                            *selected = 0;
-                        } else if *selected >= new_len {
-                            *selected = new_len - 1;
+            if let Some(conn) = app.config.connections().get(app.current_selected()) {
+                let id = conn.id.clone();
+                match app.config.remove_connection(&id) {
+                    Ok(_) => {
+                        if let Err(e) = app.config.save() {
+                            app.error = Some(e);
+                        }
+                        let new_len = app.config.connections().len();
+                        if let AppMode::ConnectionList { selected } = &mut app.mode {
+                            if new_len == 0 {
+                                *selected = 0;
+                            } else if *selected >= new_len {
+                                *selected = new_len - 1;
+                            }
                         }
                     }
+                    Err(e) => app.error = Some(e),
                 }
-                Err(e) => app.error = Some(e),
             }
         }
         KeyCode::Esc | KeyCode::Char('q') => {
@@ -386,13 +408,23 @@ fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> K
                 match form.validate() {
                     Ok(_) => {
                         let user = form.username.trim().to_string();
-                        let pass = form.password.clone();
+
+                        let auth_method = if !form.private_key_path.trim().is_empty() {
+                            AuthMethod::PublicKey {
+                                private_key_path: form.private_key_path.trim().to_string(),
+                                passphrase: None,
+                            }
+                        } else {
+                            AuthMethod::Password(form.password.clone())
+                        };
 
                         let mut conn = Connection::new(
                             form.host.trim().to_string(),
-                            form.port.parse::<u16>().unwrap_or(22),
+                            form.port
+                                .parse::<u16>()
+                                .unwrap_or(app.config.default_port()),
                             user,
-                            AuthMethod::Password(pass),
+                            auth_method,
                         );
                         if !form.display_name.trim().is_empty() {
                             conn.set_display_name(form.display_name.trim().to_string());
@@ -430,7 +462,8 @@ fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> K
                                     }
                                 });
                                 form.error = None;
-                                app.go_to_connected(conn.display_name.clone(), client, state);
+                                let _ = app.config.touch_last_used(&conn.id);
+                                app.go_to_connected(conn.display_name.clone(), client, state, 0);
                             }
                             Err(e) => {
                                 app.error = Some(e);
@@ -463,7 +496,12 @@ fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> K
 fn handle_form_edit_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> KeyFlow {
     match key.code {
         KeyCode::Esc => {
-            app.go_to_connection_list();
+            if let AppMode::FormEdit {
+                current_selected, ..
+            } = &app.mode
+            {
+                app.go_to_connection_list_with_selected(*current_selected);
+            }
         }
         KeyCode::Tab | KeyCode::Down => {
             if let AppMode::FormEdit { form, .. } = &mut app.mode {
@@ -476,7 +514,7 @@ fn handle_form_edit_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
             }
         }
         KeyCode::Enter => {
-            if let AppMode::FormEdit { form, original } = &mut app.mode {
+            if let AppMode::FormEdit { form, original, .. } = &mut app.mode {
                 if form.host.trim().is_empty() {
                     app.error = Some(AppError::ValidationError("Host is required".into()));
                     return KeyFlow::Continue;
@@ -552,6 +590,7 @@ fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
         name: _,
         client,
         state,
+        current_selected,
     } = &mut app.mode
     {
         match key.code {
@@ -572,7 +611,8 @@ fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
                     }
                 } else {
                     client.close();
-                    app.go_to_connection_list();
+                    let current_selected = *current_selected;
+                    app.go_to_connection_list_with_selected(current_selected);
                 }
             }
             KeyCode::Enter => {
@@ -730,15 +770,6 @@ fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
         }
     }
     KeyFlow::Continue
-}
-
-fn current_selected<B: Backend + Write>(app: &App<B>) -> usize {
-    if let AppMode::ConnectionList { selected } = app.mode {
-        let len = app.config.connections().len();
-        if len == 0 { 0 } else { selected.min(len - 1) }
-    } else {
-        0
-    }
 }
 
 /// Auto-complete local file paths for SCP form

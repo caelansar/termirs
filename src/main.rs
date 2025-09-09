@@ -57,11 +57,13 @@ pub(crate) enum AppMode {
     FormEdit {
         form: ConnectionForm,
         original: Connection,
+        current_selected: usize,
     },
     Connected {
         name: String,
         client: SshClient,
         state: Arc<Mutex<TerminalState>>,
+        current_selected: usize,
     },
 }
 
@@ -152,16 +154,31 @@ impl<B: Backend + Write> App<B> {
         name: String,
         client: SshClient,
         state: Arc<Mutex<TerminalState>>,
+        current_selected: usize,
     ) {
         self.mode = AppMode::Connected {
             name,
             client,
             state,
+            current_selected,
         };
     }
 
     pub(crate) fn go_to_connection_list(&mut self) {
-        self.mode = AppMode::ConnectionList { selected: 0 };
+        self.go_to_connection_list_with_selected(0);
+    }
+
+    pub(crate) fn go_to_connection_list_with_selected(&mut self, selected: usize) {
+        self.mode = AppMode::ConnectionList { selected };
+    }
+
+    pub(crate) fn current_selected(&self) -> usize {
+        if let AppMode::ConnectionList { selected } = self.mode {
+            let len = self.config.connections().len();
+            if len == 0 { 0 } else { selected.min(len - 1) }
+        } else {
+            0
+        }
     }
 }
 
@@ -232,7 +249,7 @@ fn main() -> Result<()> {
                         );
                     f.render_widget(title_block, layout[0]);
 
-                    draw_connection_form(layout[1], &form, f);
+                    draw_connection_form(layout[1], form, f);
                 }
                 AppMode::FormEdit { form, .. } => {
                     let layout = Layout::default()
@@ -251,12 +268,13 @@ fn main() -> Result<()> {
                         );
                     f.render_widget(title_block, layout[0]);
 
-                    draw_connection_form(layout[1], &form, f);
+                    draw_connection_form(layout[1], form, f);
                 }
                 AppMode::Connected {
                     name,
                     client,
                     state,
+                    ..
                 } => {
                     let layout = Layout::default()
                         .direction(Direction::Vertical)

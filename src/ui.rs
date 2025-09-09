@@ -137,6 +137,7 @@ pub enum FocusField {
     Port,
     Username,
     Password,
+    PrivateKeyPath,
     DisplayName,
 }
 
@@ -146,6 +147,7 @@ pub struct ConnectionForm {
     pub port: String,
     pub username: String,
     pub password: String,
+    pub private_key_path: String,
     pub display_name: String,
     pub focus: FocusField,
     pub error: Option<String>,
@@ -158,6 +160,7 @@ impl ConnectionForm {
             port: String::new(),
             username: String::new(),
             password: String::new(),
+            private_key_path: String::new(),
             display_name: String::new(),
             focus: FocusField::Host,
             error: None,
@@ -169,7 +172,8 @@ impl ConnectionForm {
             FocusField::Host => FocusField::Port,
             FocusField::Port => FocusField::Username,
             FocusField::Username => FocusField::Password,
-            FocusField::Password => FocusField::DisplayName,
+            FocusField::Password => FocusField::PrivateKeyPath,
+            FocusField::PrivateKeyPath => FocusField::DisplayName,
             FocusField::DisplayName => FocusField::Host,
         };
     }
@@ -180,7 +184,8 @@ impl ConnectionForm {
             FocusField::Port => FocusField::Host,
             FocusField::Username => FocusField::Port,
             FocusField::Password => FocusField::Username,
-            FocusField::DisplayName => FocusField::Password,
+            FocusField::PrivateKeyPath => FocusField::Password,
+            FocusField::DisplayName => FocusField::PrivateKeyPath,
         };
     }
 
@@ -190,6 +195,7 @@ impl ConnectionForm {
             FocusField::Port => &mut self.port,
             FocusField::Username => &mut self.username,
             FocusField::Password => &mut self.password,
+            FocusField::PrivateKeyPath => &mut self.private_key_path,
             FocusField::DisplayName => &mut self.display_name,
         }
     }
@@ -204,10 +210,10 @@ impl ConnectionForm {
         if self.username.trim().is_empty() {
             return Err("Username is required".into());
         }
-        if self.password.is_empty() {
-            return Err("Password is required".into());
+        if self.password.is_empty() && self.private_key_path.is_empty() {
+            return Err("Password or private key is required".into());
         }
-        if self.port.parse::<u16>().is_err() {
+        if self.port.len() > 0 && self.port.parse::<u16>().is_err() {
             return Err("Port must be a number".into());
         }
         Ok(())
@@ -223,6 +229,7 @@ pub fn draw_connection_form(area: Rect, form: &ConnectionForm, frame: &mut ratat
             Constraint::Length(3), // port
             Constraint::Length(3), // username
             Constraint::Length(3), // password
+            Constraint::Length(3), // private key path
             Constraint::Length(3), // display name (optional)
             Constraint::Length(1), // error line
             Constraint::Min(1),    // spacer
@@ -270,6 +277,13 @@ pub fn draw_connection_form(area: Rect, form: &ConnectionForm, frame: &mut ratat
     );
     render_input(
         5,
+        "Private Key Path",
+        &form.private_key_path,
+        false,
+        form.focus == FocusField::PrivateKeyPath,
+    );
+    render_input(
+        6,
         "Display Name (optional)",
         &form.display_name,
         false,
@@ -825,9 +839,6 @@ pub fn draw_scp_popup(area: Rect, form: &ScpForm, frame: &mut ratatui::Frame<'_>
         ])
         .split(inner);
 
-    let local_path_rect: Rect;
-    let remote_path_rect: Rect;
-
     let mut render_input = |idx: usize, label: &str, value: &str, focused: bool| -> Rect {
         let mut block = Block::default().borders(Borders::ALL).title(label);
         if focused {
@@ -844,13 +855,13 @@ pub fn draw_scp_popup(area: Rect, form: &ScpForm, frame: &mut ratatui::Frame<'_>
         layout[idx]
     };
 
-    local_path_rect = render_input(
+    let local_path_rect = render_input(
         0,
         "Local Path",
         &form.local_path,
         form.focus == ScpFocusField::LocalPath,
     );
-    remote_path_rect = render_input(
+    let remote_path_rect = render_input(
         1,
         "Remote Path",
         &form.remote_path,
