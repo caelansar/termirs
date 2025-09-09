@@ -1,11 +1,9 @@
 use std::env;
 use std::fs;
-use std::io::Read;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::prelude::Backend;
@@ -298,29 +296,9 @@ fn handle_connection_list_key<B: Backend + Write>(app: &mut App<B>, key: KeyEven
                 Ok(client) => {
                     let state = Arc::new(Mutex::new(TerminalState::new(30, 100)));
                     let app_reader = state.clone();
-                    let client_reader = client.channel.clone();
+                    let client_clone = client.clone();
                     thread::spawn(move || {
-                        let mut buf = [0u8; 8192];
-                        loop {
-                            let n = {
-                                let mut ch = match client_reader.lock() {
-                                    Ok(guard) => guard,
-                                    Err(_) => break,
-                                };
-                                match ch.read(&mut buf) {
-                                    Ok(0) => return,
-                                    Ok(n) => n,
-                                    Err(_) => 0,
-                                }
-                            };
-                            if n > 0 {
-                                if let Ok(mut guard) = app_reader.lock() {
-                                    guard.process_bytes(&buf[..n]);
-                                }
-                            } else {
-                                std::thread::sleep(Duration::from_millis(10));
-                            }
-                        }
+                        client_clone.read_loop(app_reader);
                     });
                     let _ = app.config.touch_last_used(&conn.id);
                     app.go_to_connected(
@@ -437,29 +415,9 @@ fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> K
 
                                 let state = Arc::new(Mutex::new(TerminalState::new(30, 100)));
                                 let app_reader = state.clone();
-                                let client_reader = client.channel.clone();
+                                let client_clone = client.clone();
                                 thread::spawn(move || {
-                                    let mut buf = [0u8; 8192];
-                                    loop {
-                                        let n = {
-                                            let mut ch = match client_reader.lock() {
-                                                Ok(guard) => guard,
-                                                Err(_) => break,
-                                            };
-                                            match ch.read(&mut buf) {
-                                                Ok(0) => return,
-                                                Ok(n) => n,
-                                                Err(_) => 0,
-                                            }
-                                        };
-                                        if n > 0 {
-                                            if let Ok(mut guard) = app_reader.lock() {
-                                                guard.process_bytes(&buf[..n]);
-                                            }
-                                        } else {
-                                            std::thread::sleep(Duration::from_millis(10));
-                                        }
-                                    }
+                                    client_clone.read_loop(app_reader);
                                 });
                                 form.error = None;
                                 let _ = app.config.touch_last_used(&conn.id);

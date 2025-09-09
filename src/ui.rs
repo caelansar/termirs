@@ -338,7 +338,9 @@ pub fn draw_error_popup(area: Rect, message: &str, frame: &mut ratatui::Frame<'_
         Line::from(Span::raw("")),
         Line::from(Span::styled(
             "Press Enter or Esc to dismiss",
-            Style::default().fg(Color::White).add_modifier(Modifier::DIM),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::DIM),
         )),
     ])
     .wrap(ratatui::widgets::Wrap { trim: true })
@@ -389,7 +391,9 @@ pub fn draw_info_popup(area: Rect, message: &str, frame: &mut ratatui::Frame<'_>
         Line::from(Span::raw("")),
         Line::from(Span::styled(
             "Press Enter or Esc to dismiss",
-            Style::default().fg(Color::White).add_modifier(Modifier::DIM),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::DIM),
         )),
     ])
     .wrap(ratatui::widgets::Wrap { trim: true })
@@ -422,7 +426,11 @@ pub fn draw_connection_list(
 ) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(1), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
         .split(area);
 
     let header_block = Block::default()
@@ -501,8 +509,11 @@ pub fn draw_connection_list(
     ))).alignment(Alignment::Left);
     let right = Paragraph::new(Line::from(Span::styled(
         format!("TermiRs v{}", env!("CARGO_PKG_VERSION")),
-        Style::default().fg(Color::White).add_modifier(Modifier::DIM),
-    ))).alignment(Alignment::Right);
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::DIM),
+    )))
+    .alignment(Alignment::Right);
 
     frame.render_widget(left, footer[0]);
     frame.render_widget(right, footer[1]);
@@ -891,7 +902,9 @@ pub fn draw_scp_popup(area: Rect, form: &ScpForm, frame: &mut ratatui::Frame<'_>
 
     let hint = Paragraph::new(Line::from(Span::styled(
         "Enter: Send   Esc: Cancel   Tab: Complete   Up/Down: Switch Field",
-        Style::default().fg(Color::White).add_modifier(Modifier::DIM),
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::DIM),
     )));
     frame.render_widget(hint, layout[2]);
 

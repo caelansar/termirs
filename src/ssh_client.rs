@@ -10,6 +10,7 @@ use ssh2::{Channel, KeyboardInteractivePrompt, Prompt, Session};
 
 use crate::config::manager::{AuthMethod, Connection};
 use crate::error::{AppError, Result};
+use crate::ui::TerminalState;
 
 const AUTH_PUBLICKEY: &str = "publickey";
 const AUTH_PASSWORD: &str = "password";
@@ -39,9 +40,16 @@ impl KeyboardInteractivePrompt for KbdIntPrompter {
     }
 }
 
-#[derive(Clone)]
 pub struct SshClient {
-    pub channel: Arc<Mutex<Channel>>, // exposed for simple locking by UI loop
+    channel: Arc<Mutex<Channel>>, // exposed for simple locking by UI loop
+}
+
+impl Clone for SshClient {
+    fn clone(&self) -> Self {
+        Self {
+            channel: Arc::clone(&self.channel),
+        }
+    }
 }
 
 impl SshClient {
@@ -105,6 +113,32 @@ impl SshClient {
             }
         }
         Ok(())
+    }
+
+    pub fn read_loop(&self, app_reader: Arc<Mutex<TerminalState>>) {
+        let client_reader = self.channel.clone();
+
+        let mut buf = [0u8; 8192];
+        loop {
+            let n = {
+                let mut ch = match client_reader.lock() {
+                    Ok(guard) => guard,
+                    Err(_) => break,
+                };
+                match ch.read(&mut buf) {
+                    Ok(0) => return,
+                    Ok(n) => n,
+                    Err(_) => 0,
+                }
+            };
+            if n > 0 {
+                if let Ok(mut guard) = app_reader.lock() {
+                    guard.process_bytes(&buf[..n]);
+                }
+            } else {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
     }
 
     fn userauth_pubkey(
