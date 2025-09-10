@@ -1,15 +1,19 @@
 use std::env;
 use std::path::PathBuf;
-use std::sync::{Arc};
+use std::sync::Arc;
 
 use russh::client::{self, AuthResult, KeyboardInteractiveAuthResponse};
-use russh::keys::{self, ssh_key, PrivateKeyWithHashAlg};
+use russh::keys::{self, PrivateKeyWithHashAlg, ssh_key};
 use russh::{ChannelMsg, Disconnect, MethodKind};
-use tokio::sync::Mutex;
+use russh_sftp::client::SftpSession;
+use russh_sftp::protocol::OpenFlags;
 
 use crate::config::manager::{AuthMethod, Connection};
 use crate::error::{AppError, Result};
-use crate::ssh_client::ByteProcessor;
+
+pub(crate) trait ByteProcessor {
+    fn process_bytes(&mut self, bytes: &[u8]);
+}
 
 struct SshClient {}
 
@@ -26,21 +30,28 @@ impl client::Handler for SshClient {
 
 pub struct SshSession {
     session: Option<client::Handle<SshClient>>,
-    channel: Arc<Mutex<russh::Channel<client::Msg>>>,
+    // channel: Arc<tokio::sync::Mutex<russh::Channel<client::Msg>>>,
+    // writer: Arc<tokio::sync::Mutex<Box<dyn tokio::io::AsyncWrite + Send + Unpin>>>,
+    r: Arc<tokio::sync::Mutex<russh::ChannelReadHalf>>,
+    w: Arc<tokio::sync::Mutex<russh::ChannelWriteHalf<client::Msg>>>,
 }
 
 impl Clone for SshSession {
     fn clone(&self) -> Self {
-        Self { session: None, channel: Arc::clone(&self.channel) }
+        Self {
+            session: None,
+            r: Arc::clone(&self.r),
+            w: Arc::clone(&self.w),
+        }
     }
 }
 
 impl SshSession {
-    pub async fn connect(connection: &Connection) -> Result<Self> {
-        let config = client::Config {
-            inactivity_timeout: Some(std::time::Duration::from_secs(5)),
-            ..Default::default()
-        };
+    async fn new_session(connection: &Connection) -> Result<client::Handle<SshClient>> {
+        let mut config = client::Config::default();
+        config.inactivity_timeout = None;
+        config.keepalive_interval = Some(std::time::Duration::from_secs(30));
+        config.keepalive_max = 3;
 
         let config = Arc::new(config);
         let mut session = client::connect(config, connection.host_port(), SshClient {}).await?;
@@ -62,11 +73,9 @@ impl SshSession {
                     let mut step1 = session
                         .authenticate_keyboard_interactive_start(&connection.username, None)
                         .await?;
-
                     loop {
                         match step1 {
                             KeyboardInteractiveAuthResponse::Success => {
-                                println!("Authentication successful");
                                 break;
                             }
                             KeyboardInteractiveAuthResponse::Failure { .. } => {
@@ -102,22 +111,28 @@ impl SshSession {
                     }
                 }
             }
-            AuthMethod::PublicKey { private_key_path, passphrase } => {
+            AuthMethod::PublicKey {
+                private_key_path,
+                passphrase,
+            } => {
                 let algo = session.best_supported_rsa_hash().await?.flatten();
-
                 let key_path = if private_key_path.starts_with("~/") {
                     let home = env::var_os("HOME").ok_or_else(|| {
-                        AppError::SshConnectionError("HOME environment variable is not set".to_string())
+                        AppError::SshConnectionError(
+                            "HOME environment variable is not set".to_string(),
+                        )
                     })?;
                     PathBuf::from(home).join(&private_key_path[2..])
                 } else {
                     PathBuf::from(private_key_path)
                 };
-
-                let private_key = keys::load_secret_key(key_path, passphrase.as_deref()).map_err(|e| AppError::AuthenticationError(e.to_string()))?;
-                let private_key_with_hash_alg = PrivateKeyWithHashAlg::new(Arc::new(private_key), algo);
-
-                let auth_result = session.authenticate_publickey(&connection.username, private_key_with_hash_alg).await?;
+                let private_key = keys::load_secret_key(key_path, passphrase.as_deref())
+                    .map_err(|e| AppError::AuthenticationError(e.to_string()))?;
+                let private_key_with_hash_alg =
+                    PrivateKeyWithHashAlg::new(Arc::new(private_key), algo);
+                let auth_result = session
+                    .authenticate_publickey(&connection.username, private_key_with_hash_alg)
+                    .await?;
                 if !auth_result.success() {
                     return Err(AppError::AuthenticationError(
                         "Authentication failed".to_string(),
@@ -126,56 +141,57 @@ impl SshSession {
             }
         }
 
+        Ok(session)
+    }
+
+    pub async fn connect(connection: &Connection) -> Result<Self> {
+        let session = Self::new_session(connection).await?;
+
         let channel = session.channel_open_session().await?;
         channel
             .request_pty(true, "xterm-256color", 80, 120, 0, 0, &[])
             .await?;
-        // Start an interactive shell to mirror ssh2-based client behavior
         channel.request_shell(true).await?;
 
-        Ok(Self { session: Some(session), channel: Arc::new(Mutex::new(channel)) })
+        // Build a writer from the channel upfront to avoid later locking the channel to create it
+        // let writer: Box<dyn tokio::io::AsyncWrite + Send + Unpin> = Box::new(channel.make_writer());
+
+        let (r, w) = channel.split();
+
+        Ok(Self {
+            session: Some(session),
+            r: Arc::new(tokio::sync::Mutex::new(r)),
+            w: Arc::new(tokio::sync::Mutex::new(w)),
+        })
     }
 
     pub async fn request_size(&self, cols: u16, rows: u16) {
         let _ = self
-            .channel.lock().await
+            .w
+            .lock()
+            .await
             .window_change(cols as u32, rows as u32, 0, 0)
             .await;
     }
 
     pub async fn write_all(&self, data: &[u8]) -> Result<()> {
         use tokio::io::AsyncWriteExt;
-
-        // Create a writer handle without holding the lock across awaits
-        let mut writer = {
-            let ch = self.channel.lock().await;
-            ch.make_writer()
-        };
-
-        writer
-            .write_all(data)
-            .await
-            .map_err(|e| AppError::SshWriteError(format!("Failed to write to SSH channel: {}", e)))?;
+        let mut writer = self.w.lock().await.make_writer();
+        writer.write_all(data).await.map_err(|e| {
+            AppError::SshWriteError(format!("Failed to write to SSH channel: {}", e))
+        })?;
         Ok(())
     }
 
     pub async fn read_loop<B: ByteProcessor>(&mut self, processor: Arc<std::sync::Mutex<B>>) {
         loop {
-            // Wait for next message; we hold the lock only while awaiting one message
             let msg_opt = {
-                let mut ch = self.channel.lock().await;
+                let mut ch = self.r.lock().await;
                 ch.wait().await
             };
-
             let Some(msg) = msg_opt else { break };
-
             match msg {
-                ChannelMsg::Data { data } => {
-                    if let Ok(mut guard) = processor.lock() {
-                        guard.process_bytes(&data);
-                    }
-                }
-                ChannelMsg::ExtendedData { data, .. } => {
+                ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
                     if let Ok(mut guard) = processor.lock() {
                         guard.process_bytes(&data);
                     }
@@ -183,22 +199,49 @@ impl SshSession {
                 ChannelMsg::Eof | ChannelMsg::Close => {
                     break;
                 }
-                _ => {
-                    // Ignore other control messages
-                }
+                _ => {}
             }
         }
     }
 
-    pub async fn close(& self) -> Result<()> {
+    pub async fn close(&self) -> Result<()> {
         if let Some(session) = &self.session {
-            session.disconnect(Disconnect::ByApplication, "", "").await?;
+            session
+                .disconnect(Disconnect::ByApplication, "", "")
+                .await?;
         }
         Ok(())
     }
 
-    pub async fn scp_send_file(&self, local_path: &str, remote_path: &str) -> Result<()> {
-        panic!("Not implemented");
+    #[allow(dead_code)]
+    pub async fn close_channel(&self) -> Result<()> {
+        self.w.lock().await.close().await?;
+        Ok(())
+    }
+
+    pub async fn sftp_send_file(
+        connection: &Connection,
+        local_path: &str,
+        remote_path: &str,
+    ) -> Result<()> {
+        let session = Self::new_session(connection).await?;
+
+        let channel = session.channel_open_session().await?;
+        channel.request_subsystem(true, "sftp").await?;
+
+        let mut local = tokio::fs::File::open(local_path).await?;
+
+        let sftp = SftpSession::new(channel.into_stream()).await?;
+        let mut remote = sftp
+            .open_with_flags(
+                remote_path,
+                OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE | OpenFlags::READ,
+            )
+            .await?;
+
+        tokio::io::copy(&mut local, &mut remote).await?;
+
+        Ok(())
     }
 }
 
@@ -206,8 +249,7 @@ impl SshSession {
 mod tests {
     use super::*;
 
-    struct EchoByteProcessor {
-    }
+    struct EchoByteProcessor {}
     impl ByteProcessor for EchoByteProcessor {
         fn process_bytes(&mut self, bytes: &[u8]) {
             println!("Received bytes:\n {}", String::from_utf8_lossy(bytes));
@@ -227,12 +269,17 @@ mod tests {
 
         let mut client_clone = client.clone();
         tokio::spawn(async move {
-            client_clone.read_loop(Arc::new(std::sync::Mutex::new(EchoByteProcessor {}))).await;
+            client_clone
+                .read_loop(Arc::new(std::sync::Mutex::new(EchoByteProcessor {})))
+                .await;
         });
+
+        // make sure the read_loop is started before writing
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
         client.write_all(b"pwd\n").await.unwrap();
 
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
         client.close().await.unwrap();
     }

@@ -854,7 +854,7 @@ pub fn draw_scp_popup(area: Rect, form: &ScpForm, frame: &mut ratatui::Frame<'_>
     let outer = Block::default()
         .borders(Borders::ALL)
         .title(Line::from(Span::styled(
-            "SCP: Send File",
+            "SFTP: Send File",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),

@@ -2,19 +2,18 @@ use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, mpsc};
-use std::thread;
+use std::sync::{Arc, Mutex};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::prelude::Backend;
 
+use crate::async_ssh_client::SshSession;
 use crate::config::manager::AuthMethod;
 use crate::config::manager::Connection;
 use crate::error::AppError;
-use crate::ssh_client::SshClient;
 use crate::ui::TerminalState;
 use crate::ui::{ScpFocusField, ScpForm};
-use crate::{App, AppMode};
+use crate::{App, AppMode, ScpResult};
 
 /// Result of handling a key or paste event
 pub enum KeyFlow {
@@ -23,7 +22,7 @@ pub enum KeyFlow {
 }
 
 /// Top-level key event handler, including error popup dismissal and dispatch by AppMode
-pub fn handle_key_event<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> KeyFlow {
+pub async fn handle_key_event<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> KeyFlow {
     // Only handle actual key presses (ignore repeats/releases)
     if key.kind != KeyEventKind::Press {
         return KeyFlow::Continue;
@@ -166,10 +165,10 @@ pub fn handle_key_event<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
                     return KeyFlow::Continue;
                 }
                 if let Some(conn) = app.config.connections().get(app.current_selected()) {
-                    // Create channel for communication with background thread
-                    let (sender, receiver) = mpsc::channel();
+                    // Create channel for communication with background task
+                    let (sender, receiver) = tokio::sync::mpsc::channel(1);
 
-                    // Start SCP transfer in background and show progress
+                    // Start SCP transfer and show progress
                     let connection_name = conn.display_name.clone();
                     app.scp_progress = Some(crate::ScpProgress::new(
                         local.clone(),
@@ -187,30 +186,28 @@ pub fn handle_key_event<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
                             .map(|n| remote.push_str(n.to_string_lossy().as_ref()));
                     }
 
-                    // Start background transfer
+                    // Start background transfer on tokio
                     let conn_clone = conn.clone();
                     let local_clone = local.clone();
                     let remote_clone = remote.clone();
 
-                    thread::spawn(move || {
-                        // Perform the actual SCP transfer
-                        // thread::sleep(Duration::from_secs(5)); // for testing - simulate transfer time
-                        let result = match SshClient::scp_send_file(
+                    tokio::spawn(async move {
+                        let result = match SshSession::sftp_send_file(
                             &conn_clone,
                             &local_clone,
                             &remote_clone,
-                        ) {
-                            Ok(_) => crate::ScpResult::Success {
+                        )
+                        .await
+                        {
+                            Ok(_) => ScpResult::Success {
                                 local_path: local_clone,
                                 remote_path: remote_clone,
                             },
-                            Err(e) => crate::ScpResult::Error {
+                            Err(e) => ScpResult::Error {
                                 error: e.to_string(),
                             },
                         };
-
-                        // Send result back to main thread
-                        let _ = sender.send(result);
+                        let _ = sender.send(result).await;
                     });
                 }
             }
@@ -228,15 +225,15 @@ pub fn handle_key_event<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
     }
 
     match &mut app.mode {
-        AppMode::ConnectionList { .. } => handle_connection_list_key(app, key),
-        AppMode::FormNew { .. } => handle_form_new_key(app, key),
-        AppMode::FormEdit { .. } => handle_form_edit_key(app, key),
-        AppMode::Connected { .. } => handle_connected_key(app, key),
+        AppMode::ConnectionList { .. } => handle_connection_list_key(app, key).await,
+        AppMode::FormNew { .. } => handle_form_new_key(app, key).await,
+        AppMode::FormEdit { .. } => handle_form_edit_key(app, key).await,
+        AppMode::Connected { .. } => handle_connected_key(app, key).await,
     }
 }
 
 /// Paste event handler; dispatches by AppMode
-pub fn handle_paste_event<B: Backend + Write>(app: &mut App<B>, data: &str) {
+pub async fn handle_paste_event<B: Backend + Write>(app: &mut App<B>, data: &str) {
     match &mut app.mode {
         AppMode::FormNew { form } => {
             let s = form.focused_value_mut();
@@ -257,7 +254,7 @@ pub fn handle_paste_event<B: Backend + Write>(app: &mut App<B>, data: &str) {
                     guard.scroll_to_bottom();
                 }
             }
-            if let Err(e) = client.write_all(data.as_bytes()) {
+            if let Err(e) = client.write_all(data.as_bytes()).await {
                 app.error = Some(e);
             }
         }
@@ -265,7 +262,10 @@ pub fn handle_paste_event<B: Backend + Write>(app: &mut App<B>, data: &str) {
     }
 }
 
-fn handle_connection_list_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> KeyFlow {
+async fn handle_connection_list_key<B: Backend + Write>(
+    app: &mut App<B>,
+    key: KeyEvent,
+) -> KeyFlow {
     let len = app.config.connections().len();
     match key.code {
         KeyCode::Char('n') | KeyCode::Char('N') => {
@@ -292,13 +292,13 @@ fn handle_connection_list_key<B: Backend + Write>(app: &mut App<B>, key: KeyEven
         }
         KeyCode::Enter => {
             let conn = app.config.connections()[app.current_selected()].clone();
-            match SshClient::connect(&conn) {
+            match SshSession::connect(&conn).await {
                 Ok(client) => {
                     let state = Arc::new(Mutex::new(TerminalState::new(30, 100)));
                     let app_reader = state.clone();
-                    let client_clone = client.clone();
-                    thread::spawn(move || {
-                        client_clone.read_loop(app_reader);
+                    let mut client_clone = client.clone();
+                    tokio::spawn(async move {
+                        client_clone.read_loop(app_reader).await;
                     });
                     let _ = app.config.touch_last_used(&conn.id);
                     app.go_to_connected(
@@ -366,7 +366,7 @@ fn handle_connection_list_key<B: Backend + Write>(app: &mut App<B>, key: KeyEven
     KeyFlow::Continue
 }
 
-fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> KeyFlow {
+async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> KeyFlow {
     match key.code {
         KeyCode::Esc => {
             app.go_to_connection_list();
@@ -407,7 +407,7 @@ fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> K
                         if !form.display_name.trim().is_empty() {
                             conn.set_display_name(form.display_name.trim().to_string());
                         }
-                        match SshClient::connect(&conn) {
+                        match SshSession::connect(&conn).await {
                             Ok(client) => {
                                 if let Err(e) = app.config.add_connection(conn.clone()) {
                                     app.error = Some(e);
@@ -415,9 +415,9 @@ fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> K
 
                                 let state = Arc::new(Mutex::new(TerminalState::new(30, 100)));
                                 let app_reader = state.clone();
-                                let client_clone = client.clone();
-                                thread::spawn(move || {
-                                    client_clone.read_loop(app_reader);
+                                let mut client_clone = client.clone();
+                                tokio::spawn(async move {
+                                    client_clone.read_loop(app_reader).await;
                                 });
                                 form.error = None;
                                 let _ = app.config.touch_last_used(&conn.id);
@@ -451,7 +451,7 @@ fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> K
     KeyFlow::Continue
 }
 
-fn handle_form_edit_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> KeyFlow {
+async fn handle_form_edit_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> KeyFlow {
     match key.code {
         KeyCode::Esc => {
             if let AppMode::FormEdit {
@@ -543,7 +543,7 @@ fn handle_form_edit_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
     KeyFlow::Continue
 }
 
-fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> KeyFlow {
+async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> KeyFlow {
     if let AppMode::Connected {
         name: _,
         client,
@@ -570,11 +570,13 @@ fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
                             guard.scroll_to_bottom();
                         }
                     }
-                    if let Err(e) = client.write_all(&[0x1b]) {
+                    if let Err(e) = client.write_all(&[0x1b]).await {
                         app.error = Some(e);
                     }
                 } else {
-                    client.close();
+                    if let Err(e) = client.close().await {
+                        app.error = Some(e);
+                    }
                     let current_selected = *current_selected;
                     app.go_to_connection_list_with_selected(current_selected);
                 }
@@ -585,7 +587,7 @@ fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
                         guard.scroll_to_bottom();
                     }
                 }
-                if let Err(e) = client.write_all(b"\r") {
+                if let Err(e) = client.write_all(b"\r").await {
                     app.error = Some(e);
                 }
             }
@@ -595,7 +597,7 @@ fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
                         guard.scroll_to_bottom();
                     }
                 }
-                if let Err(e) = client.write_all(&[0x7f]) {
+                if let Err(e) = client.write_all(&[0x7f]).await {
                     app.error = Some(e);
                 }
             }
@@ -611,7 +613,7 @@ fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
                     .map(|g| g.parser.screen().application_cursor())
                     .unwrap_or(false);
                 let seq = if app_cursor { b"\x1bOD" } else { b"\x1b[D" };
-                if let Err(e) = client.write_all(seq) {
+                if let Err(e) = client.write_all(seq).await {
                     app.error = Some(e);
                 }
             }
@@ -627,7 +629,7 @@ fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
                     .map(|g| g.parser.screen().application_cursor())
                     .unwrap_or(false);
                 let seq = if app_cursor { b"\x1bOC" } else { b"\x1b[C" };
-                if let Err(e) = client.write_all(seq) {
+                if let Err(e) = client.write_all(seq).await {
                     app.error = Some(e);
                 }
             }
@@ -643,7 +645,7 @@ fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
                     .map(|g| g.parser.screen().application_cursor())
                     .unwrap_or(false);
                 let seq = if app_cursor { b"\x1bOA" } else { b"\x1b[A" };
-                if let Err(e) = client.write_all(seq) {
+                if let Err(e) = client.write_all(seq).await {
                     app.error = Some(e);
                 }
             }
@@ -659,7 +661,7 @@ fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
                     .map(|g| g.parser.screen().application_cursor())
                     .unwrap_or(false);
                 let seq = if app_cursor { b"\x1bOB" } else { b"\x1b[B" };
-                if let Err(e) = client.write_all(seq) {
+                if let Err(e) = client.write_all(seq).await {
                     app.error = Some(e);
                 }
             }
@@ -669,7 +671,7 @@ fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
                         guard.scroll_to_bottom();
                     }
                 }
-                if let Err(e) = client.write_all(b"\t") {
+                if let Err(e) = client.write_all(b"\t").await {
                     app.error = Some(e);
                 }
             }
@@ -704,7 +706,7 @@ fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
                         guard.scroll_to_bottom();
                     }
                 }
-                if let Err(e) = client.write_all(&[0x03]) {
+                if let Err(e) = client.write_all(&[0x03]).await {
                     app.error = Some(e);
                 }
             }
@@ -714,7 +716,7 @@ fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
                         guard.scroll_to_bottom();
                     }
                 }
-                if let Err(e) = client.write_all(&[0x04]) {
+                if let Err(e) = client.write_all(&[0x04]).await {
                     app.error = Some(e);
                 }
             }
@@ -724,7 +726,7 @@ fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
                         guard.scroll_to_bottom();
                     }
                 }
-                if let Err(e) = client.write_all(&[0x15]) {
+                if let Err(e) = client.write_all(&[0x15]).await {
                     app.error = Some(e);
                 }
             }
@@ -750,7 +752,7 @@ fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> 
                 }
                 let mut tmp = [0u8; 4];
                 let s = ch_.encode_utf8(&mut tmp);
-                if let Err(e) = client.write_all(s.as_bytes()) {
+                if let Err(e) = client.write_all(s.as_bytes()).await {
                     app.error = Some(e);
                 }
             }
