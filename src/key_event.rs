@@ -11,8 +11,8 @@ use crate::async_ssh_client::SshSession;
 use crate::config::manager::AuthMethod;
 use crate::config::manager::Connection;
 use crate::error::AppError;
+use crate::ui::ScpFocusField;
 use crate::ui::TerminalState;
-use crate::ui::{ScpFocusField, ScpForm};
 use crate::{App, AppMode, ScpResult};
 
 /// Result of handling a key or paste event
@@ -25,63 +25,6 @@ pub enum KeyFlow {
 pub async fn handle_key_event<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> KeyFlow {
     // Only handle actual key presses (ignore repeats/releases)
     if key.kind != KeyEventKind::Press {
-        return KeyFlow::Continue;
-    }
-
-    // If dropdown is visible, handle dropdown navigation first
-    if let Some(dropdown) = &mut app.dropdown {
-        match key.code {
-            KeyCode::Down => {
-                dropdown.next();
-                return KeyFlow::Continue;
-            }
-            KeyCode::Up => {
-                dropdown.prev();
-                return KeyFlow::Continue;
-            }
-            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                dropdown.next();
-                return KeyFlow::Continue;
-            }
-            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                dropdown.prev();
-                return KeyFlow::Continue;
-            }
-            KeyCode::Enter => {
-                // Select the current option and apply it to the focused field
-                if let Some(selected_option) = dropdown.get_selected().cloned() {
-                    if let Some(form) = &mut app.scp_form {
-                        if matches!(form.focus, ScpFocusField::LocalPath) {
-                            // Construct the complete path by combining current input with selected option
-                            let current = form.local_path.clone();
-                            form.local_path = construct_completed_path(&current, &selected_option);
-                        }
-                    }
-                }
-                app.dropdown = None;
-                return KeyFlow::Continue;
-            }
-            KeyCode::Esc => {
-                app.dropdown = None;
-                return KeyFlow::Continue;
-            }
-            _ => {
-                // For other keys, hide dropdown and continue with normal processing
-                app.dropdown = None;
-            }
-        }
-    }
-
-    // If SCP progress is visible, handle cancellation
-    if app.scp_progress.is_some() {
-        match key.code {
-            KeyCode::Esc => {
-                app.scp_progress = None;
-                app.scp_receiver = None; // Clean up the receiver
-                app.info = Some("SCP transfer cancelled".to_string());
-            }
-            _ => {}
-        }
         return KeyFlow::Continue;
     }
 
@@ -107,128 +50,16 @@ pub async fn handle_key_event<B: Backend + Write>(app: &mut App<B>, key: KeyEven
         return KeyFlow::Continue;
     }
 
-    // If SCP popup is visible, handle its input
-    if let Some(form) = &mut app.scp_form {
-        match key.code {
-            KeyCode::Esc => {
-                app.scp_form = None;
-            }
-            KeyCode::Tab => {
-                // Auto-complete local path when focused on LocalPath field
-                if matches!(form.focus, ScpFocusField::LocalPath) {
-                    let current = form.local_path.clone();
-                    match autocomplete_local_path(&current) {
-                        Some(completed) => {
-                            if !current.ends_with('/') && completed != current {
-                                form.local_path = completed;
-                            } else {
-                                // Show dropdown with available options when no change
-                                if let Some(options) = list_completion_options(&current)
-                                    && options.len() > 1
-                                {
-                                    // We need to calculate the anchor rect for the dropdown
-                                    // For now, we'll use a placeholder rect - this will be updated in the UI rendering
-                                    let anchor_rect = ratatui::layout::Rect {
-                                        x: 0,
-                                        y: 0,
-                                        width: 40,
-                                        height: 3,
-                                    };
-                                    app.dropdown =
-                                        Some(crate::ui::DropdownState::new(options, anchor_rect));
-                                }
-                            }
-                        }
-                        None => {
-                            // app.info = Some("No matches found".to_string());
-                        }
-                    }
-                } else {
-                    form.next();
-                }
-            }
-            KeyCode::Down => {
-                form.next();
-            }
-            KeyCode::BackTab | KeyCode::Up => {
-                form.prev();
-            }
-            KeyCode::Enter => {
-                let submitted = form.clone();
-                app.scp_form = None;
-                let local = submitted.local_path.trim().to_string();
-                let mut remote = submitted.remote_path.trim().to_string();
-                if local.is_empty() || remote.is_empty() {
-                    app.error = Some(AppError::ValidationError(
-                        "Local and remote path are required".into(),
-                    ));
-                    return KeyFlow::Continue;
-                }
-                if let Some(conn) = app.config.connections().get(app.current_selected()) {
-                    // Create channel for communication with background task
-                    let (sender, receiver) = tokio::sync::mpsc::channel(1);
-
-                    // Start SCP transfer and show progress
-                    let connection_name = conn.display_name.clone();
-                    app.scp_progress = Some(crate::ScpProgress::new(
-                        local.clone(),
-                        remote.clone(),
-                        connection_name,
-                    ));
-                    app.scp_receiver = Some(receiver);
-                    app.scp_form = None; // Hide the form
-
-                    let local_path = Path::new(&local);
-                    let remote_is_dir = remote.ends_with('/');
-                    if remote_is_dir {
-                        local_path
-                            .file_name()
-                            .map(|n| remote.push_str(n.to_string_lossy().as_ref()));
-                    }
-
-                    // Start background transfer on tokio
-                    let conn_clone = conn.clone();
-                    let local_clone = local.clone();
-                    let remote_clone = remote.clone();
-
-                    tokio::spawn(async move {
-                        let result = match SshSession::sftp_send_file(
-                            &conn_clone,
-                            &local_clone,
-                            &remote_clone,
-                        )
-                        .await
-                        {
-                            Ok(_) => ScpResult::Success {
-                                local_path: local_clone,
-                                remote_path: remote_clone,
-                            },
-                            Err(e) => ScpResult::Error {
-                                error: e.to_string(),
-                            },
-                        };
-                        let _ = sender.send(result).await;
-                    });
-                }
-            }
-            KeyCode::Backspace => {
-                let s = form.focused_value_mut();
-                s.pop();
-            }
-            KeyCode::Char(ch) => {
-                let s = form.focused_value_mut();
-                s.push(ch);
-            }
-            _ => {}
-        }
-        return KeyFlow::Continue;
-    }
-
     match &mut app.mode {
         AppMode::ConnectionList { .. } => handle_connection_list_key(app, key).await,
         AppMode::FormNew { .. } => handle_form_new_key(app, key).await,
         AppMode::FormEdit { .. } => handle_form_edit_key(app, key).await,
         AppMode::Connected { .. } => handle_connected_key(app, key).await,
+        AppMode::ScpForm {
+            dropdown: Some(_), ..
+        } => handle_scp_form_dropdown_key(app, key).await,
+        AppMode::ScpForm { .. } => handle_scp_form_key(app, key).await,
+        AppMode::ScpProgress { .. } => handle_scp_progress_key(app, key).await,
     }
 }
 
@@ -258,7 +89,11 @@ pub async fn handle_paste_event<B: Backend + Write>(app: &mut App<B>, data: &str
                 app.error = Some(e);
             }
         }
-        AppMode::ConnectionList { .. } => {}
+        AppMode::ScpForm { form, .. } => {
+            let s = form.focused_value_mut();
+            s.push_str(data);
+        }
+        AppMode::ConnectionList { .. } | AppMode::ScpProgress { .. } => {}
     }
 }
 
@@ -274,7 +109,7 @@ async fn handle_connection_list_key<B: Backend + Write>(
             };
         }
         KeyCode::Char('s') | KeyCode::Char('S') => {
-            app.scp_form = Some(ScpForm::new());
+            app.go_to_scp_form(app.current_selected());
         }
         KeyCode::Char('k') | KeyCode::Up => {
             if let AppMode::ConnectionList { selected } = &mut app.mode {
@@ -964,4 +799,213 @@ fn construct_completed_path(current_input: &str, selected_option: &str) -> Strin
         // No parent directory, just use the selected option
         selected_option.to_string()
     }
+}
+
+async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> KeyFlow {
+    match key.code {
+        KeyCode::Esc => {
+            if let AppMode::ScpForm {
+                current_selected, ..
+            } = &app.mode
+            {
+                let current_selected = *current_selected;
+                app.go_to_connection_list_with_selected(current_selected);
+            }
+        }
+        KeyCode::Tab => {
+            if let AppMode::ScpForm { form, dropdown, .. } = &mut app.mode {
+                // Auto-complete local path when focused on LocalPath field
+                if matches!(form.focus, ScpFocusField::LocalPath) {
+                    let current = form.local_path.clone();
+                    match autocomplete_local_path(&current) {
+                        Some(completed) => {
+                            if !current.ends_with('/') && completed != current {
+                                form.local_path = completed;
+                            } else {
+                                // Show dropdown with available options when no change
+                                if let Some(options) = list_completion_options(&current)
+                                    && options.len() > 1
+                                {
+                                    // We need to calculate the anchor rect for the dropdown
+                                    // For now, we'll use a placeholder rect - this will be updated in the UI rendering
+                                    let anchor_rect = ratatui::layout::Rect {
+                                        x: 0,
+                                        y: 0,
+                                        width: 40,
+                                        height: 3,
+                                    };
+                                    *dropdown =
+                                        Some(crate::ui::DropdownState::new(options, anchor_rect));
+                                }
+                            }
+                        }
+                        None => {
+                            // app.info = Some("No matches found".to_string());
+                        }
+                    }
+                } else {
+                    form.next();
+                }
+            }
+        }
+        KeyCode::Down => {
+            if let AppMode::ScpForm { form, .. } = &mut app.mode {
+                form.next();
+            }
+        }
+        KeyCode::BackTab | KeyCode::Up => {
+            if let AppMode::ScpForm { form, .. } = &mut app.mode {
+                form.prev();
+            }
+        }
+        KeyCode::Enter => {
+            // Extract all needed values first to avoid borrow conflicts
+            let (local, remote, current_selected, conn_opt) = if let AppMode::ScpForm {
+                form,
+                current_selected,
+                ..
+            } = &app.mode
+            {
+                let local = form.local_path.trim().to_string();
+                let remote = form.remote_path.trim().to_string();
+                let conn_opt = app.config.connections().get(*current_selected).cloned();
+                (local, remote, *current_selected, conn_opt)
+            } else {
+                return KeyFlow::Continue;
+            };
+
+            if local.is_empty() || remote.is_empty() {
+                app.error = Some(AppError::ValidationError(
+                    "Local and remote path are required".into(),
+                ));
+                return KeyFlow::Continue;
+            }
+
+            if let Some(conn) = conn_opt {
+                // Create channel for communication with background task
+                let (sender, receiver) = tokio::sync::mpsc::channel(1);
+
+                // Start SCP transfer and show progress
+                let connection_name = conn.display_name.clone();
+                let progress =
+                    crate::ScpProgress::new(local.clone(), remote.clone(), connection_name);
+
+                app.go_to_scp_progress(progress, receiver, current_selected);
+
+                let mut remote_final = remote.clone();
+                let local_path = Path::new(&local);
+                let remote_is_dir = remote.ends_with('/');
+                if remote_is_dir {
+                    if let Some(filename) = local_path.file_name() {
+                        remote_final.push_str(&filename.to_string_lossy());
+                    }
+                }
+
+                // Start background transfer on tokio
+                let local_clone = local.clone();
+                let remote_clone = remote_final;
+
+                tokio::spawn(async move {
+                    let result = match SshSession::sftp_send_file(
+                        &conn,
+                        &local_clone,
+                        &remote_clone,
+                    )
+                    .await
+                    {
+                        Ok(_) => ScpResult::Success {
+                            local_path: local_clone,
+                            remote_path: remote_clone,
+                        },
+                        Err(e) => ScpResult::Error {
+                            error: e.to_string(),
+                        },
+                    };
+                    let _ = sender.send(result).await;
+                });
+            }
+        }
+        KeyCode::Backspace => {
+            if let AppMode::ScpForm { form, .. } = &mut app.mode {
+                let s = form.focused_value_mut();
+                s.pop();
+            }
+        }
+        KeyCode::Char(ch) => {
+            if let AppMode::ScpForm { form, .. } = &mut app.mode {
+                let s = form.focused_value_mut();
+                s.push(ch);
+            }
+        }
+        _ => {}
+    }
+    KeyFlow::Continue
+}
+
+async fn handle_scp_form_dropdown_key<B: Backend + Write>(
+    app: &mut App<B>,
+    key: KeyEvent,
+) -> KeyFlow {
+    if let AppMode::ScpForm { form, dropdown, .. } = &mut app.mode {
+        if let Some(dropdown_state) = dropdown {
+            match key.code {
+                KeyCode::Down => {
+                    dropdown_state.next();
+                    return KeyFlow::Continue;
+                }
+                KeyCode::Up => {
+                    dropdown_state.prev();
+                    return KeyFlow::Continue;
+                }
+                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    dropdown_state.next();
+                    return KeyFlow::Continue;
+                }
+                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    dropdown_state.prev();
+                    return KeyFlow::Continue;
+                }
+                KeyCode::Enter => {
+                    // Select the current option and apply it to the focused field
+                    if let Some(selected_option) = dropdown_state.get_selected().cloned() {
+                        if matches!(form.focus, ScpFocusField::LocalPath) {
+                            // Construct the complete path by combining current input with selected option
+                            let current = form.local_path.clone();
+                            form.local_path = construct_completed_path(&current, &selected_option);
+                        }
+                    }
+                    *dropdown = None;
+                    return KeyFlow::Continue;
+                }
+                KeyCode::Esc => {
+                    *dropdown = None;
+                    return KeyFlow::Continue;
+                }
+                _ => {
+                    // For other keys, hide dropdown and continue with normal processing
+                    *dropdown = None;
+                }
+            }
+        }
+    }
+
+    // If no dropdown or dropdown was closed, handle normal SCP form keys
+    handle_scp_form_key(app, key).await
+}
+
+async fn handle_scp_progress_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> KeyFlow {
+    if let AppMode::ScpProgress {
+        current_selected, ..
+    } = &mut app.mode
+    {
+        match key.code {
+            KeyCode::Esc => {
+                let current_selected = *current_selected;
+                app.info = Some("SCP transfer cancelled".to_string());
+                app.go_to_connection_list_with_selected(current_selected);
+            }
+            _ => {}
+        }
+    }
+    KeyFlow::Continue
 }
