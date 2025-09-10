@@ -25,6 +25,9 @@ pub enum AppError {
 
     #[error("Russh error: {0}")]
     RusshError(#[from] russh::Error),
+
+    #[error("Russh Sftp error: {0}")]
+    RusshSftpError(#[from] russh_sftp::client::error::Error),
 }
 
 /// Application result type alias

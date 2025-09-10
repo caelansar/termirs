@@ -2,15 +2,14 @@ mod async_ssh_client;
 mod config;
 mod error;
 mod key_event;
-mod ssh_client;
 mod ui;
 
 use std::io::Write;
-use std::sync::{Arc, Mutex, mpsc};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use chrono::Local;
-use crossterm::event::{self, DisableMouseCapture, Event};
+use crossterm::event::{self, DisableMouseCapture, Event as CtEvent};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -23,14 +22,23 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::Block;
 
+use async_ssh_client::SshSession;
 use config::manager::{AuthMethod, ConfigManager, Connection};
 use error::{AppError, Result};
-use ssh_client::SshClient;
 use ui::{
     ConnectionForm, ConnectionListItem, DropdownState, ScpForm, TerminalState,
     draw_connection_form, draw_connection_list, draw_dropdown, draw_error_popup, draw_info_popup,
     draw_scp_popup, draw_scp_progress_popup, draw_terminal,
 };
+
+use futures::StreamExt;
+use tokio::{select, sync::mpsc, time};
+
+impl crate::async_ssh_client::ByteProcessor for TerminalState {
+    fn process_bytes(&mut self, bytes: &[u8]) {
+        TerminalState::process_bytes(self, bytes);
+    }
+}
 
 /// Result of SCP transfer operation
 #[derive(Debug, Clone)]
@@ -44,7 +52,12 @@ pub(crate) enum ScpResult {
     },
 }
 
-#[derive(Clone)]
+#[derive(Debug)]
+enum AppEvent {
+    Input(CtEvent),
+    Tick,
+}
+
 pub(crate) enum AppMode {
     ConnectionList {
         selected: usize,
@@ -59,7 +72,7 @@ pub(crate) enum AppMode {
     },
     Connected {
         name: String,
-        client: SshClient,
+        client: SshSession,
         state: Arc<Mutex<TerminalState>>,
         current_selected: usize,
     },
@@ -150,7 +163,7 @@ impl<B: Backend + Write> App<B> {
     pub(crate) fn go_to_connected(
         &mut self,
         name: String,
-        client: SshClient,
+        client: SshSession,
         state: Arc<Mutex<TerminalState>>,
         current_selected: usize,
     ) {
@@ -180,7 +193,8 @@ impl<B: Backend + Write> App<B> {
     }
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     // Setup Crossterm terminal
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
@@ -190,12 +204,53 @@ fn main() -> Result<()> {
 
     let mut app = App::new(terminal)?;
 
-    // UI event/render loop
-    let mut last_tick = Instant::now();
-    let tick_rate = Duration::from_millis(10);
+    // async event channel
+    let (tx, mut rx) = mpsc::channel::<AppEvent>(100);
 
+    // ticker
+    let mut ticker = time::interval(Duration::from_millis(10));
+    let tx_tick = tx.clone();
+
+    // asynchronous: keyboard/terminal event listening
+    let tx_input = tx.clone();
+    let mut event_stream = event::EventStream::new();
+    tokio::spawn(async move {
+        loop {
+            select! {
+                maybe_ev = event_stream.next() => {
+                    let ev = match maybe_ev {
+                        None => break,
+                        Some(Err(_)) => break,
+                        Some(Ok(e)) => e,
+                    };
+                    if tx_input.send(AppEvent::Input(ev)).await.is_err() {
+                        break;
+                    }
+                }
+                _ = ticker.tick() => {
+                    if tx_tick.send(AppEvent::Tick).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    // run app loop
+    let res = run_app(&mut app, &mut rx).await;
+
+    // app drop restores terminal
+    drop(app);
+
+    res
+}
+
+async fn run_app<B: Backend + Write>(
+    app: &mut App<B>,
+    rx: &mut mpsc::Receiver<AppEvent>,
+) -> Result<()> {
     loop {
-        // main entry point for drawing to the terminal
+        // render a frame (sync)
         app.terminal.draw(|f| {
             let size = f.size();
             match &app.mode {
@@ -294,7 +349,11 @@ fn main() -> Result<()> {
                     if let Ok(mut guard) = state.lock() {
                         if guard.parser.screen().size() != (inner.height, inner.width) {
                             guard.resize(inner.height, inner.width);
-                            client.request_size(inner.width, inner.height);
+                            // TODO: resize event
+                            let client_clone = client.clone();
+                            tokio::spawn(async move {
+                                client_clone.request_size(inner.width, inner.height).await;
+                            });
                         }
                         draw_terminal(layout[1], &guard, f);
                     }
@@ -335,70 +394,68 @@ fn main() -> Result<()> {
             }
         })?;
 
-        // Input handling
-        while crossterm::event::poll(Duration::from_millis(1))? {
-            // true guarantees that read function call won't block.
-            match event::read()? {
-                Event::Key(key) => match crate::key_event::handle_key_event(&mut app, key) {
+        // wait for an event (asynchronous)
+        let ev = match rx.recv().await {
+            Some(e) => e,
+            None => break, // exit if channel is closed
+        };
+
+        match ev {
+            AppEvent::Tick => {
+                // Update spinner animation for SCP progress
+                if let Some(progress) = &mut app.scp_progress {
+                    progress.tick();
+                }
+
+                // Drain any SCP results
+                if let Some(receiver) = &mut app.scp_receiver {
+                    match receiver.try_recv() {
+                        Ok(result) => {
+                            // Clear progress and receiver
+                            app.scp_progress = None;
+                            app.scp_receiver = None;
+
+                            // Handle the result
+                            match result {
+                                ScpResult::Success {
+                                    local_path,
+                                    remote_path,
+                                } => {
+                                    app.info = Some(format!(
+                                        "SCP upload completed from {} to {}",
+                                        local_path, remote_path
+                                    ));
+                                }
+                                ScpResult::Error { error } => {
+                                    app.error = Some(AppError::SshConnectionError(error));
+                                }
+                            }
+                        }
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                            app.scp_progress = None;
+                            app.scp_receiver = None;
+                            app.error = Some(AppError::SshConnectionError(
+                                "SCP transfer task disconnected unexpectedly".to_string(),
+                            ));
+                        }
+                    }
+                }
+            }
+            AppEvent::Input(ev) => match ev {
+                CtEvent::Key(key) => match crate::key_event::handle_key_event(app, key).await {
                     crate::key_event::KeyFlow::Continue => {}
                     crate::key_event::KeyFlow::Quit => {
-                        drop(app);
                         return Ok(());
                     }
                 },
-                Event::Paste(data) => {
-                    crate::key_event::handle_paste_event(&mut app, &data);
+                CtEvent::Paste(data) => {
+                    crate::key_event::handle_paste_event(app, &data).await;
                 }
-                Event::Resize(_, _) => {}
+                CtEvent::Resize(_, _) => {}
                 _ => {}
-            }
-        }
-
-        // Check for SCP results from background thread
-        if let Some(receiver) = &app.scp_receiver {
-            match receiver.try_recv() {
-                Ok(result) => {
-                    // Clear progress and receiver
-                    app.scp_progress = None;
-                    app.scp_receiver = None;
-
-                    // Handle the result
-                    match result {
-                        ScpResult::Success {
-                            local_path,
-                            remote_path,
-                        } => {
-                            app.info = Some(format!(
-                                "SCP upload completed from {} to {}",
-                                local_path, remote_path
-                            ));
-                        }
-                        ScpResult::Error { error } => {
-                            app.error = Some(AppError::SshConnectionError(error));
-                        }
-                    }
-                }
-                Err(mpsc::TryRecvError::Empty) => {
-                    // No result yet, continue waiting
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    // Thread ended without sending result (shouldn't happen)
-                    app.scp_progress = None;
-                    app.scp_receiver = None;
-                    app.error = Some(AppError::SshConnectionError(
-                        "SCP transfer thread disconnected unexpectedly".to_string(),
-                    ));
-                }
-            }
-        }
-
-        if last_tick.elapsed() >= tick_rate {
-            last_tick = Instant::now();
-
-            // Update spinner animation for SCP progress
-            if let Some(progress) = &mut app.scp_progress {
-                progress.tick();
-            }
+            },
         }
     }
+    Ok(())
 }

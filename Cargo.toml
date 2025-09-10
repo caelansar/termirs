@@ -8,14 +8,13 @@ ratatui = { version = "0.27", default-features = false, features = ["crossterm"]
 ring = "0.17"
 crossterm = { version = "0.27", features = ["event-stream"] }
 vt100 = "0.16"
-ssh2 = "0.9"
 thiserror = "1.0"
 toml = "0.8"
 base64 = "0.22"
 serde = { version = "1.0", features = ["derive"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "fs"] }
 russh = "0.54.3"
 russh-sftp = "2.1.1"
 futures = "0.3"
