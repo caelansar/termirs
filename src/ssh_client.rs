@@ -16,6 +16,16 @@ const AUTH_PUBLICKEY: &str = "publickey";
 const AUTH_PASSWORD: &str = "password";
 const AUTH_KEYBOARD: &str = "keyboard-interactive";
 
+pub(crate) trait ByteProcessor {
+    fn process_bytes(&mut self, bytes: &[u8]);
+}
+
+impl ByteProcessor for TerminalState {
+    fn process_bytes(&mut self, bytes: &[u8]) {
+        TerminalState::process_bytes(self, bytes);
+    }
+}
+
 struct KbdIntPrompter {
     password: String,
 }
@@ -115,7 +125,7 @@ impl SshClient {
         Ok(())
     }
 
-    pub fn read_loop(&self, app_reader: Arc<Mutex<TerminalState>>) {
+    pub fn read_loop<B: ByteProcessor>(&self, app_reader: Arc<Mutex<B>>) {
         let client_reader = self.channel.clone();
 
         let mut buf = [0u8; 8192];
@@ -165,7 +175,7 @@ impl SshClient {
             })
     }
 
-    pub fn make_session(connection: &Connection) -> Result<Session> {
+    fn make_session(connection: &Connection) -> Result<Session> {
         let host = connection.host_port();
         let user = &connection.username;
 
@@ -242,17 +252,6 @@ impl SshClient {
         Ok(sess)
     }
 
-    #[allow(dead_code)]
-    pub fn read_some(&self, buf: &mut [u8]) -> usize {
-        let mut n = 0usize;
-        if let Ok(mut ch) = self.channel.lock() {
-            if let Ok(got) = ch.read(buf) {
-                n = got;
-            }
-        }
-        n
-    }
-
     pub fn close(&self) {
         if let Ok(mut ch) = self.channel.lock() {
             let _ = ch.send_eof();
@@ -307,9 +306,19 @@ impl SshClient {
 
 #[cfg(test)]
 mod tests {
+    use std::thread;
+
     use crate::config::manager::AuthMethod;
 
     use super::*;
+
+    struct EchoByteProcessor {
+    }
+    impl ByteProcessor for EchoByteProcessor {
+        fn process_bytes(&mut self, bytes: &[u8]) {
+            println!("Received bytes:\n {}", String::from_utf8_lossy(bytes));
+        }
+    }
 
     #[test]
     #[ignore = "requires a running ssh server"]
@@ -321,6 +330,17 @@ mod tests {
             AuthMethod::Password("dockerpass".to_string()),
         );
         let client = SshClient::connect(&conn).unwrap();
+
+        let client_clone = client.clone();
+
+        thread::spawn(move || {
+            client_clone.read_loop(Arc::new(Mutex::new(EchoByteProcessor {})));
+        });
+
+        client.write_all(b"pwd\n").unwrap();
+
+        thread::sleep(Duration::from_secs(1));
+
         client.close();
     }
 
