@@ -16,7 +16,7 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Margin};
 use ratatui::prelude::Backend;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
@@ -76,6 +76,16 @@ pub(crate) enum AppMode {
         state: Arc<Mutex<TerminalState>>,
         current_selected: usize,
     },
+    ScpForm {
+        form: ScpForm,
+        dropdown: Option<DropdownState>,
+        current_selected: usize,
+    },
+    ScpProgress {
+        progress: ScpProgress,
+        receiver: mpsc::Receiver<ScpResult>,
+        current_selected: usize,
+    },
 }
 
 /// SCP transfer progress state
@@ -126,10 +136,6 @@ pub(crate) struct App<B: Backend + Write> {
     pub(crate) error: Option<AppError>,
     pub(crate) info: Option<String>,
     pub(crate) config: ConfigManager,
-    pub(crate) scp_form: Option<ScpForm>,
-    pub(crate) dropdown: Option<DropdownState>,
-    pub(crate) scp_progress: Option<ScpProgress>,
-    pub(crate) scp_receiver: Option<mpsc::Receiver<ScpResult>>,
     terminal: Terminal<B>,
 }
 
@@ -152,10 +158,6 @@ impl<B: Backend + Write> App<B> {
             error: None,
             info: None,
             config: ConfigManager::new()?,
-            scp_form: None,
-            dropdown: None,
-            scp_progress: None,
-            scp_receiver: None,
             terminal,
         })
     }
@@ -183,12 +185,50 @@ impl<B: Backend + Write> App<B> {
         self.mode = AppMode::ConnectionList { selected };
     }
 
+    pub(crate) fn go_to_scp_form(&mut self, current_selected: usize) {
+        self.mode = AppMode::ScpForm {
+            form: ScpForm::new(),
+            dropdown: None,
+            current_selected,
+        };
+    }
+
+    pub(crate) fn go_to_scp_progress(
+        &mut self,
+        progress: ScpProgress,
+        receiver: mpsc::Receiver<ScpResult>,
+        current_selected: usize,
+    ) {
+        self.mode = AppMode::ScpProgress {
+            progress,
+            receiver,
+            current_selected,
+        };
+    }
+
     pub(crate) fn current_selected(&self) -> usize {
-        if let AppMode::ConnectionList { selected } = self.mode {
-            let len = self.config.connections().len();
-            if len == 0 { 0 } else { selected.min(len - 1) }
-        } else {
-            0
+        match &self.mode {
+            AppMode::ConnectionList { selected } => {
+                let len = self.config.connections().len();
+                if len == 0 {
+                    0
+                } else {
+                    (*selected).min(len - 1)
+                }
+            }
+            AppMode::FormEdit {
+                current_selected, ..
+            }
+            | AppMode::Connected {
+                current_selected, ..
+            }
+            | AppMode::ScpForm {
+                current_selected, ..
+            }
+            | AppMode::ScpProgress {
+                current_selected, ..
+            } => *current_selected,
+            _ => 0,
         }
     }
 }
@@ -358,6 +398,74 @@ async fn run_app<B: Backend + Write>(
                         draw_terminal(layout[1], &guard, f);
                     }
                 }
+                AppMode::ScpForm {
+                    current_selected, ..
+                } => {
+                    // Render the connection list background first
+                    let conns = app.config.connections();
+                    let title = format!("Saved Connections ({} connections)", conns.len());
+                    let items: Vec<ConnectionListItem> = conns
+                        .iter()
+                        .map(|c| ConnectionListItem {
+                            display_name: &c.display_name,
+                            host: &c.host,
+                            port: c.port,
+                            username: &c.username,
+                            created_at: c
+                                .created_at
+                                .with_timezone(&Local)
+                                .format("%Y-%m-%d %H:%M")
+                                .to_string(),
+                            auth_method: match &c.auth_method {
+                                AuthMethod::Password(_) => "password",
+                                AuthMethod::PublicKey { .. } => "public key",
+                            },
+                            last_used: c.last_used.map(|d| {
+                                d.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string()
+                            }),
+                        })
+                        .collect();
+                    let sel = if items.is_empty() {
+                        0
+                    } else {
+                        (*current_selected).min(items.len() - 1)
+                    };
+                    draw_connection_list(size, &title, &items, sel, f);
+                }
+                AppMode::ScpProgress {
+                    current_selected, ..
+                } => {
+                    // Render the connection list background first
+                    let conns = app.config.connections();
+                    let title = format!("Saved Connections ({} connections)", conns.len());
+                    let items: Vec<ConnectionListItem> = conns
+                        .iter()
+                        .map(|c| ConnectionListItem {
+                            display_name: &c.display_name,
+                            host: &c.host,
+                            port: c.port,
+                            username: &c.username,
+                            created_at: c
+                                .created_at
+                                .with_timezone(&Local)
+                                .format("%Y-%m-%d %H:%M")
+                                .to_string(),
+                            auth_method: match &c.auth_method {
+                                AuthMethod::Password(_) => "password",
+                                AuthMethod::PublicKey { .. } => "public key",
+                            },
+                            last_used: c.last_used.map(|d| {
+                                d.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string()
+                            }),
+                        })
+                        .collect();
+                    let sel = if items.is_empty() {
+                        0
+                    } else {
+                        (*current_selected).min(items.len() - 1)
+                    };
+                    draw_connection_list(size, &title, &items, sel, f);
+                }
             }
 
             // Overlay error popup if any
@@ -370,26 +478,20 @@ async fn run_app<B: Backend + Write>(
                 draw_info_popup(size, msg, f);
             }
 
-            // Overlay SCP popup if any
-            let mut scp_input_rects: Option<(Rect, Rect)> = None;
-            if let Some(form) = &app.scp_form {
-                scp_input_rects = Some(draw_scp_popup(size, form, f));
+            // Overlay SCP popup if in SCP form mode
+            if let AppMode::ScpForm { form, dropdown, .. } = &app.mode {
+                let scp_input_rects = draw_scp_popup(size, form, f);
+
+                // Update dropdown anchor rect if dropdown exists
+                if let Some(dropdown) = dropdown {
+                    let mut updated_dropdown = dropdown.clone();
+                    updated_dropdown.anchor_rect = scp_input_rects.0; // local path rect
+                    draw_dropdown(&updated_dropdown, f);
+                }
             }
 
-            // Update dropdown anchor rect if SCP popup is visible and dropdown exists
-            if let (Some(dropdown), Some((local_rect, _remote_rect))) =
-                (&mut app.dropdown, scp_input_rects)
-            {
-                dropdown.anchor_rect = local_rect;
-            }
-
-            // Overlay dropdown if any
-            if let Some(dropdown) = &app.dropdown {
-                draw_dropdown(dropdown, f);
-            }
-
-            // Overlay SCP progress if any
-            if let Some(progress) = &app.scp_progress {
+            // Overlay SCP progress popup if in SCP progress mode
+            if let AppMode::ScpProgress { progress, .. } = &app.mode {
                 draw_scp_progress_popup(size, progress, f);
             }
         })?;
@@ -402,18 +504,19 @@ async fn run_app<B: Backend + Write>(
 
         match ev {
             AppEvent::Tick => {
-                // Update spinner animation for SCP progress
-                if let Some(progress) = &mut app.scp_progress {
+                // Update spinner animation for SCP progress and handle results
+                if let AppMode::ScpProgress {
+                    progress,
+                    receiver,
+                    current_selected,
+                } = &mut app.mode
+                {
                     progress.tick();
-                }
 
-                // Drain any SCP results
-                if let Some(receiver) = &mut app.scp_receiver {
+                    // Drain any SCP results
                     match receiver.try_recv() {
                         Ok(result) => {
-                            // Clear progress and receiver
-                            app.scp_progress = None;
-                            app.scp_receiver = None;
+                            let current_selected = *current_selected;
 
                             // Handle the result
                             match result {
@@ -430,14 +533,17 @@ async fn run_app<B: Backend + Write>(
                                     app.error = Some(AppError::SshConnectionError(error));
                                 }
                             }
+
+                            // Go back to connection list
+                            app.go_to_connection_list_with_selected(current_selected);
                         }
                         Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
                         Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                            app.scp_progress = None;
-                            app.scp_receiver = None;
+                            let current_selected = *current_selected;
                             app.error = Some(AppError::SshConnectionError(
                                 "SCP transfer task disconnected unexpectedly".to_string(),
                             ));
+                            app.go_to_connection_list_with_selected(current_selected);
                         }
                     }
                 }
