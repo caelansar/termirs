@@ -22,6 +22,9 @@ pub enum AppError {
 
     #[error("SSH write error: {0}")]
     SshWriteError(String),
+
+    #[error("Russh error: {0}")]
+    RusshError(#[from] russh::Error),
 }
 
 /// Application result type alias

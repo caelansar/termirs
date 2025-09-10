@@ -1,3 +1,4 @@
+mod async_ssh_client;
 mod config;
 mod error;
 mod key_event;
