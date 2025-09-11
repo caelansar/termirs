@@ -1,5 +1,6 @@
 use std::time::Instant;
 
+use chrono::Local;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -404,6 +405,8 @@ pub fn draw_info_popup(area: Rect, message: &str, frame: &mut ratatui::Frame<'_>
 // Add Main Menu renderer
 use ratatui::widgets::{List, ListItem};
 
+use crate::config::manager::{AuthMethod, Connection};
+
 // Render the saved connections list
 
 #[derive(Clone, Debug)]
@@ -419,11 +422,38 @@ pub struct ConnectionListItem<'a> {
 
 pub fn draw_connection_list(
     area: Rect,
-    title: &str,
-    items: &[ConnectionListItem<'_>],
+    conns: &[Connection],
     selected_index: usize,
     frame: &mut ratatui::Frame<'_>,
 ) {
+    let title = format!("Saved Connections ({} connections)", conns.len());
+    let items: Vec<ConnectionListItem> = conns
+        .iter()
+        .map(|c| ConnectionListItem {
+            display_name: &c.display_name,
+            host: &c.host,
+            port: c.port,
+            username: &c.username,
+            created_at: c
+                .created_at
+                .with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string(),
+            auth_method: match &c.auth_method {
+                AuthMethod::Password(_) => "password",
+                AuthMethod::PublicKey { .. } => "public key",
+            },
+            last_used: c
+                .last_used
+                .map(|d| d.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string()),
+        })
+        .collect();
+    let sel = if items.is_empty() {
+        0
+    } else {
+        selected_index.min(items.len() - 1)
+    };
+
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -495,7 +525,7 @@ pub fn draw_connection_list(
     frame.render_stateful_widget(
         list,
         layout[1],
-        &mut ratatui::widgets::ListState::default().with_selected(Some(selected_index)),
+        &mut ratatui::widgets::ListState::default().with_selected(Some(sel)),
     );
 
     let footer = Layout::default()
