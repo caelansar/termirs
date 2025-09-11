@@ -8,7 +8,6 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use chrono::Local;
 use crossterm::event::{self, DisableMouseCapture, Event as CtEvent};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -23,12 +22,12 @@ use ratatui::text::Line;
 use ratatui::widgets::Block;
 
 use async_ssh_client::SshSession;
-use config::manager::{AuthMethod, ConfigManager, Connection};
+use config::manager::{ConfigManager, Connection};
 use error::{AppError, Result};
 use ui::{
-    ConnectionForm, ConnectionListItem, DropdownState, ScpForm, TerminalState,
-    draw_connection_form, draw_connection_list, draw_dropdown, draw_error_popup, draw_info_popup,
-    draw_scp_popup, draw_scp_progress_popup, draw_terminal,
+    ConnectionForm, DropdownState, ScpForm, TerminalState, draw_connection_form,
+    draw_connection_list, draw_dropdown, draw_error_popup, draw_info_popup, draw_scp_popup,
+    draw_scp_progress_popup, draw_terminal,
 };
 
 use futures::StreamExt;
@@ -162,6 +161,17 @@ impl<B: Backend + Write> App<B> {
         })
     }
 
+    pub(crate) fn init_terminal(&mut self) -> Result<()> {
+        enable_raw_mode()?;
+        execute!(
+            self.terminal.backend_mut(),
+            EnterAlternateScreen,
+            DisableMouseCapture
+        )?;
+
+        Ok(())
+    }
+
     pub(crate) fn go_to_connected(
         &mut self,
         name: String,
@@ -236,13 +246,12 @@ impl<B: Backend + Write> App<B> {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Setup Crossterm terminal
-    enable_raw_mode()?;
-    let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen, DisableMouseCapture)?;
+    let stdout = std::io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let terminal = Terminal::new(backend)?;
 
     let mut app = App::new(terminal)?;
+    app.init_terminal()?;
 
     // async event channel
     let (tx, mut rx) = mpsc::channel::<AppEvent>(100);
@@ -296,34 +305,7 @@ async fn run_app<B: Backend + Write>(
             match &app.mode {
                 AppMode::ConnectionList { selected } => {
                     let conns = app.config.connections();
-                    let title = format!("Saved Connections ({} connections)", conns.len());
-                    let items: Vec<ConnectionListItem> = conns
-                        .iter()
-                        .map(|c| ConnectionListItem {
-                            display_name: &c.display_name,
-                            host: &c.host,
-                            port: c.port,
-                            username: &c.username,
-                            created_at: c
-                                .created_at
-                                .with_timezone(&Local)
-                                .format("%Y-%m-%d %H:%M")
-                                .to_string(),
-                            auth_method: match &c.auth_method {
-                                AuthMethod::Password(_) => "password",
-                                AuthMethod::PublicKey { .. } => "public key",
-                            },
-                            last_used: c.last_used.map(|d| {
-                                d.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string()
-                            }),
-                        })
-                        .collect();
-                    let sel = if items.is_empty() {
-                        0
-                    } else {
-                        (*selected).min(items.len() - 1)
-                    };
-                    draw_connection_list(size, &title, &items, sel, f);
+                    draw_connection_list(size, conns, *selected, f);
                 }
                 AppMode::FormNew { form } => {
                     let layout = Layout::default()
@@ -403,68 +385,14 @@ async fn run_app<B: Backend + Write>(
                 } => {
                     // Render the connection list background first
                     let conns = app.config.connections();
-                    let title = format!("Saved Connections ({} connections)", conns.len());
-                    let items: Vec<ConnectionListItem> = conns
-                        .iter()
-                        .map(|c| ConnectionListItem {
-                            display_name: &c.display_name,
-                            host: &c.host,
-                            port: c.port,
-                            username: &c.username,
-                            created_at: c
-                                .created_at
-                                .with_timezone(&Local)
-                                .format("%Y-%m-%d %H:%M")
-                                .to_string(),
-                            auth_method: match &c.auth_method {
-                                AuthMethod::Password(_) => "password",
-                                AuthMethod::PublicKey { .. } => "public key",
-                            },
-                            last_used: c.last_used.map(|d| {
-                                d.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string()
-                            }),
-                        })
-                        .collect();
-                    let sel = if items.is_empty() {
-                        0
-                    } else {
-                        (*current_selected).min(items.len() - 1)
-                    };
-                    draw_connection_list(size, &title, &items, sel, f);
+                    draw_connection_list(size, conns, *current_selected, f);
                 }
                 AppMode::ScpProgress {
                     current_selected, ..
                 } => {
                     // Render the connection list background first
                     let conns = app.config.connections();
-                    let title = format!("Saved Connections ({} connections)", conns.len());
-                    let items: Vec<ConnectionListItem> = conns
-                        .iter()
-                        .map(|c| ConnectionListItem {
-                            display_name: &c.display_name,
-                            host: &c.host,
-                            port: c.port,
-                            username: &c.username,
-                            created_at: c
-                                .created_at
-                                .with_timezone(&Local)
-                                .format("%Y-%m-%d %H:%M")
-                                .to_string(),
-                            auth_method: match &c.auth_method {
-                                AuthMethod::Password(_) => "password",
-                                AuthMethod::PublicKey { .. } => "public key",
-                            },
-                            last_used: c.last_used.map(|d| {
-                                d.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string()
-                            }),
-                        })
-                        .collect();
-                    let sel = if items.is_empty() {
-                        0
-                    } else {
-                        (*current_selected).min(items.len() - 1)
-                    };
-                    draw_connection_list(size, &title, &items, sel, f);
+                    draw_connection_list(size, conns, *current_selected, f);
                 }
             }
 
