@@ -18,4 +18,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 russh = "0.54.3"
 russh-sftp = "2.1.1"
 futures = "0.3"
-anyhow = "1"
+anyhow = { version = "1", optional = true }
+
+[[example]]
+name = "async_with_tui"
+required-features = ["anyhow"]
