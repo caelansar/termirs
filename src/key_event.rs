@@ -500,6 +500,16 @@ async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEven
                     app.error = Some(e);
                 }
             }
+            KeyCode::Delete => {
+                if let Ok(mut guard) = state.lock() {
+                    if guard.parser.screen().scrollback() > 0 {
+                        guard.scroll_to_bottom();
+                    }
+                }
+                if let Err(e) = client.write_all(&[0x1b, 0x5b, 0x33, 0x7e]).await {
+                    app.error = Some(e);
+                }
+            }
             KeyCode::Tab => {
                 if let Ok(mut guard) = state.lock() {
                     if guard.parser.screen().scrollback() > 0 {

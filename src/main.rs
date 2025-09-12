@@ -299,6 +299,17 @@ async fn run_app<B: Backend + Write>(
     rx: &mut mpsc::Receiver<AppEvent>,
 ) -> Result<()> {
     loop {
+        if let AppMode::Connected { client, state, .. } = &app.mode {
+            let size = app.terminal.size()?;
+            let h = size.height.saturating_sub(4);
+            let w = size.width.saturating_sub(2);
+            if let Ok(guard) = state.lock() {
+                if guard.parser.screen().size() != (h, w) {
+                    client.request_size(w, h).await;
+                }
+            }
+        }
+
         // render a frame (sync)
         app.terminal.draw(|f| {
             let size = f.size();
@@ -345,12 +356,7 @@ async fn run_app<B: Backend + Write>(
 
                     draw_connection_form(layout[1], form, f);
                 }
-                AppMode::Connected {
-                    name,
-                    client,
-                    state,
-                    ..
-                } => {
+                AppMode::Connected { name, state, .. } => {
                     let layout = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([Constraint::Length(3), Constraint::Min(1)])
@@ -371,11 +377,6 @@ async fn run_app<B: Backend + Write>(
                     if let Ok(mut guard) = state.lock() {
                         if guard.parser.screen().size() != (inner.height, inner.width) {
                             guard.resize(inner.height, inner.width);
-                            // TODO: resize event
-                            let client_clone = client.clone();
-                            tokio::spawn(async move {
-                                client_clone.request_size(inner.width, inner.height).await;
-                            });
                         }
                         draw_terminal(layout[1], &guard, f);
                     }
