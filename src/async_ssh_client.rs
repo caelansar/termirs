@@ -30,10 +30,8 @@ impl client::Handler for SshClient {
 
 pub struct SshSession {
     session: Option<client::Handle<SshClient>>,
-    // channel: Arc<tokio::sync::Mutex<russh::Channel<client::Msg>>>,
-    // writer: Arc<tokio::sync::Mutex<Box<dyn tokio::io::AsyncWrite + Send + Unpin>>>,
     r: Arc<tokio::sync::Mutex<russh::ChannelReadHalf>>,
-    w: Arc<tokio::sync::Mutex<russh::ChannelWriteHalf<client::Msg>>>,
+    w: Arc<russh::ChannelWriteHalf<client::Msg>>,
 }
 
 impl Clone for SshSession {
@@ -161,22 +159,17 @@ impl SshSession {
         Ok(Self {
             session: Some(session),
             r: Arc::new(tokio::sync::Mutex::new(r)),
-            w: Arc::new(tokio::sync::Mutex::new(w)),
+            w: Arc::new(w),
         })
     }
 
     pub async fn request_size(&self, cols: u16, rows: u16) {
-        let _ = self
-            .w
-            .lock()
-            .await
-            .window_change(cols as u32, rows as u32, 0, 0)
-            .await;
+        let _ = self.w.window_change(cols as u32, rows as u32, 0, 0).await;
     }
 
     pub async fn write_all(&self, data: &[u8]) -> Result<()> {
         use tokio::io::AsyncWriteExt;
-        let mut writer = self.w.lock().await.make_writer();
+        let mut writer = self.w.make_writer();
         writer.write_all(data).await.map_err(|e| {
             AppError::SshWriteError(format!("Failed to write to SSH channel: {}", e))
         })?;
@@ -215,7 +208,7 @@ impl SshSession {
 
     #[allow(dead_code)]
     pub async fn close_channel(&self) -> Result<()> {
-        self.w.lock().await.close().await?;
+        self.w.close().await?;
         Ok(())
     }
 
