@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-ratatui = { version = "0.27", default-features = false, features = ["crossterm"] }
+ratatui = { version = "0.28", default-features = false, features = ["crossterm"] }
 ring = "0.17"
-crossterm = { version = "0.27", features = ["event-stream"] }
+crossterm = { version = "0.28", features = ["event-stream"] }
 vt100 = "0.16"
 thiserror = "1.0"
 toml = "0.8"
@@ -19,6 +19,7 @@ russh = "0.54.3"
 russh-sftp = "2.1.1"
 futures = "0.3"
 anyhow = { version = "1", optional = true }
+tui-textarea = "0.6.1"
 
 [[example]]
 name = "async_with_tui"

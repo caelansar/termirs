@@ -7,6 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
+use tui_textarea::TextArea;
 use vt100::{Color as VtColor, Parser};
 
 pub struct TerminalState {
@@ -130,7 +131,7 @@ pub fn draw_terminal(area: Rect, state: &TerminalState, frame: &mut ratatui::Fra
     if !screen.hide_cursor() {
         let cursor_x = area.x + 1 + cur_col;
         let cursor_y = area.y + 1 + cur_row;
-        frame.set_cursor(cursor_x, cursor_y);
+        frame.set_cursor_position((cursor_x, cursor_y));
     }
 }
 
@@ -146,27 +147,54 @@ pub enum FocusField {
     DisplayName,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct ConnectionForm {
-    pub host: String,
-    pub port: String,
-    pub username: String,
-    pub password: String,
-    pub private_key_path: String,
-    pub display_name: String,
+    pub host: TextArea<'static>,
+    pub port: TextArea<'static>,
+    pub username: TextArea<'static>,
+    pub password: TextArea<'static>,
+    pub private_key_path: TextArea<'static>,
+    pub display_name: TextArea<'static>,
     pub focus: FocusField,
     pub error: Option<String>,
 }
 
 impl ConnectionForm {
     pub fn new() -> Self {
+        let mut host = TextArea::default();
+        host.set_placeholder_text("Enter hostname or IP address");
+        host.set_cursor_line_style(Style::default());
+
+        let mut port = TextArea::default();
+        port.set_placeholder_text("22");
+        port.set_cursor_line_style(Style::default());
+
+        let mut username = TextArea::default();
+        username.set_placeholder_text("Enter username");
+        username.set_cursor_line_style(Style::default());
+
+        let mut password = TextArea::default();
+        password.set_placeholder_text("Enter password");
+        password.set_mask_char('*');
+        password.set_cursor_line_style(Style::default());
+
+        let mut private_key_path = TextArea::default();
+        private_key_path.set_placeholder_text(
+            "Enter private key path (at least one of password or key path is required)",
+        );
+        private_key_path.set_cursor_line_style(Style::default());
+
+        let mut display_name = TextArea::default();
+        display_name.set_placeholder_text("Enter display name (optional)");
+        display_name.set_cursor_line_style(Style::default());
+
         Self {
-            host: String::new(),
-            port: String::new(),
-            username: String::new(),
-            password: String::new(),
-            private_key_path: String::new(),
-            display_name: String::new(),
+            host,
+            port,
+            username,
+            password,
+            private_key_path,
+            display_name,
             focus: FocusField::Host,
             error: None,
         }
@@ -194,7 +222,7 @@ impl ConnectionForm {
         };
     }
 
-    pub fn focused_value_mut(&mut self) -> &mut String {
+    pub fn focused_textarea_mut(&mut self) -> &mut TextArea<'static> {
         match self.focus {
             FocusField::Host => &mut self.host,
             FocusField::Port => &mut self.port,
@@ -205,23 +233,97 @@ impl ConnectionForm {
         }
     }
 
+    pub fn get_host_value(&self) -> String {
+        self.host.lines()[0].clone()
+    }
+
+    pub fn get_port_value(&self) -> String {
+        self.port.lines()[0].clone()
+    }
+
+    pub fn get_username_value(&self) -> String {
+        self.username.lines()[0].clone()
+    }
+
+    pub fn get_password_value(&self) -> String {
+        self.password.lines()[0].clone()
+    }
+
+    pub fn get_private_key_path_value(&self) -> String {
+        self.private_key_path.lines()[0].clone()
+    }
+
+    pub fn get_display_name_value(&self) -> String {
+        self.display_name.lines()[0].clone()
+    }
+
     pub fn validate(&self) -> Result<(), String> {
-        if self.host.trim().is_empty() {
+        if self.get_host_value().trim().is_empty() {
             return Err("Host is required".into());
         }
-        if self.port.trim().is_empty() {
+        if self.get_port_value().trim().is_empty() {
             return Err("Port is required".into());
         }
-        if self.username.trim().is_empty() {
+        if self.get_username_value().trim().is_empty() {
             return Err("Username is required".into());
         }
-        if self.password.is_empty() && self.private_key_path.is_empty() {
+        if self.get_password_value().is_empty() && self.get_private_key_path_value().is_empty() {
             return Err("Password or private key is required".into());
         }
-        if !self.port.is_empty() && self.port.parse::<u16>().is_err() {
+        if !self.get_port_value().is_empty() && self.get_port_value().parse::<u16>().is_err() {
             return Err("Port must be a number".into());
         }
         Ok(())
+    }
+
+    pub fn from_connection(conn: &crate::config::manager::Connection) -> Self {
+        let mut host = TextArea::default();
+        host.set_placeholder_text("Enter hostname or IP address");
+        host.set_cursor_line_style(Style::default());
+        host.insert_str(conn.host.clone());
+
+        let mut port = TextArea::default();
+        port.set_placeholder_text("22");
+        port.set_cursor_line_style(Style::default());
+        port.insert_str(conn.port.to_string());
+
+        let mut username = TextArea::default();
+        username.set_placeholder_text("Enter username");
+        username.set_cursor_line_style(Style::default());
+        username.insert_str(conn.username.clone());
+
+        let mut password = TextArea::default();
+        password.set_placeholder_text("Enter password");
+        password.set_mask_char('*');
+        password.set_cursor_line_style(Style::default());
+        // Don't prefill password for security
+
+        let mut private_key_path = TextArea::default();
+        private_key_path.set_placeholder_text("Enter private key path (optional)");
+        private_key_path.set_cursor_line_style(Style::default());
+        if let crate::config::manager::AuthMethod::PublicKey {
+            private_key_path: path,
+            ..
+        } = &conn.auth_method
+        {
+            private_key_path.insert_str(path.clone());
+        }
+
+        let mut display_name = TextArea::default();
+        display_name.set_placeholder_text("Enter display name (optional)");
+        display_name.set_cursor_line_style(Style::default());
+        display_name.insert_str(conn.display_name.clone());
+
+        Self {
+            host,
+            port,
+            username,
+            password,
+            private_key_path,
+            display_name,
+            focus: FocusField::Host,
+            error: None,
+        }
     }
 }
 
@@ -241,57 +343,44 @@ pub fn draw_connection_form(area: Rect, form: &ConnectionForm, frame: &mut ratat
         ])
         .split(area);
 
-    let mut render_input =
-        |idx: usize, label: &str, value: &str, is_password: bool, focused: bool| {
-            let mut block = Block::default().borders(Borders::ALL).title(label);
-            if focused {
-                block = block.border_style(Style::default().fg(Color::Cyan));
-            } else {
-                block = block.border_style(Style::default());
-            }
-            let shown = if is_password {
-                "*".repeat(value.chars().count())
-            } else {
-                value.to_string()
-            };
-            let para = Paragraph::new(shown.clone()).block(block);
-            frame.render_widget(para, layout[idx]);
-            if focused {
-                let area_box = layout[idx].inner(Margin::new(1, 1));
-                let cursor_x = area_box.x + shown.len() as u16;
-                let cursor_y = area_box.y;
-                frame.set_cursor(cursor_x, cursor_y);
-            }
-        };
+    let mut render_textarea = |idx: usize, label: &str, textarea: &TextArea, focused: bool| {
+        let mut widget = textarea.clone();
+        let mut block = Block::default().borders(Borders::ALL).title(label);
+        if focused {
+            block = block.border_style(Style::default().fg(Color::Cyan));
+        } else {
+            // Hide cursor when not focused
+            widget.set_cursor_style(Style::default().bg(Color::Reset));
+        }
 
-    render_input(1, "Host", &form.host, false, form.focus == FocusField::Host);
-    render_input(2, "Port", &form.port, false, form.focus == FocusField::Port);
-    render_input(
+        widget.set_block(block);
+        frame.render_widget(&widget, layout[idx]);
+    };
+
+    render_textarea(1, "Host", &form.host, form.focus == FocusField::Host);
+    render_textarea(2, "Port", &form.port, form.focus == FocusField::Port);
+    render_textarea(
         3,
         "Username",
         &form.username,
-        false,
         form.focus == FocusField::Username,
     );
-    render_input(
+    render_textarea(
         4,
         "Password",
         &form.password,
-        true,
         form.focus == FocusField::Password,
     );
-    render_input(
+    render_textarea(
         5,
         "Private Key Path",
         &form.private_key_path,
-        false,
         form.focus == FocusField::PrivateKeyPath,
     );
-    render_input(
+    render_textarea(
         6,
         "Display Name (optional)",
         &form.display_name,
-        false,
         form.focus == FocusField::DisplayName,
     );
 }
@@ -557,18 +646,26 @@ pub enum ScpFocusField {
     RemotePath,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct ScpForm {
-    pub local_path: String,
-    pub remote_path: String,
+    pub local_path: TextArea<'static>,
+    pub remote_path: TextArea<'static>,
     pub focus: ScpFocusField,
 }
 
 impl ScpForm {
     pub fn new() -> Self {
+        let mut local_path = TextArea::default();
+        local_path.set_placeholder_text("Enter local file path");
+        local_path.set_cursor_line_style(Style::default());
+
+        let mut remote_path = TextArea::default();
+        remote_path.set_placeholder_text("Enter remote file path");
+        remote_path.set_cursor_line_style(Style::default());
+
         Self {
-            local_path: String::new(),
-            remote_path: String::new(),
+            local_path,
+            remote_path,
             focus: ScpFocusField::LocalPath,
         }
     }
@@ -584,11 +681,19 @@ impl ScpForm {
         self.next();
     }
 
-    pub fn focused_value_mut(&mut self) -> &mut String {
+    pub fn focused_textarea_mut(&mut self) -> &mut TextArea<'static> {
         match self.focus {
             ScpFocusField::LocalPath => &mut self.local_path,
             ScpFocusField::RemotePath => &mut self.remote_path,
         }
+    }
+
+    pub fn get_local_path_value(&self) -> String {
+        self.local_path.lines()[0].clone()
+    }
+
+    pub fn get_remote_path_value(&self) -> String {
+        self.remote_path.lines()[0].clone()
     }
 }
 
@@ -901,29 +1006,28 @@ pub fn draw_scp_popup(area: Rect, form: &ScpForm, frame: &mut ratatui::Frame<'_>
         ])
         .split(inner);
 
-    let mut render_input = |idx: usize, label: &str, value: &str, focused: bool| -> Rect {
-        let mut block = Block::default().borders(Borders::ALL).title(label);
-        if focused {
-            block = block.border_style(Style::default().fg(Color::Cyan));
-        }
-        let para = Paragraph::new(value.to_string()).block(block);
-        frame.render_widget(para, layout[idx]);
-        if focused {
-            let area_box = layout[idx].inner(Margin::new(1, 1));
-            let cursor_x = area_box.x + value.chars().count() as u16;
-            let cursor_y = area_box.y;
-            frame.set_cursor(cursor_x, cursor_y);
-        }
-        layout[idx]
-    };
+    let mut render_textarea =
+        |idx: usize, label: &str, textarea: &TextArea, focused: bool| -> Rect {
+            let mut widget = textarea.clone();
+            let mut block = Block::default().borders(Borders::ALL).title(label);
+            if focused {
+                block = block.border_style(Style::default().fg(Color::Cyan));
+            } else {
+                // Hide cursor when not focused
+                widget.set_cursor_style(Style::default().bg(Color::Reset));
+            }
+            widget.set_block(block);
+            frame.render_widget(&widget, layout[idx]);
+            layout[idx]
+        };
 
-    let local_path_rect = render_input(
+    let local_path_rect = render_textarea(
         0,
         "Local Path",
         &form.local_path,
         form.focus == ScpFocusField::LocalPath,
     );
-    let remote_path_rect = render_input(
+    let remote_path_rect = render_textarea(
         1,
         "Remote Path",
         &form.remote_path,
