@@ -8,7 +8,7 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crossterm::event::{self, DisableMouseCapture, Event as CtEvent};
+use crossterm::event::{self, DisableMouseCapture, Event};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -53,7 +53,7 @@ pub(crate) enum ScpResult {
 
 #[derive(Debug)]
 enum AppEvent {
-    Input(CtEvent),
+    Input(Event),
     Tick,
 }
 
@@ -312,7 +312,7 @@ async fn run_app<B: Backend + Write>(
 
         // render a frame (sync)
         app.terminal.draw(|f| {
-            let size = f.size();
+            let size = f.area();
             match &app.mode {
                 AppMode::ConnectionList { selected } => {
                     let conns = app.config.connections();
@@ -478,16 +478,16 @@ async fn run_app<B: Backend + Write>(
                 }
             }
             AppEvent::Input(ev) => match ev {
-                CtEvent::Key(key) => match crate::key_event::handle_key_event(app, key).await {
+                Event::Key(key) => match crate::key_event::handle_key_event(app, key).await {
                     crate::key_event::KeyFlow::Continue => {}
                     crate::key_event::KeyFlow::Quit => {
                         return Ok(());
                     }
                 },
-                CtEvent::Paste(data) => {
+                Event::Paste(data) => {
                     crate::key_event::handle_paste_event(app, &data).await;
                 }
-                CtEvent::Resize(_, _) => {}
+                Event::Resize(_, _) => {}
                 _ => {}
             },
         }

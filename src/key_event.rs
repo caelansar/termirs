@@ -14,6 +14,7 @@ use crate::error::AppError;
 use crate::ui::ScpFocusField;
 use crate::ui::TerminalState;
 use crate::{App, AppMode, ScpResult};
+use tui_textarea::Input;
 
 /// Result of handling a key or paste event
 pub enum KeyFlow {
@@ -67,12 +68,12 @@ pub async fn handle_key_event<B: Backend + Write>(app: &mut App<B>, key: KeyEven
 pub async fn handle_paste_event<B: Backend + Write>(app: &mut App<B>, data: &str) {
     match &mut app.mode {
         AppMode::FormNew { form } => {
-            let s = form.focused_value_mut();
-            s.push_str(data);
+            let textarea = form.focused_textarea_mut();
+            textarea.insert_str(data);
         }
         AppMode::FormEdit { form, .. } => {
-            let s = form.focused_value_mut();
-            s.push_str(data);
+            let textarea = form.focused_textarea_mut();
+            textarea.insert_str(data);
         }
         AppMode::Connected {
             name: _,
@@ -90,8 +91,8 @@ pub async fn handle_paste_event<B: Backend + Write>(app: &mut App<B>, data: &str
             }
         }
         AppMode::ScpForm { form, .. } => {
-            let s = form.focused_value_mut();
-            s.push_str(data);
+            let textarea = form.focused_textarea_mut();
+            textarea.insert_str(data);
         }
         AppMode::ConnectionList { .. } | AppMode::ScpProgress { .. } => {}
     }
@@ -150,21 +151,7 @@ async fn handle_connection_list_key<B: Backend + Write>(
         }
         KeyCode::Char('e') | KeyCode::Char('E') => {
             let original = app.config.connections()[app.current_selected()].clone();
-            let mut form = crate::ui::ConnectionForm::new();
-            form.host = original.host.clone();
-            form.port = original.port.to_string();
-            form.username = original.username.clone();
-            form.display_name = original.display_name.clone();
-            form.private_key_path = match &original.auth_method {
-                AuthMethod::PublicKey {
-                    private_key_path, ..
-                } => private_key_path.clone(),
-                _ => String::new(),
-            };
-            form.password = match &original.auth_method {
-                AuthMethod::Password(password) => password.clone(),
-                _ => String::new(),
-            };
+            let form = crate::ui::ConnectionForm::from_connection(&original);
 
             app.mode = AppMode::FormEdit {
                 form,
@@ -220,27 +207,30 @@ async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent
             if let AppMode::FormNew { form } = &mut app.mode {
                 match form.validate() {
                     Ok(_) => {
-                        let user = form.username.trim().to_string();
+                        let user = form.get_username_value().trim().to_string();
 
-                        let auth_method = if !form.private_key_path.trim().is_empty() {
+                        let auth_method = if !form.get_private_key_path_value().trim().is_empty() {
                             AuthMethod::PublicKey {
-                                private_key_path: form.private_key_path.trim().to_string(),
+                                private_key_path: form
+                                    .get_private_key_path_value()
+                                    .trim()
+                                    .to_string(),
                                 passphrase: None,
                             }
                         } else {
-                            AuthMethod::Password(form.password.clone())
+                            AuthMethod::Password(form.get_password_value())
                         };
 
                         let mut conn = Connection::new(
-                            form.host.trim().to_string(),
-                            form.port
+                            form.get_host_value().trim().to_string(),
+                            form.get_port_value()
                                 .parse::<u16>()
                                 .unwrap_or(app.config.default_port()),
                             user,
                             auth_method,
                         );
-                        if !form.display_name.trim().is_empty() {
-                            conn.set_display_name(form.display_name.trim().to_string());
+                        if !form.get_display_name_value().trim().is_empty() {
+                            conn.set_display_name(form.get_display_name_value().trim().to_string());
                         }
                         match SshSession::connect(&conn).await {
                             Ok(client) => {
@@ -269,19 +259,13 @@ async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent
                 }
             }
         }
-        KeyCode::Backspace => {
+        _ => {
+            // Use textarea's built-in input handling for all other keys
             if let AppMode::FormNew { form } = &mut app.mode {
-                let s = form.focused_value_mut();
-                s.pop();
+                let textarea = form.focused_textarea_mut();
+                textarea.input(Input::from(key));
             }
         }
-        KeyCode::Char(ch) => {
-            if let AppMode::FormNew { form } = &mut app.mode {
-                let s = form.focused_value_mut();
-                s.push(ch);
-            }
-        }
-        _ => {}
     }
     KeyFlow::Continue
 }
@@ -308,42 +292,42 @@ async fn handle_form_edit_key<B: Backend + Write>(app: &mut App<B>, key: KeyEven
         }
         KeyCode::Enter => {
             if let AppMode::FormEdit { form, original, .. } = &mut app.mode {
-                if form.host.trim().is_empty() {
+                if form.get_host_value().trim().is_empty() {
                     app.error = Some(AppError::ValidationError("Host is required".into()));
                     return KeyFlow::Continue;
                 }
-                if form.port.trim().is_empty() {
+                if form.get_port_value().trim().is_empty() {
                     app.error = Some(AppError::ValidationError("Port is required".into()));
                     return KeyFlow::Continue;
                 }
-                let parsed_port = match form.port.parse::<u16>() {
+                let parsed_port = match form.get_port_value().parse::<u16>() {
                     Ok(p) => p,
                     Err(_) => {
                         app.error = Some(AppError::ValidationError("Port must be a number".into()));
                         return KeyFlow::Continue;
                     }
                 };
-                if form.username.trim().is_empty() {
+                if form.get_username_value().trim().is_empty() {
                     app.error = Some(AppError::ValidationError("Username is required".into()));
                     return KeyFlow::Continue;
                 }
 
-                let new_password = if form.password.is_empty() {
+                let new_password = if form.get_password_value().is_empty() {
                     // Extract password from original connection's auth_method
                     match &original.auth_method {
                         AuthMethod::Password(password) => password.clone(),
                         _ => String::new(), // Default to empty if not password auth
                     }
                 } else {
-                    form.password.clone()
+                    form.get_password_value()
                 };
 
                 let mut updated = original.clone();
-                updated.host = form.host.trim().to_string();
+                updated.host = form.get_host_value().trim().to_string();
                 updated.port = parsed_port;
-                updated.username = form.username.trim().to_string();
+                updated.username = form.get_username_value().trim().to_string();
                 updated.auth_method = AuthMethod::Password(new_password);
-                updated.display_name = form.display_name.trim().to_string();
+                updated.display_name = form.get_display_name_value().trim().to_string();
 
                 if let Err(e) = updated.validate() {
                     app.error = Some(e);
@@ -361,19 +345,13 @@ async fn handle_form_edit_key<B: Backend + Write>(app: &mut App<B>, key: KeyEven
                 }
             }
         }
-        KeyCode::Backspace => {
+        _ => {
+            // Use textarea's built-in input handling for all other keys
             if let AppMode::FormEdit { form, .. } = &mut app.mode {
-                let s = form.focused_value_mut();
-                s.pop();
+                let textarea = form.focused_textarea_mut();
+                textarea.input(Input::from(key));
             }
         }
-        KeyCode::Char(ch) => {
-            if let AppMode::FormEdit { form, .. } = &mut app.mode {
-                let s = form.focused_value_mut();
-                s.push(ch);
-            }
-        }
-        _ => {}
     }
     KeyFlow::Continue
 }
@@ -826,11 +804,12 @@ async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent
             if let AppMode::ScpForm { form, dropdown, .. } = &mut app.mode {
                 // Auto-complete local path when focused on LocalPath field
                 if matches!(form.focus, ScpFocusField::LocalPath) {
-                    let current = form.local_path.clone();
+                    let current = form.get_local_path_value();
                     match autocomplete_local_path(&current) {
                         Some(completed) => {
                             if !current.ends_with('/') && completed != current {
-                                form.local_path = completed;
+                                form.local_path.delete_line_by_head();
+                                form.local_path.insert_str(completed);
                             } else {
                                 // Show dropdown with available options when no change
                                 if let Some(options) = list_completion_options(&current)
@@ -876,8 +855,8 @@ async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent
                 ..
             } = &app.mode
             {
-                let local = form.local_path.trim().to_string();
-                let remote = form.remote_path.trim().to_string();
+                let local = form.get_local_path_value().trim().to_string();
+                let remote = form.get_remote_path_value().trim().to_string();
                 let conn_opt = app.config.connections().get(*current_selected).cloned();
                 (local, remote, *current_selected, conn_opt)
             } else {
@@ -935,19 +914,13 @@ async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent
                 });
             }
         }
-        KeyCode::Backspace => {
+        _ => {
+            // Use textarea's built-in input handling for all other keys
             if let AppMode::ScpForm { form, .. } = &mut app.mode {
-                let s = form.focused_value_mut();
-                s.pop();
+                let textarea = form.focused_textarea_mut();
+                textarea.input(Input::from(key));
             }
         }
-        KeyCode::Char(ch) => {
-            if let AppMode::ScpForm { form, .. } = &mut app.mode {
-                let s = form.focused_value_mut();
-                s.push(ch);
-            }
-        }
-        _ => {}
     }
     KeyFlow::Continue
 }
@@ -980,8 +953,11 @@ async fn handle_scp_form_dropdown_key<B: Backend + Write>(
                     if let Some(selected_option) = dropdown_state.get_selected().cloned() {
                         if matches!(form.focus, ScpFocusField::LocalPath) {
                             // Construct the complete path by combining current input with selected option
-                            let current = form.local_path.clone();
-                            form.local_path = construct_completed_path(&current, &selected_option);
+                            let current = form.get_local_path_value();
+                            let completed_path =
+                                construct_completed_path(&current, &selected_option);
+                            form.local_path.delete_line_by_head();
+                            form.local_path.insert_str(completed_path);
                         }
                     }
                     *dropdown = None;
