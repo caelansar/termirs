@@ -28,6 +28,9 @@ pub enum AppError {
 
     #[error("Russh Sftp error: {0}")]
     RusshSftpError(#[from] russh_sftp::client::error::Error),
+
+    #[error("SSH public key validation error: {0}")]
+    SshPublicKeyValidationError(String),
 }
 
 /// Application result type alias

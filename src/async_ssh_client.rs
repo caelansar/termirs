@@ -15,15 +15,43 @@ pub(crate) trait ByteProcessor {
     fn process_bytes(&mut self, bytes: &[u8]);
 }
 
-struct SshClient {}
+struct SshClient {
+    connection: Connection,
+    server_key: Arc<tokio::sync::Mutex<Option<String>>>,
+}
 
 impl client::Handler for SshClient {
     type Error = AppError;
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &ssh_key::PublicKey,
+        server_public_key: &ssh_key::PublicKey,
     ) -> std::result::Result<bool, Self::Error> {
+        // Encode the server public key in OpenSSH format
+        let server_key_openssh = server_public_key.to_openssh().map_err(|e| {
+            AppError::SshPublicKeyValidationError(format!("Failed to encode server key: {}", e))
+        })?;
+
+        // Store the server key for later validation
+        {
+            let mut key_guard = self.server_key.lock().await;
+            *key_guard = Some(server_key_openssh.clone());
+        }
+
+        // Check if connection already has a stored public key
+        if let Some(stored_key) = &self.connection.public_key {
+            // Compare stored key with server key
+            if stored_key == &server_key_openssh {
+                return Ok(true);
+            } else {
+                return Err(AppError::SshPublicKeyValidationError(format!(
+                    "Server public key mismatch for {}:{}. Expected: {}, Got: {}",
+                    self.connection.host, self.connection.port, stored_key, server_key_openssh
+                )));
+            }
+        }
+
+        // No stored key, accept it for now - we'll save it after successful connection
         Ok(true)
     }
 }
@@ -32,6 +60,7 @@ pub struct SshSession {
     session: Option<client::Handle<SshClient>>,
     r: Arc<tokio::sync::Mutex<russh::ChannelReadHalf>>,
     w: Arc<russh::ChannelWriteHalf<client::Msg>>,
+    server_key: Arc<tokio::sync::Mutex<Option<String>>>,
 }
 
 impl Clone for SshSession {
@@ -40,19 +69,30 @@ impl Clone for SshSession {
             session: None,
             r: Arc::clone(&self.r),
             w: Arc::clone(&self.w),
+            server_key: Arc::clone(&self.server_key),
         }
     }
 }
 
 impl SshSession {
-    async fn new_session(connection: &Connection) -> Result<client::Handle<SshClient>> {
+    async fn new_session(
+        connection: &Connection,
+    ) -> Result<(
+        client::Handle<SshClient>,
+        Arc<tokio::sync::Mutex<Option<String>>>,
+    )> {
         let mut config = client::Config::default();
         config.inactivity_timeout = None;
         config.keepalive_interval = Some(std::time::Duration::from_secs(30));
         config.keepalive_max = 3;
 
         let config = Arc::new(config);
-        let mut session = client::connect(config, connection.host_port(), SshClient {}).await?;
+        let server_key = Arc::new(tokio::sync::Mutex::new(None));
+        let ssh_client = SshClient {
+            connection: connection.clone(),
+            server_key: server_key.clone(),
+        };
+        let mut session = client::connect(config, connection.host_port(), ssh_client).await?;
 
         let auth_result = session.authenticate_none(&connection.username).await?;
         let mut interactive = false;
@@ -139,11 +179,11 @@ impl SshSession {
             }
         }
 
-        Ok(session)
+        Ok((session, server_key))
     }
 
     pub async fn connect(connection: &Connection) -> Result<Self> {
-        let session = Self::new_session(connection).await?;
+        let (session, server_key) = Self::new_session(connection).await?;
 
         let channel = session.channel_open_session().await?;
         channel
@@ -160,6 +200,7 @@ impl SshSession {
             session: Some(session),
             r: Arc::new(tokio::sync::Mutex::new(r)),
             w: Arc::new(w),
+            server_key,
         })
     }
 
@@ -212,12 +253,18 @@ impl SshSession {
         Ok(())
     }
 
+    /// Get the server public key that was received during connection
+    pub async fn get_server_key(&self) -> Option<String> {
+        let key_guard = self.server_key.lock().await;
+        key_guard.clone()
+    }
+
     pub async fn sftp_send_file(
         connection: &Connection,
         local_path: &str,
         remote_path: &str,
     ) -> Result<()> {
-        let session = Self::new_session(connection).await?;
+        let (session, _server_key) = Self::new_session(connection).await?;
 
         let channel = session.channel_open_session().await?;
         channel.request_subsystem(true, "sftp").await?;

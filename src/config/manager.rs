@@ -93,6 +93,7 @@ pub struct Connection {
     pub auth_method: AuthMethod,
     pub created_at: DateTime<Utc>,
     pub last_used: Option<DateTime<Utc>>,
+    pub public_key: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -130,6 +131,7 @@ impl Connection {
             auth_method,
             created_at: Utc::now(),
             last_used: None,
+            public_key: None,
         }
     }
 
@@ -264,6 +266,11 @@ impl ConfigManager {
     /// Return immutable slice of connections
     pub fn connections(&self) -> &[Connection] {
         &self.config.connections
+    }
+
+    /// Return mutable slice of connections
+    pub fn connections_mut(&mut self) -> &mut Vec<Connection> {
+        &mut self.config.connections
     }
 
     /// Add a new connection and persist it

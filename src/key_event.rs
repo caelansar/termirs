@@ -130,6 +130,22 @@ async fn handle_connection_list_key<B: Backend + Write>(
             let conn = app.config.connections()[app.current_selected()].clone();
             match SshSession::connect(&conn).await {
                 Ok(client) => {
+                    // Save the server key if it was received and the connection doesn't have one stored
+                    if conn.public_key.is_none() {
+                        if let Some(server_key) = client.get_server_key().await {
+                            if let Some(stored_conn) =
+                                app.config.connections_mut().iter_mut().find(|c| {
+                                    c.host == conn.host
+                                        && c.port == conn.port
+                                        && c.username == conn.username
+                                })
+                            {
+                                stored_conn.public_key = Some(server_key);
+                                let _ = app.config.save();
+                            }
+                        }
+                    }
+
                     let state = Arc::new(Mutex::new(TerminalState::new(30, 100)));
                     let app_reader = state.clone();
                     let mut client_clone = client.clone();
@@ -234,6 +250,11 @@ async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent
                         }
                         match SshSession::connect(&conn).await {
                             Ok(client) => {
+                                // Save the server key if it was received
+                                if let Some(server_key) = client.get_server_key().await {
+                                    conn.public_key = Some(server_key);
+                                }
+
                                 if let Err(e) = app.config.add_connection(conn.clone()) {
                                     app.error = Some(e);
                                 }
