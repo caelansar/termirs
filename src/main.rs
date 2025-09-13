@@ -26,8 +26,8 @@ use config::manager::{ConfigManager, Connection};
 use error::{AppError, Result};
 use ui::{
     ConnectionForm, DropdownState, ScpForm, TerminalState, draw_connection_form,
-    draw_connection_list, draw_dropdown, draw_error_popup, draw_info_popup, draw_scp_popup,
-    draw_scp_progress_popup, draw_terminal,
+    draw_connection_list, draw_delete_confirmation_popup, draw_dropdown, draw_error_popup,
+    draw_info_popup, draw_scp_popup, draw_scp_progress_popup, draw_terminal,
 };
 
 use futures::StreamExt;
@@ -83,6 +83,11 @@ pub(crate) enum AppMode {
     ScpProgress {
         progress: ScpProgress,
         receiver: mpsc::Receiver<ScpResult>,
+        current_selected: usize,
+    },
+    DeleteConfirmation {
+        connection_name: String,
+        connection_id: String,
         current_selected: usize,
     },
 }
@@ -216,6 +221,19 @@ impl<B: Backend + Write> App<B> {
         };
     }
 
+    pub(crate) fn go_to_delete_confirmation(
+        &mut self,
+        connection_name: String,
+        connection_id: String,
+        current_selected: usize,
+    ) {
+        self.mode = AppMode::DeleteConfirmation {
+            connection_name,
+            connection_id,
+            current_selected,
+        };
+    }
+
     pub(crate) fn current_selected(&self) -> usize {
         match &self.mode {
             AppMode::ConnectionList { selected } => {
@@ -236,6 +254,9 @@ impl<B: Backend + Write> App<B> {
                 current_selected, ..
             }
             | AppMode::ScpProgress {
+                current_selected, ..
+            }
+            | AppMode::DeleteConfirmation {
                 current_selected, ..
             } => *current_selected,
             _ => 0,
@@ -395,6 +416,13 @@ async fn run_app<B: Backend + Write>(
                     let conns = app.config.connections();
                     draw_connection_list(size, conns, *current_selected, f);
                 }
+                AppMode::DeleteConfirmation {
+                    current_selected, ..
+                } => {
+                    // Render the connection list background first
+                    let conns = app.config.connections();
+                    draw_connection_list(size, conns, *current_selected, f);
+                }
             }
 
             // Overlay error popup if any
@@ -422,6 +450,14 @@ async fn run_app<B: Backend + Write>(
             // Overlay SCP progress popup if in SCP progress mode
             if let AppMode::ScpProgress { progress, .. } = &app.mode {
                 draw_scp_progress_popup(size, progress, f);
+            }
+
+            // Overlay delete confirmation popup if in delete confirmation mode
+            if let AppMode::DeleteConfirmation {
+                connection_name, ..
+            } = &app.mode
+            {
+                draw_delete_confirmation_popup(size, connection_name, f);
             }
         })?;
 

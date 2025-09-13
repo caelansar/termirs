@@ -61,6 +61,7 @@ pub async fn handle_key_event<B: Backend + Write>(app: &mut App<B>, key: KeyEven
         } => handle_scp_form_dropdown_key(app, key).await,
         AppMode::ScpForm { .. } => handle_scp_form_key(app, key).await,
         AppMode::ScpProgress { .. } => handle_scp_progress_key(app, key).await,
+        AppMode::DeleteConfirmation { .. } => handle_delete_confirmation_key(app, key).await,
     }
 }
 
@@ -94,7 +95,9 @@ pub async fn handle_paste_event<B: Backend + Write>(app: &mut App<B>, data: &str
             let textarea = form.focused_textarea_mut();
             textarea.insert_str(data);
         }
-        AppMode::ConnectionList { .. } | AppMode::ScpProgress { .. } => {}
+        AppMode::ConnectionList { .. }
+        | AppMode::ScpProgress { .. }
+        | AppMode::DeleteConfirmation { .. } => {}
     }
 }
 
@@ -177,23 +180,10 @@ async fn handle_connection_list_key<B: Backend + Write>(
         }
         KeyCode::Char('d') | KeyCode::Char('D') => {
             if let Some(conn) = app.config.connections().get(app.current_selected()) {
-                let id = conn.id.clone();
-                match app.config.remove_connection(&id) {
-                    Ok(_) => {
-                        if let Err(e) = app.config.save() {
-                            app.error = Some(e);
-                        }
-                        let new_len = app.config.connections().len();
-                        if let AppMode::ConnectionList { selected } = &mut app.mode {
-                            if new_len == 0 {
-                                *selected = 0;
-                            } else if *selected >= new_len {
-                                *selected = new_len - 1;
-                            }
-                        }
-                    }
-                    Err(e) => app.error = Some(e),
-                }
+                let connection_name = conn.display_name.clone();
+                let connection_id = conn.id.clone();
+                let current_selected = app.current_selected();
+                app.go_to_delete_confirmation(connection_name, connection_id, current_selected);
             }
         }
         KeyCode::Esc | KeyCode::Char('q') => {
@@ -1009,6 +999,56 @@ async fn handle_scp_progress_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
             KeyCode::Esc => {
                 let current_selected = *current_selected;
                 app.info = Some("SCP transfer cancelled".to_string());
+                app.go_to_connection_list_with_selected(current_selected);
+            }
+            _ => {}
+        }
+    }
+    KeyFlow::Continue
+}
+
+async fn handle_delete_confirmation_key<B: Backend + Write>(
+    app: &mut App<B>,
+    key: KeyEvent,
+) -> KeyFlow {
+    if let AppMode::DeleteConfirmation {
+        connection_id,
+        current_selected,
+        ..
+    } = &app.mode
+    {
+        let connection_id = connection_id.clone();
+        let current_selected = *current_selected;
+
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                // Confirm deletion
+                match app.config.remove_connection(&connection_id) {
+                    Ok(_) => {
+                        if let Err(e) = app.config.save() {
+                            app.error = Some(e);
+                            app.go_to_connection_list_with_selected(current_selected);
+                        } else {
+                            app.info = Some("Connection deleted successfully".to_string());
+                            let new_len = app.config.connections().len();
+                            let new_selected = if new_len == 0 {
+                                0
+                            } else if current_selected >= new_len {
+                                new_len - 1
+                            } else {
+                                current_selected
+                            };
+                            app.go_to_connection_list_with_selected(new_selected);
+                        }
+                    }
+                    Err(e) => {
+                        app.error = Some(e);
+                        app.go_to_connection_list_with_selected(current_selected);
+                    }
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                // Cancel deletion
                 app.go_to_connection_list_with_selected(current_selected);
             }
             _ => {}
