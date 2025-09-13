@@ -4,15 +4,23 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-ratatui = { version = "0.27", default-features = false, features = ["crossterm"] }
+ratatui = { version = "0.28", default-features = false, features = ["crossterm"] }
 ring = "0.17"
-crossterm = "0.27"
-portable-pty = "0.8"
+crossterm = { version = "0.28", features = ["event-stream"] }
 vt100 = "0.16"
-ssh2 = "0.9"
 thiserror = "1.0"
 toml = "0.8"
 base64 = "0.22"
 serde = { version = "1.0", features = ["derive"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "fs"] }
+russh = "0.54.3"
+russh-sftp = "2.1.1"
+futures = "0.3"
+anyhow = { version = "1", optional = true }
+tui-textarea = "0.6.1"
+
+[[example]]
+name = "async_with_tui"
+required-features = ["anyhow"]

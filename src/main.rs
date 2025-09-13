@@ -1,14 +1,13 @@
+mod async_ssh_client;
 mod config;
 mod error;
 mod key_event;
-mod ssh_client;
 mod ui;
 
 use std::io::Write;
-use std::sync::{Arc, Mutex, mpsc};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use chrono::Local;
 use crossterm::event::{self, DisableMouseCapture, Event};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -16,20 +15,29 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Margin};
 use ratatui::prelude::Backend;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::Block;
 
-use config::manager::{AuthMethod, ConfigManager, Connection};
+use async_ssh_client::SshSession;
+use config::manager::{ConfigManager, Connection};
 use error::{AppError, Result};
-use ssh_client::SshClient;
 use ui::{
-    ConnectionForm, ConnectionListItem, DropdownState, ScpForm, TerminalState,
-    draw_connection_form, draw_connection_list, draw_dropdown, draw_error_popup, draw_info_popup,
-    draw_scp_popup, draw_scp_progress_popup, draw_terminal,
+    ConnectionForm, DropdownState, ScpForm, TerminalState, draw_connection_form,
+    draw_connection_list, draw_delete_confirmation_popup, draw_dropdown, draw_error_popup,
+    draw_info_popup, draw_scp_popup, draw_scp_progress_popup, draw_terminal,
 };
+
+use futures::StreamExt;
+use tokio::{select, sync::mpsc, time};
+
+impl crate::async_ssh_client::ByteProcessor for TerminalState {
+    fn process_bytes(&mut self, bytes: &[u8]) {
+        TerminalState::process_bytes(self, bytes);
+    }
+}
 
 /// Result of SCP transfer operation
 #[derive(Debug, Clone)]
@@ -43,7 +51,12 @@ pub(crate) enum ScpResult {
     },
 }
 
-#[derive(Clone)]
+#[derive(Debug)]
+enum AppEvent {
+    Input(Event),
+    Tick,
+}
+
 pub(crate) enum AppMode {
     ConnectionList {
         selected: usize,
@@ -58,8 +71,23 @@ pub(crate) enum AppMode {
     },
     Connected {
         name: String,
-        client: SshClient,
+        client: SshSession,
         state: Arc<Mutex<TerminalState>>,
+        current_selected: usize,
+    },
+    ScpForm {
+        form: ScpForm,
+        dropdown: Option<DropdownState>,
+        current_selected: usize,
+    },
+    ScpProgress {
+        progress: ScpProgress,
+        receiver: mpsc::Receiver<ScpResult>,
+        current_selected: usize,
+    },
+    DeleteConfirmation {
+        connection_name: String,
+        connection_id: String,
         current_selected: usize,
     },
 }
@@ -112,10 +140,6 @@ pub(crate) struct App<B: Backend + Write> {
     pub(crate) error: Option<AppError>,
     pub(crate) info: Option<String>,
     pub(crate) config: ConfigManager,
-    pub(crate) scp_form: Option<ScpForm>,
-    pub(crate) dropdown: Option<DropdownState>,
-    pub(crate) scp_progress: Option<ScpProgress>,
-    pub(crate) scp_receiver: Option<mpsc::Receiver<ScpResult>>,
     terminal: Terminal<B>,
 }
 
@@ -138,18 +162,25 @@ impl<B: Backend + Write> App<B> {
             error: None,
             info: None,
             config: ConfigManager::new()?,
-            scp_form: None,
-            dropdown: None,
-            scp_progress: None,
-            scp_receiver: None,
             terminal,
         })
+    }
+
+    pub(crate) fn init_terminal(&mut self) -> Result<()> {
+        enable_raw_mode()?;
+        execute!(
+            self.terminal.backend_mut(),
+            EnterAlternateScreen,
+            DisableMouseCapture
+        )?;
+
+        Ok(())
     }
 
     pub(crate) fn go_to_connected(
         &mut self,
         name: String,
-        client: SshClient,
+        client: SshSession,
         state: Arc<Mutex<TerminalState>>,
         current_selected: usize,
     ) {
@@ -169,65 +200,144 @@ impl<B: Backend + Write> App<B> {
         self.mode = AppMode::ConnectionList { selected };
     }
 
+    pub(crate) fn go_to_scp_form(&mut self, current_selected: usize) {
+        self.mode = AppMode::ScpForm {
+            form: ScpForm::new(),
+            dropdown: None,
+            current_selected,
+        };
+    }
+
+    pub(crate) fn go_to_scp_progress(
+        &mut self,
+        progress: ScpProgress,
+        receiver: mpsc::Receiver<ScpResult>,
+        current_selected: usize,
+    ) {
+        self.mode = AppMode::ScpProgress {
+            progress,
+            receiver,
+            current_selected,
+        };
+    }
+
+    pub(crate) fn go_to_delete_confirmation(
+        &mut self,
+        connection_name: String,
+        connection_id: String,
+        current_selected: usize,
+    ) {
+        self.mode = AppMode::DeleteConfirmation {
+            connection_name,
+            connection_id,
+            current_selected,
+        };
+    }
+
     pub(crate) fn current_selected(&self) -> usize {
-        if let AppMode::ConnectionList { selected } = self.mode {
-            let len = self.config.connections().len();
-            if len == 0 { 0 } else { selected.min(len - 1) }
-        } else {
-            0
+        match &self.mode {
+            AppMode::ConnectionList { selected } => {
+                let len = self.config.connections().len();
+                if len == 0 {
+                    0
+                } else {
+                    (*selected).min(len - 1)
+                }
+            }
+            AppMode::FormEdit {
+                current_selected, ..
+            }
+            | AppMode::Connected {
+                current_selected, ..
+            }
+            | AppMode::ScpForm {
+                current_selected, ..
+            }
+            | AppMode::ScpProgress {
+                current_selected, ..
+            }
+            | AppMode::DeleteConfirmation {
+                current_selected, ..
+            } => *current_selected,
+            _ => 0,
         }
     }
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     // Setup Crossterm terminal
-    enable_raw_mode()?;
-    let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen, DisableMouseCapture)?;
+    let stdout = std::io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let terminal = Terminal::new(backend)?;
 
     let mut app = App::new(terminal)?;
+    app.init_terminal()?;
 
-    // UI event/render loop
-    let mut last_tick = Instant::now();
-    let tick_rate = Duration::from_millis(10);
+    // async event channel
+    let (tx, mut rx) = mpsc::channel::<AppEvent>(100);
 
+    // ticker
+    let mut ticker = time::interval(Duration::from_millis(10));
+    let tx_tick = tx.clone();
+
+    // asynchronous: keyboard/terminal event listening
+    let tx_input = tx.clone();
+    let mut event_stream = event::EventStream::new();
+    tokio::spawn(async move {
+        loop {
+            select! {
+                maybe_ev = event_stream.next() => {
+                    let ev = match maybe_ev {
+                        None => break,
+                        Some(Err(_)) => break,
+                        Some(Ok(e)) => e,
+                    };
+                    if tx_input.send(AppEvent::Input(ev)).await.is_err() {
+                        break;
+                    }
+                }
+                _ = ticker.tick() => {
+                    if tx_tick.send(AppEvent::Tick).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    // run app loop
+    let res = run_app(&mut app, &mut rx).await;
+
+    // app drop restores terminal
+    drop(app);
+
+    res
+}
+
+async fn run_app<B: Backend + Write>(
+    app: &mut App<B>,
+    rx: &mut mpsc::Receiver<AppEvent>,
+) -> Result<()> {
     loop {
-        // main entry point for drawing to the terminal
+        if let AppMode::Connected { client, state, .. } = &app.mode {
+            let size = app.terminal.size()?;
+            let h = size.height.saturating_sub(4);
+            let w = size.width.saturating_sub(2);
+            if let Ok(guard) = state.lock() {
+                if guard.parser.screen().size() != (h, w) {
+                    client.request_size(w, h).await;
+                }
+            }
+        }
+
+        // render a frame (sync)
         app.terminal.draw(|f| {
-            let size = f.size();
+            let size = f.area();
             match &app.mode {
                 AppMode::ConnectionList { selected } => {
                     let conns = app.config.connections();
-                    let title = format!("Saved Connections ({} connections)", conns.len());
-                    let items: Vec<ConnectionListItem> = conns
-                        .iter()
-                        .map(|c| ConnectionListItem {
-                            display_name: &c.display_name,
-                            host: &c.host,
-                            port: c.port,
-                            username: &c.username,
-                            created_at: c
-                                .created_at
-                                .with_timezone(&Local)
-                                .format("%Y-%m-%d %H:%M")
-                                .to_string(),
-                            auth_method: match &c.auth_method {
-                                AuthMethod::Password(_) => "password",
-                                AuthMethod::PublicKey { .. } => "public key",
-                            },
-                            last_used: c.last_used.map(|d| {
-                                d.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string()
-                            }),
-                        })
-                        .collect();
-                    let sel = if items.is_empty() {
-                        0
-                    } else {
-                        (*selected).min(items.len() - 1)
-                    };
-                    draw_connection_list(size, &title, &items, sel, f);
+                    draw_connection_list(size, conns, *selected, f);
                 }
                 AppMode::FormNew { form } => {
                     let layout = Layout::default()
@@ -267,12 +377,7 @@ fn main() -> Result<()> {
 
                     draw_connection_form(layout[1], form, f);
                 }
-                AppMode::Connected {
-                    name,
-                    client,
-                    state,
-                    ..
-                } => {
+                AppMode::Connected { name, state, .. } => {
                     let layout = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([Constraint::Length(3), Constraint::Min(1)])
@@ -293,10 +398,30 @@ fn main() -> Result<()> {
                     if let Ok(mut guard) = state.lock() {
                         if guard.parser.screen().size() != (inner.height, inner.width) {
                             guard.resize(inner.height, inner.width);
-                            client.request_size(inner.width, inner.height);
                         }
                         draw_terminal(layout[1], &guard, f);
                     }
+                }
+                AppMode::ScpForm {
+                    current_selected, ..
+                } => {
+                    // Render the connection list background first
+                    let conns = app.config.connections();
+                    draw_connection_list(size, conns, *current_selected, f);
+                }
+                AppMode::ScpProgress {
+                    current_selected, ..
+                } => {
+                    // Render the connection list background first
+                    let conns = app.config.connections();
+                    draw_connection_list(size, conns, *current_selected, f);
+                }
+                AppMode::DeleteConfirmation {
+                    current_selected, ..
+                } => {
+                    // Render the connection list background first
+                    let conns = app.config.connections();
+                    draw_connection_list(size, conns, *current_selected, f);
                 }
             }
 
@@ -310,94 +435,98 @@ fn main() -> Result<()> {
                 draw_info_popup(size, msg, f);
             }
 
-            // Overlay SCP popup if any
-            let mut scp_input_rects: Option<(Rect, Rect)> = None;
-            if let Some(form) = &app.scp_form {
-                scp_input_rects = Some(draw_scp_popup(size, form, f));
+            // Overlay SCP popup if in SCP form mode
+            if let AppMode::ScpForm { form, dropdown, .. } = &app.mode {
+                let scp_input_rects = draw_scp_popup(size, form, f);
+
+                // Update dropdown anchor rect if dropdown exists
+                if let Some(dropdown) = dropdown {
+                    let mut updated_dropdown = dropdown.clone();
+                    updated_dropdown.anchor_rect = scp_input_rects.0; // local path rect
+                    draw_dropdown(&updated_dropdown, f);
+                }
             }
 
-            // Update dropdown anchor rect if SCP popup is visible and dropdown exists
-            if let (Some(dropdown), Some((local_rect, _remote_rect))) =
-                (&mut app.dropdown, scp_input_rects)
-            {
-                dropdown.anchor_rect = local_rect;
-            }
-
-            // Overlay dropdown if any
-            if let Some(dropdown) = &app.dropdown {
-                draw_dropdown(dropdown, f);
-            }
-
-            // Overlay SCP progress if any
-            if let Some(progress) = &app.scp_progress {
+            // Overlay SCP progress popup if in SCP progress mode
+            if let AppMode::ScpProgress { progress, .. } = &app.mode {
                 draw_scp_progress_popup(size, progress, f);
+            }
+
+            // Overlay delete confirmation popup if in delete confirmation mode
+            if let AppMode::DeleteConfirmation {
+                connection_name, ..
+            } = &app.mode
+            {
+                draw_delete_confirmation_popup(size, connection_name, f);
             }
         })?;
 
-        // Input handling
-        while crossterm::event::poll(Duration::from_millis(1))? {
-            // true guarantees that read function call won't block.
-            match event::read()? {
-                Event::Key(key) => match crate::key_event::handle_key_event(&mut app, key) {
+        // wait for an event (asynchronous)
+        let ev = match rx.recv().await {
+            Some(e) => e,
+            None => break, // exit if channel is closed
+        };
+
+        match ev {
+            AppEvent::Tick => {
+                // Update spinner animation for SCP progress and handle results
+                if let AppMode::ScpProgress {
+                    progress,
+                    receiver,
+                    current_selected,
+                } = &mut app.mode
+                {
+                    progress.tick();
+
+                    // Drain any SCP results
+                    match receiver.try_recv() {
+                        Ok(result) => {
+                            let current_selected = *current_selected;
+
+                            // Handle the result
+                            match result {
+                                ScpResult::Success {
+                                    local_path,
+                                    remote_path,
+                                } => {
+                                    app.info = Some(format!(
+                                        "SCP upload completed from {} to {}",
+                                        local_path, remote_path
+                                    ));
+                                }
+                                ScpResult::Error { error } => {
+                                    app.error = Some(AppError::SshConnectionError(error));
+                                }
+                            }
+
+                            // Go back to connection list
+                            app.go_to_connection_list_with_selected(current_selected);
+                        }
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                            let current_selected = *current_selected;
+                            app.error = Some(AppError::SshConnectionError(
+                                "SCP transfer task disconnected unexpectedly".to_string(),
+                            ));
+                            app.go_to_connection_list_with_selected(current_selected);
+                        }
+                    }
+                }
+            }
+            AppEvent::Input(ev) => match ev {
+                Event::Key(key) => match crate::key_event::handle_key_event(app, key).await {
                     crate::key_event::KeyFlow::Continue => {}
                     crate::key_event::KeyFlow::Quit => {
-                        drop(app);
                         return Ok(());
                     }
                 },
                 Event::Paste(data) => {
-                    crate::key_event::handle_paste_event(&mut app, &data);
+                    crate::key_event::handle_paste_event(app, &data).await;
                 }
                 Event::Resize(_, _) => {}
                 _ => {}
-            }
-        }
-
-        // Check for SCP results from background thread
-        if let Some(receiver) = &app.scp_receiver {
-            match receiver.try_recv() {
-                Ok(result) => {
-                    // Clear progress and receiver
-                    app.scp_progress = None;
-                    app.scp_receiver = None;
-
-                    // Handle the result
-                    match result {
-                        ScpResult::Success {
-                            local_path,
-                            remote_path,
-                        } => {
-                            app.info = Some(format!(
-                                "SCP upload completed from {} to {}",
-                                local_path, remote_path
-                            ));
-                        }
-                        ScpResult::Error { error } => {
-                            app.error = Some(AppError::SshConnectionError(error));
-                        }
-                    }
-                }
-                Err(mpsc::TryRecvError::Empty) => {
-                    // No result yet, continue waiting
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    // Thread ended without sending result (shouldn't happen)
-                    app.scp_progress = None;
-                    app.scp_receiver = None;
-                    app.error = Some(AppError::SshConnectionError(
-                        "SCP transfer thread disconnected unexpectedly".to_string(),
-                    ));
-                }
-            }
-        }
-
-        if last_tick.elapsed() >= tick_rate {
-            last_tick = Instant::now();
-
-            // Update spinner animation for SCP progress
-            if let Some(progress) = &mut app.scp_progress {
-                progress.tick();
-            }
+            },
         }
     }
+    Ok(())
 }
