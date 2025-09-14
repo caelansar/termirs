@@ -17,6 +17,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Margin;
 use ratatui::prelude::Backend;
+use tui_textarea::TextArea;
 
 use async_ssh_client::SshSession;
 use config::manager::{ConfigManager, Connection};
@@ -57,6 +58,8 @@ enum AppEvent {
 pub(crate) enum AppMode {
     ConnectionList {
         selected: usize,
+        search_mode: bool,
+        search_input: TextArea<'static>,
     },
     FormNew {
         form: ConnectionForm,
@@ -152,10 +155,21 @@ impl<B: Backend + Write> Drop for App<B> {
     }
 }
 
+fn create_search_textarea() -> TextArea<'static> {
+    let mut textarea = TextArea::default();
+    textarea.set_placeholder_text("Type to search connections...");
+    textarea.set_cursor_line_style(ratatui::style::Style::default());
+    textarea
+}
+
 impl<B: Backend + Write> App<B> {
     fn new(terminal: Terminal<B>) -> Result<Self> {
         Ok(Self {
-            mode: AppMode::ConnectionList { selected: 0 },
+            mode: AppMode::ConnectionList {
+                selected: 0,
+                search_mode: false,
+                search_input: create_search_textarea(),
+            },
             error: None,
             info: None,
             config: ConfigManager::new()?,
@@ -194,7 +208,11 @@ impl<B: Backend + Write> App<B> {
     }
 
     pub(crate) fn go_to_connection_list_with_selected(&mut self, selected: usize) {
-        self.mode = AppMode::ConnectionList { selected };
+        self.mode = AppMode::ConnectionList {
+            selected,
+            search_mode: false,
+            search_input: create_search_textarea(),
+        };
     }
 
     pub(crate) fn go_to_scp_form(&mut self, current_selected: usize) {
@@ -233,7 +251,7 @@ impl<B: Backend + Write> App<B> {
 
     pub(crate) fn current_selected(&self) -> usize {
         match &self.mode {
-            AppMode::ConnectionList { selected } => {
+            AppMode::ConnectionList { selected, .. } => {
                 let len = self.config.connections().len();
                 if len == 0 {
                     0
@@ -331,22 +349,104 @@ async fn run_app<B: Backend + Write>(
         // render a frame (sync)
         app.terminal.draw(|f| {
             let size = f.area();
-            match &app.mode {
-                AppMode::ConnectionList { selected } => {
+            match &mut app.mode {
+                AppMode::ConnectionList {
+                    selected,
+                    search_mode,
+                    search_input,
+                } => {
                     let conns = app.config.connections();
-                    draw_connection_list(size, conns, *selected, f);
+                    let search_query = search_input.lines()[0].clone();
+
+                    if *search_mode {
+                        // In search mode: custom layout with table, search input, and footer
+                        let layout = ratatui::layout::Layout::default()
+                            .direction(ratatui::layout::Direction::Vertical)
+                            .constraints([
+                                ratatui::layout::Constraint::Min(1),    // Table area
+                                ratatui::layout::Constraint::Length(3), // Search input area
+                                ratatui::layout::Constraint::Length(1), // Footer area
+                            ])
+                            .split(size);
+
+                        // Render the table in the first area
+                        draw_connection_list(
+                            layout[0],
+                            conns,
+                            *selected,
+                            *search_mode,
+                            &search_query,
+                            f,
+                        );
+
+                        // Render search input in the second area
+                        search_input.set_block(
+                            ratatui::widgets::Block::default()
+                                .borders(ratatui::widgets::Borders::ALL)
+                                .title("Search (Host | User)")
+                                .style(
+                                    ratatui::style::Style::default()
+                                        .fg(ratatui::style::Color::Cyan),
+                                ),
+                        );
+                        f.render_widget(&*search_input, layout[1]);
+
+                        // Render footer in the third area
+                        let footer = ratatui::layout::Layout::default()
+                            .direction(ratatui::layout::Direction::Horizontal)
+                            .constraints([
+                                ratatui::layout::Constraint::Percentage(50),
+                                ratatui::layout::Constraint::Percentage(50),
+                            ])
+                            .split(layout[2]);
+
+                        let hint_text =
+                            "Enter: Apply Search   Esc: Exit Search   Arrow Keys: Move Cursor";
+                        let left = ratatui::widgets::Paragraph::new(ratatui::text::Line::from(
+                            ratatui::text::Span::styled(
+                                hint_text,
+                                ratatui::style::Style::default()
+                                    .fg(ratatui::style::Color::White)
+                                    .add_modifier(ratatui::style::Modifier::DIM),
+                            ),
+                        ))
+                        .alignment(ratatui::layout::Alignment::Left);
+
+                        let right = ratatui::widgets::Paragraph::new(ratatui::text::Line::from(
+                            ratatui::text::Span::styled(
+                                format!("TermiRs v{}", env!("CARGO_PKG_VERSION")),
+                                ratatui::style::Style::default()
+                                    .fg(ratatui::style::Color::White)
+                                    .add_modifier(ratatui::style::Modifier::DIM),
+                            ),
+                        ))
+                        .alignment(ratatui::layout::Alignment::Right);
+
+                        f.render_widget(left, footer[0]);
+                        f.render_widget(right, footer[1]);
+                    } else {
+                        // Normal mode: let draw_connection_list handle everything
+                        draw_connection_list(
+                            size,
+                            conns,
+                            *selected,
+                            *search_mode,
+                            &search_query,
+                            f,
+                        );
+                    }
                 }
                 AppMode::FormNew { .. } => {
                     // Render the connection list background first
                     let conns = app.config.connections();
-                    draw_connection_list(size, conns, 0, f);
+                    draw_connection_list(size, conns, 0, false, "", f);
                 }
                 AppMode::FormEdit {
                     current_selected, ..
                 } => {
                     // Render the connection list background first
                     let conns = app.config.connections();
-                    draw_connection_list(size, conns, *current_selected, f);
+                    draw_connection_list(size, conns, *current_selected, false, "", f);
                 }
                 AppMode::Connected { name, state, .. } => {
                     let inner = size.inner(Margin::new(1, 1));
@@ -362,21 +462,21 @@ async fn run_app<B: Backend + Write>(
                 } => {
                     // Render the connection list background first
                     let conns = app.config.connections();
-                    draw_connection_list(size, conns, *current_selected, f);
+                    draw_connection_list(size, conns, *current_selected, false, "", f);
                 }
                 AppMode::ScpProgress {
                     current_selected, ..
                 } => {
                     // Render the connection list background first
                     let conns = app.config.connections();
-                    draw_connection_list(size, conns, *current_selected, f);
+                    draw_connection_list(size, conns, *current_selected, false, "", f);
                 }
                 AppMode::DeleteConfirmation {
                     current_selected, ..
                 } => {
                     // Render the connection list background first
                     let conns = app.config.connections();
-                    draw_connection_list(size, conns, *current_selected, f);
+                    draw_connection_list(size, conns, *current_selected, false, "", f);
                 }
             }
 

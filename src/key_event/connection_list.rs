@@ -13,6 +13,39 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
     app: &mut App<B>,
     key: KeyEvent,
 ) -> KeyFlow {
+    // Check if we're in search mode
+    if let AppMode::ConnectionList {
+        search_mode: true,
+        search_input,
+        ..
+    } = &mut app.mode
+    {
+        match key.code {
+            KeyCode::Esc => {
+                if let AppMode::ConnectionList {
+                    search_mode,
+                    search_input,
+                    ..
+                } = &mut app.mode
+                {
+                    *search_mode = false;
+                    search_input.delete_line_by_head();
+                    search_input.delete_line_by_end();
+                }
+            }
+            KeyCode::Enter => {
+                if let AppMode::ConnectionList { search_mode, .. } = &mut app.mode {
+                    *search_mode = false;
+                }
+            }
+            _ => {
+                // Let TextArea handle all other key events (cursor movement, editing, etc.)
+                search_input.input(key);
+            }
+        }
+        return KeyFlow::Continue;
+    }
+
     let len = app.config.connections().len();
     match key.code {
         KeyCode::Char('n') | KeyCode::Char('N') => {
@@ -23,8 +56,21 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
         KeyCode::Char('s') | KeyCode::Char('S') => {
             app.go_to_scp_form(app.current_selected());
         }
+        KeyCode::Char('/') => {
+            if let AppMode::ConnectionList {
+                search_mode,
+                search_input,
+                ..
+            } = &mut app.mode
+            {
+                *search_mode = true;
+                // Clear any existing text and set up the TextArea for search
+                search_input.delete_line_by_head();
+                search_input.delete_line_by_end();
+            }
+        }
         KeyCode::Char('k') | KeyCode::Up => {
-            if let AppMode::ConnectionList { selected } = &mut app.mode {
+            if let AppMode::ConnectionList { selected, .. } = &mut app.mode {
                 *selected = if *selected == 0 {
                     len - 1
                 } else {
@@ -33,7 +79,7 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
             }
         }
         KeyCode::Char('j') | KeyCode::Down => {
-            if let AppMode::ConnectionList { selected } = &mut app.mode {
+            if let AppMode::ConnectionList { selected, .. } = &mut app.mode {
                 *selected = (*selected + 1) % len;
             }
         }

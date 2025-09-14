@@ -2,7 +2,7 @@ use chrono::Local;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 use tui_textarea::TextArea;
 
 use crate::config::manager::{AuthMethod, Connection};
@@ -199,7 +199,6 @@ impl ConnectionForm {
 
 #[derive(Clone, Debug)]
 pub struct ConnectionListItem<'a> {
-    pub display_name: &'a str,
     pub host: &'a str,
     pub port: u16,
     pub username: &'a str,
@@ -212,12 +211,13 @@ pub fn draw_connection_list(
     area: Rect,
     conns: &[Connection],
     selected_index: usize,
+    search_mode: bool,
+    search_query: &str,
     frame: &mut ratatui::Frame<'_>,
 ) {
-    let items: Vec<ConnectionListItem> = conns
+    let mut items: Vec<ConnectionListItem> = conns
         .iter()
         .map(|c| ConnectionListItem {
-            display_name: &c.display_name,
             host: &c.host,
             port: c.port,
             username: &c.username,
@@ -235,89 +235,130 @@ pub fn draw_connection_list(
                 .map(|d| d.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string()),
         })
         .collect();
+
+    // Filter items based on search query
+    if !search_query.is_empty() {
+        items.retain(|item| {
+            item.host
+                .to_lowercase()
+                .contains(&search_query.to_lowercase())
+                || item
+                    .username
+                    .to_lowercase()
+                    .contains(&search_query.to_lowercase())
+        });
+    }
+
     let sel = if items.is_empty() {
         0
     } else {
         selected_index.min(items.len() - 1)
     };
 
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
-        .split(area);
+    // In search mode, the area passed is already the table area, so no need for layout splitting
+    let layout = if search_mode {
+        vec![area] // Just use the entire area for the table
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(area)
+            .to_vec()
+    };
 
-    let mut list_items: Vec<ListItem> = Vec::with_capacity(items.len());
-    for it in items.iter() {
-        let indicator = "● ";
-        let header = Line::from(vec![
-            Span::styled(indicator, Style::default().fg(Color::Green)),
-            Span::styled(
-                it.display_name,
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-        ]);
-        let meta1 = Line::from(vec![
-            Span::raw("Host: "),
-            Span::styled(it.host, Style::default().fg(Color::Cyan)),
-            Span::raw("  Port: "),
-            Span::styled(format!("{}", it.port), Style::default().fg(Color::Cyan)),
-        ]);
-        let meta2 = Line::from(vec![
-            Span::raw("User: "),
-            Span::styled(it.username, Style::default().fg(Color::Cyan)),
-            Span::raw("  Created: "),
-            Span::styled(it.created_at.clone(), Style::default().fg(Color::Gray)),
-        ]);
-        let meta3 = Line::from(vec![
-            Span::raw("Auth: "),
-            Span::styled(it.auth_method, Style::default().fg(Color::Cyan)),
-            Span::raw("  Last Used: "),
-            Span::styled(
-                it.last_used.clone().unwrap_or_default(),
-                Style::default().fg(Color::Gray),
-            ),
-        ]);
-        let text = vec![header, meta1, meta2, meta3];
-        list_items.push(ListItem::new(text));
-    }
-
-    let list = List::new(list_items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!("Connection List ({} connections)", items.len())),
-        )
-        .highlight_style(
-            Style::default()
-                // .bg(Color::Blue)
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("▶ ");
-
-    frame.render_stateful_widget(
-        list,
-        layout[0],
-        &mut ratatui::widgets::ListState::default().with_selected(Some(sel)),
-    );
-
-    let footer = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(layout[1]);
-
-    let left = Paragraph::new(Line::from(Span::styled(
-        "Enter: Connect   Esc: Cancel   K/↑: Up   J/↓: Down   N: New   S: SCP   D: Delete   E: Edit",
-        Style::default().fg(Color::White).add_modifier(Modifier::DIM),
-    ))).alignment(Alignment::Left);
-    let right = Paragraph::new(Line::from(Span::styled(
-        format!("TermiRs v{}", env!("CARGO_PKG_VERSION")),
+    // Create table header
+    let header = Row::new(vec![
+        Cell::from("Host"),
+        Cell::from("Port"),
+        Cell::from("User"),
+        Cell::from("Auth"),
+        Cell::from("Created"),
+        Cell::from("Last Used"),
+    ])
+    .style(
         Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::DIM),
-    )))
-    .alignment(Alignment::Right);
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )
+    .height(1);
 
-    frame.render_widget(left, footer[0]);
-    frame.render_widget(right, footer[1]);
+    // Create table rows
+    let rows: Vec<Row> = items
+        .iter()
+        .map(|item| {
+            Row::new(vec![
+                Cell::from(item.host),
+                Cell::from(item.port.to_string()),
+                Cell::from(item.username),
+                Cell::from(item.auth_method),
+                Cell::from(item.created_at.clone()),
+                Cell::from(
+                    item.last_used
+                        .clone()
+                        .unwrap_or_else(|| "Never".to_string()),
+                ),
+            ])
+            .height(1)
+        })
+        .collect();
+
+    // Create the table
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Min(8),     // Host (reduced from 15 to 8)
+            Constraint::Length(6),  // Port
+            Constraint::Min(6),     // User (reduced from 12 to 6)
+            Constraint::Length(12), // Auth
+            Constraint::Length(16), // Created
+            Constraint::Length(16), // Last Used
+        ],
+    )
+    .header(header)
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!("Connection List ({} connections)", items.len())),
+    )
+    .highlight_style(
+        Style::default()
+            .bg(Color::Cyan)
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    )
+    .highlight_symbol("▶ ");
+
+    // Render the table with state
+    let mut table_state = TableState::default().with_selected(Some(sel));
+    frame.render_stateful_widget(table, layout[0], &mut table_state);
+
+    // Only render footer in normal mode (search mode footer is handled in main.rs)
+    if !search_mode {
+        let footer_area = layout[1];
+        let footer = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(footer_area);
+
+        let hint_text = "Enter: Connect   Esc: Cancel   K/↑: Up   J/↓: Down   N: New   S: SCP   D: Delete   E: Edit   /: Search";
+
+        let left = Paragraph::new(Line::from(Span::styled(
+            hint_text,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::DIM),
+        )))
+        .alignment(Alignment::Left);
+
+        let right = Paragraph::new(Line::from(Span::styled(
+            format!("TermiRs v{}", env!("CARGO_PKG_VERSION")),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::DIM),
+        )))
+        .alignment(Alignment::Right);
+
+        frame.render_widget(left, footer[0]);
+        frame.render_widget(right, footer[1]);
+    }
 }
