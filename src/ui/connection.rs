@@ -197,64 +197,6 @@ impl ConnectionForm {
     }
 }
 
-pub fn draw_connection_form(area: Rect, form: &ConnectionForm, frame: &mut ratatui::Frame<'_>) {
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // title
-            Constraint::Length(3), // host
-            Constraint::Length(3), // port
-            Constraint::Length(3), // username
-            Constraint::Length(3), // password
-            Constraint::Length(3), // private key path
-            Constraint::Length(3), // display name (optional)
-            Constraint::Length(1), // error line
-            Constraint::Min(1),    // spacer
-        ])
-        .split(area);
-
-    let mut render_textarea = |idx: usize, label: &str, textarea: &TextArea, focused: bool| {
-        let mut widget = textarea.clone();
-        let mut block = Block::default().borders(Borders::ALL).title(label);
-        if focused {
-            block = block.border_style(Style::default().fg(Color::Cyan));
-        } else {
-            // Hide cursor when not focused
-            widget.set_cursor_style(Style::default().bg(Color::Reset));
-        }
-
-        widget.set_block(block);
-        frame.render_widget(&widget, layout[idx]);
-    };
-
-    render_textarea(1, "Host", &form.host, form.focus == FocusField::Host);
-    render_textarea(2, "Port", &form.port, form.focus == FocusField::Port);
-    render_textarea(
-        3,
-        "Username",
-        &form.username,
-        form.focus == FocusField::Username,
-    );
-    render_textarea(
-        4,
-        "Password",
-        &form.password,
-        form.focus == FocusField::Password,
-    );
-    render_textarea(
-        5,
-        "Private Key Path",
-        &form.private_key_path,
-        form.focus == FocusField::PrivateKeyPath,
-    );
-    render_textarea(
-        6,
-        "Display Name (optional)",
-        &form.display_name,
-        form.focus == FocusField::DisplayName,
-    );
-}
-
 #[derive(Clone, Debug)]
 pub struct ConnectionListItem<'a> {
     pub display_name: &'a str,

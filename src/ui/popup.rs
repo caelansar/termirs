@@ -2,6 +2,9 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use tui_textarea::TextArea;
+
+use crate::ui::connection::{ConnectionForm, FocusField};
 
 // Error popup renderer
 pub fn draw_error_popup(area: Rect, message: &str, frame: &mut ratatui::Frame<'_>) {
@@ -201,5 +204,146 @@ pub fn draw_delete_confirmation_popup(
     .alignment(Alignment::Center);
     frame.render_widget(buttons, layout[4]);
 
+    frame.render_widget(Paragraph::new("").block(block), popup);
+}
+
+pub fn draw_connection_form_popup(
+    area: Rect,
+    form: &ConnectionForm,
+    new: bool,
+    frame: &mut ratatui::Frame<'_>,
+) {
+    let title = if new {
+        "New SSH Connection"
+    } else {
+        "Edit SSH Connection"
+    };
+    // Calculate popup size - compact but readable
+    let popup_w = (area.width as f32 * 0.35) as u16; // 65% of screen width for more compact look
+    let popup_h = 23u16.min(area.height.saturating_sub(4)); // Adjusted height for readable input fields
+
+    let x = area.x + (area.width.saturating_sub(popup_w)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_h)) / 2;
+
+    let popup = Rect {
+        x,
+        y,
+        width: popup_w,
+        height: popup_h,
+    };
+
+    // Clear background behind popup
+    frame.render_widget(Clear, popup);
+
+    // Create main block with title
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Line::from(Span::styled(
+            title,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )));
+
+    // Get inner area for form content
+    let inner = popup.inner(Margin::new(1, 1));
+
+    // Layout for form fields - balanced between compact and readable
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // host (enough for placeholder text)
+            Constraint::Length(3), // port
+            Constraint::Length(3), // username
+            Constraint::Length(3), // password
+            Constraint::Length(3), // private key path
+            Constraint::Length(3), // display name
+            Constraint::Min(1),    // spacer to push instructions to bottom
+            Constraint::Length(1), // error line
+            Constraint::Length(1), // instructions
+        ])
+        .split(inner);
+
+    // Helper function to render text areas
+    let mut render_textarea = |idx: usize, label: &str, textarea: &TextArea, focused: bool| {
+        let mut widget = textarea.clone();
+        let mut field_block = Block::default().borders(Borders::ALL).title(label);
+        if focused {
+            field_block = field_block.border_style(Style::default().fg(Color::Cyan));
+        } else {
+            // Hide cursor when not focused
+            widget.set_cursor_style(Style::default().bg(Color::Reset));
+        }
+
+        widget.set_block(field_block);
+        frame.render_widget(&widget, layout[idx]);
+    };
+
+    // Render all form fields
+    render_textarea(0, "Host", &form.host, form.focus == FocusField::Host);
+    render_textarea(1, "Port", &form.port, form.focus == FocusField::Port);
+    render_textarea(
+        2,
+        "Username",
+        &form.username,
+        form.focus == FocusField::Username,
+    );
+    render_textarea(
+        3,
+        "Password",
+        &form.password,
+        form.focus == FocusField::Password,
+    );
+    render_textarea(
+        4,
+        "Private Key Path",
+        &form.private_key_path,
+        form.focus == FocusField::PrivateKeyPath,
+    );
+    render_textarea(
+        5,
+        "Display Name (optional)",
+        &form.display_name,
+        form.focus == FocusField::DisplayName,
+    );
+
+    // Show error if any (now at index 7)
+    if let Some(error) = &form.error {
+        let error_paragraph = Paragraph::new(Line::from(Span::styled(
+            error,
+            Style::default().fg(Color::Red),
+        )));
+        frame.render_widget(error_paragraph, layout[7]);
+    }
+
+    // Show instructions at bottom (now at index 8)
+    let instructions = Paragraph::new(Line::from(vec![
+        Span::styled(
+            "Tab/Shift+Tab",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(": Navigate  "),
+        Span::styled(
+            "Enter",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(if new {
+            ": Save & Connect  "
+        } else {
+            ": Save  "
+        }),
+        Span::styled(
+            "Esc",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(": Cancel"),
+    ]));
+    frame.render_widget(instructions, layout[8]);
+
+    // Render the main block
     frame.render_widget(Paragraph::new("").block(block), popup);
 }
