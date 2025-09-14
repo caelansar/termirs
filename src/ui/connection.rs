@@ -272,7 +272,6 @@ pub fn draw_connection_list(
     selected_index: usize,
     frame: &mut ratatui::Frame<'_>,
 ) {
-    let title = format!("Saved Connections ({} connections)", conns.len());
     let items: Vec<ConnectionListItem> = conns
         .iter()
         .map(|c| ConnectionListItem {
@@ -302,22 +301,8 @@ pub fn draw_connection_list(
 
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(1),
-            Constraint::Length(1),
-        ])
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(area);
-
-    let header_block = Block::default()
-        .borders(Borders::ALL)
-        .title(Line::from(Span::styled(
-            title,
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )));
-    frame.render_widget(Paragraph::new("").block(header_block), layout[0]);
 
     let mut list_items: Vec<ListItem> = Vec::with_capacity(items.len());
     for it in items.iter() {
@@ -358,7 +343,7 @@ pub fn draw_connection_list(
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Connection List"),
+                .title(format!("Connection List ({} connections)", items.len())),
         )
         .highlight_style(
             Style::default()
@@ -370,14 +355,14 @@ pub fn draw_connection_list(
 
     frame.render_stateful_widget(
         list,
-        layout[1],
+        layout[0],
         &mut ratatui::widgets::ListState::default().with_selected(Some(sel)),
     );
 
     let footer = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(layout[2]);
+        .split(layout[1]);
 
     let left = Paragraph::new(Line::from(Span::styled(
         "Enter: Connect   Esc: Cancel   K/↑: Up   J/↓: Down   N: New   S: SCP   D: Delete   E: Edit",

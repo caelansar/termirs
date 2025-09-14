@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use vt100::{Color as VtColor, Parser};
@@ -48,7 +48,12 @@ fn map_color(c: VtColor) -> Color {
     }
 }
 
-pub fn draw_terminal(area: Rect, state: &TerminalState, frame: &mut ratatui::Frame<'_>) {
+pub fn draw_terminal(
+    area: Rect,
+    state: &TerminalState,
+    name: &str,
+    frame: &mut ratatui::Frame<'_>,
+) {
     let height = area.height;
     let width = area.width;
     let mut lines: Vec<Line> = Vec::with_capacity(height as usize);
@@ -119,7 +124,10 @@ pub fn draw_terminal(area: Rect, state: &TerminalState, frame: &mut ratatui::Fra
         lines.push(Line::from(spans));
     }
 
-    let term_block = Block::default().borders(Borders::ALL).title("$ terminal");
+    let term_block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!("Connected to {}", name))
+        .fg(Color::Cyan);
     let para = Paragraph::new(lines).block(term_block);
     frame.render_widget(para, area);
 

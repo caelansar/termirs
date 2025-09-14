@@ -15,7 +15,7 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Margin};
+use ratatui::layout::Margin;
 use ratatui::prelude::Backend;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
@@ -340,11 +340,6 @@ async fn run_app<B: Backend + Write>(
                     draw_connection_list(size, conns, *selected, f);
                 }
                 AppMode::FormNew { form } => {
-                    let layout = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([Constraint::Length(3), Constraint::Min(1)])
-                        .split(size);
-
                     let title_block = Block::default()
                         .borders(ratatui::widgets::Borders::ALL)
                         .title(
@@ -354,16 +349,12 @@ async fn run_app<B: Backend + Write>(
                                     .add_modifier(Modifier::BOLD),
                             ),
                         );
-                    f.render_widget(title_block, layout[0]);
+                    f.render_widget(title_block, size);
 
-                    draw_connection_form(layout[1], form, f);
+                    let inner_area = size.inner(Margin::new(2, 1));
+                    draw_connection_form(inner_area, form, f);
                 }
                 AppMode::FormEdit { form, .. } => {
-                    let layout = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([Constraint::Length(3), Constraint::Min(1)])
-                        .split(size);
-
                     let title_block = Block::default()
                         .borders(ratatui::widgets::Borders::ALL)
                         .title(
@@ -373,33 +364,18 @@ async fn run_app<B: Backend + Write>(
                                     .add_modifier(Modifier::BOLD),
                             ),
                         );
-                    f.render_widget(title_block, layout[0]);
+                    f.render_widget(title_block, size);
 
-                    draw_connection_form(layout[1], form, f);
+                    let inner_area = size.inner(Margin::new(2, 1));
+                    draw_connection_form(inner_area, form, f);
                 }
                 AppMode::Connected { name, state, .. } => {
-                    let layout = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([Constraint::Length(3), Constraint::Min(1)])
-                        .split(size);
-
-                    let title_block = Block::default()
-                        .borders(ratatui::widgets::Borders::ALL)
-                        .title(
-                            Line::from(format!("Connected to {}", name)).style(
-                                Style::default()
-                                    .fg(Color::Cyan)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                        );
-                    f.render_widget(title_block, layout[0]);
-
-                    let inner = layout[1].inner(Margin::new(1, 1));
+                    let inner = size.inner(Margin::new(1, 1));
                     if let Ok(mut guard) = state.lock() {
                         if guard.parser.screen().size() != (inner.height, inner.width) {
                             guard.resize(inner.height, inner.width);
                         }
-                        draw_terminal(layout[1], &guard, f);
+                        draw_terminal(size, &guard, name, f);
                     }
                 }
                 AppMode::ScpForm {
