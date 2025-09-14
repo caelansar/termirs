@@ -17,15 +17,12 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Margin;
 use ratatui::prelude::Backend;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::Block;
 
 use async_ssh_client::SshSession;
 use config::manager::{ConfigManager, Connection};
 use error::{AppError, Result};
 use ui::{
-    ConnectionForm, DropdownState, ScpForm, TerminalState, draw_connection_form,
+    ConnectionForm, DropdownState, ScpForm, TerminalState, draw_connection_form_popup,
     draw_connection_list, draw_delete_confirmation_popup, draw_dropdown, draw_error_popup,
     draw_info_popup, draw_scp_popup, draw_scp_progress_popup, draw_terminal,
 };
@@ -339,35 +336,17 @@ async fn run_app<B: Backend + Write>(
                     let conns = app.config.connections();
                     draw_connection_list(size, conns, *selected, f);
                 }
-                AppMode::FormNew { form } => {
-                    let title_block = Block::default()
-                        .borders(ratatui::widgets::Borders::ALL)
-                        .title(
-                            Line::from("New SSH Connection").style(
-                                Style::default()
-                                    .fg(Color::Cyan)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                        );
-                    f.render_widget(title_block, size);
-
-                    let inner_area = size.inner(Margin::new(2, 1));
-                    draw_connection_form(inner_area, form, f);
+                AppMode::FormNew { .. } => {
+                    // Render the connection list background first
+                    let conns = app.config.connections();
+                    draw_connection_list(size, conns, 0, f);
                 }
-                AppMode::FormEdit { form, .. } => {
-                    let title_block = Block::default()
-                        .borders(ratatui::widgets::Borders::ALL)
-                        .title(
-                            Line::from("Edit SSH Connection").style(
-                                Style::default()
-                                    .fg(Color::Cyan)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                        );
-                    f.render_widget(title_block, size);
-
-                    let inner_area = size.inner(Margin::new(2, 1));
-                    draw_connection_form(inner_area, form, f);
+                AppMode::FormEdit {
+                    current_selected, ..
+                } => {
+                    // Render the connection list background first
+                    let conns = app.config.connections();
+                    draw_connection_list(size, conns, *current_selected, f);
                 }
                 AppMode::Connected { name, state, .. } => {
                     let inner = size.inner(Margin::new(1, 1));
@@ -434,6 +413,14 @@ async fn run_app<B: Backend + Write>(
             } = &app.mode
             {
                 draw_delete_confirmation_popup(size, connection_name, f);
+            }
+
+            // Overlay connection form popup if in form mode
+            if let AppMode::FormNew { form } = &app.mode {
+                draw_connection_form_popup(size, form, true, f);
+            }
+            if let AppMode::FormEdit { form, .. } = &app.mode {
+                draw_connection_form_popup(size, form, false, f);
             }
         })?;
 
