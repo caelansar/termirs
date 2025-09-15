@@ -59,7 +59,7 @@ pub fn draw_error_popup(area: Rect, message: &str, frame: &mut ratatui::Frame<'_
 
 // Info popup renderer
 pub fn draw_info_popup(area: Rect, message: &str, frame: &mut ratatui::Frame<'_>) {
-    let popup_w = area.width.saturating_sub(4);
+    let popup_w = (area.width as f32 * 0.45) as u16;
     let inner_w = popup_w.saturating_sub(2).max(1);
     let estimated_lines: u16 = message
         .lines()
