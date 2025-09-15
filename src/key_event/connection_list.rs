@@ -50,7 +50,7 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
     match key.code {
         KeyCode::Char('n') | KeyCode::Char('N') => {
             app.mode = AppMode::FormNew {
-                form: crate::ui::ConnectionForm::new(),
+                form: Box::new(crate::ui::ConnectionForm::new()),
             };
         }
         KeyCode::Char('s') | KeyCode::Char('S') => {
@@ -127,7 +127,7 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
             let form = crate::ui::ConnectionForm::from_connection(&original);
 
             app.mode = AppMode::FormEdit {
-                form,
+                form: Box::new(form),
                 original,
                 current_selected: app.current_selected(),
             };

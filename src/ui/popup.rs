@@ -8,7 +8,7 @@ use crate::ui::connection::{ConnectionForm, FocusField};
 
 // Error popup renderer
 pub fn draw_error_popup(area: Rect, message: &str, frame: &mut ratatui::Frame<'_>) {
-    let popup_w = area.width.saturating_sub(4);
+    let popup_w = (area.width as f32 * 0.45) as u16;
     let inner_w = popup_w.saturating_sub(2).max(1);
     let estimated_lines: u16 = message
         .lines()
@@ -116,7 +116,7 @@ pub fn draw_delete_confirmation_popup(
     connection_name: &str,
     frame: &mut ratatui::Frame<'_>,
 ) {
-    let popup_w = area.width.saturating_sub(10).max(50);
+    let popup_w = (area.width as f32 * 0.35) as u16; // 35% of screen width for more compact look
     let popup_h = 8u16.min(area.height.saturating_sub(2)).max(6);
     let x = area.x + (area.width.saturating_sub(popup_w)) / 2;
     let y = area.y + (area.height.saturating_sub(popup_h)) / 2;
@@ -144,7 +144,8 @@ pub fn draw_delete_confirmation_popup(
             Constraint::Length(1), // connection name
             Constraint::Length(1), // empty line
             Constraint::Length(1), // confirmation question
-            Constraint::Length(1), // buttons hint
+            Constraint::Min(1),    // spacer to push buttons to bottom
+            Constraint::Length(1), // buttons hint (bottom-aligned)
         ])
         .split(inner);
 
@@ -202,7 +203,7 @@ pub fn draw_delete_confirmation_popup(
         Span::styled(" - Cancel", Style::default().fg(Color::White)),
     ]))
     .alignment(Alignment::Center);
-    frame.render_widget(buttons, layout[4]);
+    frame.render_widget(buttons, layout[5]);
 
     frame.render_widget(Paragraph::new("").block(block), popup);
 }
@@ -219,7 +220,7 @@ pub fn draw_connection_form_popup(
         "Edit SSH Connection"
     };
     // Calculate popup size - compact but readable
-    let popup_w = (area.width as f32 * 0.35) as u16; // 65% of screen width for more compact look
+    let popup_w = (area.width as f32 * 0.35) as u16; // 35% of screen width for more compact look
     let popup_h = 23u16.min(area.height.saturating_sub(4)); // Adjusted height for readable input fields
 
     let x = area.x + (area.width.saturating_sub(popup_w)) / 2;
@@ -331,11 +332,7 @@ pub fn draw_connection_form_popup(
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(if new {
-            ": Save & Connect  "
-        } else {
-            ": Save  "
-        }),
+        Span::raw(": Save  "),
         Span::styled(
             "Esc",
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),

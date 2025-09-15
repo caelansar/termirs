@@ -2,7 +2,10 @@ use chrono::Local;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{
+    Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table,
+    TableState,
+};
 use tui_textarea::TextArea;
 
 use crate::config::manager::{AuthMethod, Connection};
@@ -49,9 +52,7 @@ impl ConnectionForm {
         password.set_cursor_line_style(Style::default());
 
         let mut private_key_path = TextArea::default();
-        private_key_path.set_placeholder_text(
-            "Enter private key path (at least one of password or key path is required)",
-        );
+        private_key_path.set_placeholder_text("At least one of password or key path is required");
         private_key_path.set_cursor_line_style(Style::default());
 
         let mut display_name = TextArea::default();
@@ -199,6 +200,7 @@ impl ConnectionForm {
 
 #[derive(Clone, Debug)]
 pub struct ConnectionListItem<'a> {
+    pub name: &'a str,
     pub host: &'a str,
     pub port: u16,
     pub username: &'a str,
@@ -218,6 +220,7 @@ pub fn draw_connection_list(
     let mut items: Vec<ConnectionListItem> = conns
         .iter()
         .map(|c| ConnectionListItem {
+            name: &c.display_name,
             host: &c.host,
             port: c.port,
             username: &c.username,
@@ -246,6 +249,10 @@ pub fn draw_connection_list(
                     .username
                     .to_lowercase()
                     .contains(&search_query.to_lowercase())
+                || item
+                    .name
+                    .to_lowercase()
+                    .contains(&search_query.to_lowercase())
         });
     }
 
@@ -268,6 +275,7 @@ pub fn draw_connection_list(
 
     // Create table header
     let header = Row::new(vec![
+        Cell::from("Name"),
         Cell::from("Host"),
         Cell::from("Port"),
         Cell::from("User"),
@@ -287,6 +295,7 @@ pub fn draw_connection_list(
         .iter()
         .map(|item| {
             Row::new(vec![
+                Cell::from(item.name),
                 Cell::from(item.host),
                 Cell::from(item.port.to_string()),
                 Cell::from(item.username),
@@ -306,12 +315,14 @@ pub fn draw_connection_list(
     let table = Table::new(
         rows,
         [
+            Constraint::Min(8),     // Name
             Constraint::Min(8),     // Host (reduced from 15 to 8)
             Constraint::Length(6),  // Port
             Constraint::Min(6),     // User (reduced from 12 to 6)
             Constraint::Length(12), // Auth
             Constraint::Length(16), // Created
             Constraint::Length(16), // Last Used
+            Constraint::Length(1),  // Scrollbar
         ],
     )
     .header(header)
@@ -331,6 +342,30 @@ pub fn draw_connection_list(
     // Render the table with state
     let mut table_state = TableState::default().with_selected(Some(sel));
     frame.render_stateful_widget(table, layout[0], &mut table_state);
+
+    // Render vertical scrollbar only if content exceeds one page (visible rows)
+    if !items.is_empty() {
+        let inner_area = layout[0].inner(ratatui::layout::Margin::new(1, 2));
+        // inner_area includes header row; visible rows are inner height - 1 (for header)
+        let visible_rows = inner_area.height.saturating_sub(1) as usize;
+        let content_length = items.len();
+        if content_length > visible_rows {
+            // Compute page-aware scrollbar positions
+            let max_top = content_length.saturating_sub(visible_rows);
+            let centered_top = sel.saturating_sub(visible_rows.saturating_sub(1) / 2);
+            let top_index = centered_top.min(max_top);
+            let total_positions = max_top.saturating_add(1);
+
+            let mut scroll_state = ScrollbarState::new(total_positions).position(top_index);
+
+            let scrollbar = Scrollbar::default()
+                .orientation(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None);
+
+            frame.render_stateful_widget(scrollbar, inner_area, &mut scroll_state);
+        }
+    }
 
     // Only render footer in normal mode (search mode footer is handled in main.rs)
     if !search_mode {

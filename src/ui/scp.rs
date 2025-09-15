@@ -67,7 +67,7 @@ pub fn draw_scp_progress_popup(
     progress: &crate::ScpProgress,
     frame: &mut ratatui::Frame<'_>,
 ) {
-    let popup_w = area.width.saturating_sub(10).max(50);
+    let popup_w = (area.width as f32 * 0.35) as u16; // 35% of screen width for more compact look
     let popup_h = 8u16.min(area.height.saturating_sub(2)).max(6);
     let x = area.x + (area.width.saturating_sub(popup_w)) / 2;
     let y = area.y + (area.height.saturating_sub(popup_h)) / 2;
@@ -156,7 +156,7 @@ pub fn draw_scp_progress_popup(
 }
 
 pub fn draw_scp_popup(area: Rect, form: &ScpForm, frame: &mut ratatui::Frame<'_>) -> (Rect, Rect) {
-    let popup_w = area.width.saturating_sub(10).max(40);
+    let popup_w = (area.width as f32 * 0.35) as u16; // 35% of screen width for more compact look
     let popup_h = 9u16.min(area.height.saturating_sub(2)).max(7);
     let x = area.x + (area.width.saturating_sub(popup_w)) / 2;
     let y = area.y + (area.height.saturating_sub(popup_h)) / 2;
