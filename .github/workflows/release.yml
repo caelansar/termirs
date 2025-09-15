@@ -1,0 +1,42 @@
+name: release
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags:
+      - v[0-9]+.*
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: taiki-e/create-gh-release-action@v1
+        with:
+          token: ${{ secrets.TOKEN }}
+
+  upload-assets:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v3
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: "termirs"
+          archive: $bin-$tag-$target
+          tar: unix
+          zip: windows
+          target: ${{ matrix.target }}
+          token: ${{ secrets.TOKEN }}
