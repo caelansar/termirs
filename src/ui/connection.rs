@@ -167,17 +167,20 @@ impl ConnectionForm {
         password.set_placeholder_text("Enter password");
         password.set_mask_char('*');
         password.set_cursor_line_style(Style::default());
-        // Don't prefill password for security
 
         let mut private_key_path = TextArea::default();
         private_key_path.set_placeholder_text("Enter private key path (optional)");
         private_key_path.set_cursor_line_style(Style::default());
-        if let AuthMethod::PublicKey {
-            private_key_path: path,
-            ..
-        } = &conn.auth_method
-        {
-            private_key_path.insert_str(path.clone());
+        match &conn.auth_method {
+            AuthMethod::Password(pwd) => {
+                password.insert_str("*".repeat(pwd.len()));
+            }
+            AuthMethod::PublicKey {
+                private_key_path: path,
+                ..
+            } => {
+                private_key_path.insert_str(path);
+            }
         }
 
         let mut display_name = TextArea::default();
