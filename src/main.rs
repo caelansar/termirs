@@ -337,8 +337,9 @@ async fn run_app<B: Backend + Write>(
     loop {
         if let AppMode::Connected { client, state, .. } = &app.mode {
             let size = app.terminal.size()?;
-            let h = size.height.saturating_sub(4);
-            let w = size.width.saturating_sub(2);
+            // Calculate inner area for terminal content (accounting for borders)
+            let h = size.height.saturating_sub(2); // Top and bottom borders
+            let w = size.width.saturating_sub(2); // Left and right borders
             if let Ok(guard) = state.lock() {
                 if guard.parser.screen().size() != (h, w) {
                     client.request_size(w, h).await;
