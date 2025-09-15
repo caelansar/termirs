@@ -1,6 +1,7 @@
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use russh::client::{self, AuthResult, KeyboardInteractiveAuthResponse};
 use russh::keys::{self, PrivateKeyWithHashAlg, ssh_key};
@@ -75,14 +76,15 @@ impl Clone for SshSession {
 }
 
 impl SshSession {
-    async fn new_session(
+    async fn new_session_with_timeout(
         connection: &Connection,
+        timeout: Option<Duration>,
+        cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<(
         client::Handle<SshClient>,
         Arc<tokio::sync::Mutex<Option<String>>>,
     )> {
         let mut config = client::Config::default();
-        config.inactivity_timeout = None;
         config.keepalive_interval = Some(std::time::Duration::from_secs(30));
         config.keepalive_max = 3;
 
@@ -92,7 +94,14 @@ impl SshSession {
             connection: connection.clone(),
             server_key: server_key.clone(),
         };
-        let mut session = client::connect(config, connection.host_port(), ssh_client).await?;
+
+        let mut session = {
+            let f = async || {
+                let session = client::connect(config, connection.host_port(), ssh_client).await?;
+                Ok::<_, AppError>(session)
+            };
+            cancellable_timeout(timeout.unwrap_or(Duration::from_secs(10)), f, cancel).await?
+        };
 
         let auth_result = session.authenticate_none(&connection.username).await?;
         let mut interactive = false;
@@ -182,6 +191,20 @@ impl SshSession {
         Ok((session, server_key))
     }
 
+    async fn new_session(
+        connection: &Connection,
+    ) -> Result<(
+        client::Handle<SshClient>,
+        Arc<tokio::sync::Mutex<Option<String>>>,
+    )> {
+        Self::new_session_with_timeout(
+            connection,
+            None,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+    }
+
     pub async fn connect(connection: &Connection) -> Result<Self> {
         let (session, server_key) = Self::new_session(connection).await?;
 
@@ -259,12 +282,15 @@ impl SshSession {
         key_guard.clone()
     }
 
-    pub async fn sftp_send_file(
+    pub async fn sftp_send_file_with_timeout(
         connection: &Connection,
         local_path: &str,
         remote_path: &str,
+        timeout: Option<Duration>,
+        cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<()> {
-        let (session, _server_key) = Self::new_session(connection).await?;
+        let (session, _server_key) =
+            Self::new_session_with_timeout(connection, timeout, cancel).await?;
 
         let channel = session.channel_open_session().await?;
         channel.request_subsystem(true, "sftp").await?;
@@ -282,6 +308,40 @@ impl SshSession {
         tokio::io::copy(&mut local, &mut remote).await?;
 
         Ok(())
+    }
+
+    pub async fn sftp_send_file(
+        connection: &Connection,
+        local_path: &str,
+        remote_path: &str,
+    ) -> Result<()> {
+        Self::sftp_send_file_with_timeout(
+            connection,
+            local_path,
+            remote_path,
+            None,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+    }
+}
+
+async fn cancellable_timeout<F, T>(
+    dur: Duration,
+    f: F,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<T>
+where
+    F: AsyncFnOnce() -> Result<T>,
+{
+    tokio::select! {
+        _ = cancel.cancelled() => Err(AppError::SshConnectionError("cancelled".to_string())),
+        res = tokio::time::timeout(dur, f()) => {
+            match res {
+                Ok(inner) => inner,
+                Err(_) => Err(AppError::SshConnectionError("timeout".to_string())),
+            }
+        }
     }
 }
 
@@ -352,5 +412,57 @@ mod tests {
         );
         let client = SshSession::connect(&conn).await.unwrap();
         client.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_connect_cancel() {
+        let conn = Connection::new(
+            "127.0.0.2".to_string(),
+            2222,
+            "dockeruser".to_string(),
+            AuthMethod::Password("dockerpass".to_string()),
+        );
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            cancel.cancel();
+        });
+
+        let res = SshSession::new_session_with_timeout(
+            &conn,
+            Some(Duration::from_secs(5)),
+            &cancel_clone,
+        )
+        .await;
+
+        if let Err(AppError::SshConnectionError(e)) = res {
+            assert_eq!(e, "cancelled");
+        } else {
+            unreachable!();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_connect_timeout() {
+        let conn = Connection::new(
+            "127.0.0.2".to_string(),
+            2222,
+            "dockeruser".to_string(),
+            AuthMethod::Password("dockerpass".to_string()),
+        );
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+
+        let res =
+            SshSession::new_session_with_timeout(&conn, Some(Duration::from_secs(1)), &cancel)
+                .await;
+
+        if let Err(AppError::SshConnectionError(e)) = res {
+            assert_eq!(e, "timeout");
+        } else {
+            unreachable!();
+        }
     }
 }

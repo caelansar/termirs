@@ -62,10 +62,10 @@ pub(crate) enum AppMode {
         search_input: TextArea<'static>,
     },
     FormNew {
-        form: ConnectionForm,
+        form: Box<ConnectionForm>,
     },
     FormEdit {
-        form: ConnectionForm,
+        form: Box<ConnectionForm>,
         original: Connection,
         current_selected: usize,
     },
@@ -76,7 +76,7 @@ pub(crate) enum AppMode {
         current_selected: usize,
     },
     ScpForm {
-        form: ScpForm,
+        form: Box<ScpForm>,
         dropdown: Option<DropdownState>,
         current_selected: usize,
     },
@@ -157,7 +157,7 @@ impl<B: Backend + Write> Drop for App<B> {
 
 fn create_search_textarea() -> TextArea<'static> {
     let mut textarea = TextArea::default();
-    textarea.set_placeholder_text("Type to search connections...");
+    textarea.set_placeholder_text("Type to search connections (Name | Host | User)");
     textarea.set_cursor_line_style(ratatui::style::Style::default());
     textarea
 }
@@ -217,7 +217,7 @@ impl<B: Backend + Write> App<B> {
 
     pub(crate) fn go_to_scp_form(&mut self, current_selected: usize) {
         self.mode = AppMode::ScpForm {
-            form: ScpForm::new(),
+            form: Box::new(ScpForm::new()),
             dropdown: None,
             current_selected,
         };
@@ -383,7 +383,7 @@ async fn run_app<B: Backend + Write>(
                         search_input.set_block(
                             ratatui::widgets::Block::default()
                                 .borders(ratatui::widgets::Borders::ALL)
-                                .title("Search (Host | User)")
+                                .title("Search")
                                 .style(
                                     ratatui::style::Style::default()
                                         .fg(ratatui::style::Color::Cyan),
@@ -480,11 +480,6 @@ async fn run_app<B: Backend + Write>(
                 }
             }
 
-            // Overlay error popup if any
-            if let Some(err) = &app.error {
-                draw_error_popup(size, &err.to_string(), f);
-            }
-
             // Overlay info popup if any
             if let Some(msg) = &app.info {
                 draw_info_popup(size, msg, f);
@@ -521,6 +516,11 @@ async fn run_app<B: Backend + Write>(
             }
             if let AppMode::FormEdit { form, .. } = &app.mode {
                 draw_connection_form_popup(size, form, false, f);
+            }
+
+            // Overlay error popup if any (always on top)
+            if let Some(err) = &app.error {
+                draw_error_popup(size, &err.to_string(), f);
             }
         })?;
 

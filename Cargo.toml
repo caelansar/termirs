@@ -15,6 +15,7 @@ serde = { version = "1.0", features = ["derive"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "fs"] }
+tokio-util = "0.7.16"
 russh = "0.54.3"
 russh-sftp = "2.1.1"
 futures = "0.3"
