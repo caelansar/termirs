@@ -10,24 +10,7 @@ pub fn autocomplete_local_path(input: &str) -> Option<String> {
     }
 
     // Expand tilde to home directory for filesystem operations
-    let expanded = if input.starts_with("~") {
-        if let Ok(home) = env::var("HOME") {
-            let home_path = PathBuf::from(home);
-            let tail = &input[1..];
-            if tail.is_empty() {
-                home_path.to_string_lossy().to_string() + "/"
-            } else {
-                let tail = tail.strip_prefix('/').unwrap_or(tail);
-                home_path.join(tail).to_string_lossy().to_string()
-            }
-        } else {
-            input.to_string()
-        }
-    } else {
-        input.to_string()
-    };
-
-    let path = Path::new(&expanded);
+    let path = crate::expand_tilde(input);
 
     // If path exists and is a directory, add trailing slash if missing (preserve original format)
     if path.is_dir() && !input.ends_with('/') {
@@ -47,7 +30,7 @@ pub fn autocomplete_local_path(input: &str) -> Option<String> {
             .unwrap_or_default();
         (parent.to_path_buf(), filename)
     } else {
-        (PathBuf::from("."), expanded.clone())
+        (PathBuf::from("."), path.to_string_lossy().to_string())
     };
 
     // Read directory entries

@@ -346,23 +346,17 @@ where
 }
 
 pub fn expand_tilde(input: &str) -> PathBuf {
-    let expanded = if input.starts_with("~") {
+    if let Some(stripped) = input.strip_prefix("~/") {
         if let Ok(home) = env::var("HOME") {
-            let home_path = PathBuf::from(home);
-            let tail = &input[1..];
-            if tail.is_empty() {
-                home_path.to_string_lossy().to_string() + "/"
-            } else {
-                let tail = tail.strip_prefix('/').unwrap_or(tail);
-                home_path.join(tail).to_string_lossy().to_string()
-            }
-        } else {
-            input.to_string()
+            return PathBuf::from(home).join(stripped);
         }
-    } else {
-        input.to_string()
-    };
-    PathBuf::from(expanded)
+    } else if input == "~" {
+        if let Ok(home) = env::var("HOME") {
+            return PathBuf::from(home);
+        }
+    }
+
+    PathBuf::from(input)
 }
 
 #[cfg(test)]

@@ -31,6 +31,8 @@ use ui::{
 use futures::StreamExt;
 use tokio::{select, sync::mpsc, time};
 
+pub(crate) use async_ssh_client::expand_tilde;
+
 impl crate::async_ssh_client::ByteProcessor for TerminalState {
     fn process_bytes(&mut self, bytes: &[u8]) {
         TerminalState::process_bytes(self, bytes);
