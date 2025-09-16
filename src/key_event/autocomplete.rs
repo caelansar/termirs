@@ -9,7 +9,7 @@ pub fn autocomplete_local_path(input: &str) -> Option<String> {
         return Some("./".to_string());
     }
 
-    // Expand tilde to home directory
+    // Expand tilde to home directory for filesystem operations
     let expanded = if input.starts_with("~") {
         if let Ok(home) = env::var("HOME") {
             let home_path = PathBuf::from(home);
@@ -29,14 +29,14 @@ pub fn autocomplete_local_path(input: &str) -> Option<String> {
 
     let path = Path::new(&expanded);
 
-    // If path exists and is a directory, add trailing slash if missing
-    if path.is_dir() && !expanded.ends_with('/') {
-        return Some(expanded + "/");
+    // If path exists and is a directory, add trailing slash if missing (preserve original format)
+    if path.is_dir() && !input.ends_with('/') {
+        return Some(input.to_string() + "/");
     }
 
-    // If path exists and is a file, return as-is
+    // If path exists and is a file, return as-is (preserve original format)
     if path.is_file() {
-        return Some(expanded);
+        return Some(input.to_string());
     }
 
     // Try to complete based on parent directory
@@ -61,53 +61,51 @@ pub fn autocomplete_local_path(input: &str) -> Option<String> {
         let name = entry.file_name().to_string_lossy().to_string();
         if name.starts_with(&prefix) && !name.starts_with('.') {
             let full_path = parent_dir.join(&name);
-            let path_str = if full_path.is_dir() {
-                full_path.to_string_lossy().to_string() + "/"
+
+            // Preserve original format when constructing matches
+            let path_str = if input.starts_with("~") {
+                // For tilde paths, construct result in tilde format
+                if let Ok(home) = env::var("HOME") {
+                    if let Ok(relative) = full_path.strip_prefix(&home) {
+                        let rel_str = relative.to_string_lossy();
+                        if rel_str.is_empty() {
+                            "~/".to_string()
+                        } else if full_path.is_dir() {
+                            format!("~/{}/", rel_str)
+                        } else {
+                            format!("~/{}", rel_str)
+                        }
+                    } else {
+                        // Fallback to absolute path
+                        if full_path.is_dir() {
+                            full_path.to_string_lossy().to_string() + "/"
+                        } else {
+                            full_path.to_string_lossy().to_string()
+                        }
+                    }
+                } else {
+                    if full_path.is_dir() {
+                        full_path.to_string_lossy().to_string() + "/"
+                    } else {
+                        full_path.to_string_lossy().to_string()
+                    }
+                }
             } else {
-                full_path.to_string_lossy().to_string()
+                // For non-tilde paths, use absolute paths as before
+                if full_path.is_dir() {
+                    full_path.to_string_lossy().to_string() + "/"
+                } else {
+                    full_path.to_string_lossy().to_string()
+                }
             };
             matches.push(path_str);
         }
     }
 
     match matches.len() {
-        0 => None,
         1 => Some(matches.into_iter().next().unwrap()),
-        _ => {
-            // Find common prefix among matches
-            let common = find_common_prefix(&matches);
-            if common.len() > expanded.len() {
-                Some(common)
-            } else {
-                // Return the first match if no common prefix extension
-                Some(matches.into_iter().next().unwrap())
-            }
-        }
+        _ => None,
     }
-}
-
-/// Find the longest common prefix among a list of strings
-pub fn find_common_prefix(strings: &[String]) -> String {
-    if strings.is_empty() {
-        return String::new();
-    }
-
-    let first = &strings[0];
-    let mut common_len = first.len();
-
-    for s in strings.iter().skip(1) {
-        let mut len = 0;
-        for (c1, c2) in first.chars().zip(s.chars()) {
-            if c1 == c2 {
-                len += c1.len_utf8();
-            } else {
-                break;
-            }
-        }
-        common_len = common_len.min(len);
-    }
-
-    first[..common_len].to_string()
 }
 
 /// List available completion options for display
@@ -131,6 +129,7 @@ pub fn list_completion_options(input: &str) -> Option<Vec<String>> {
 
     let path = Path::new(&expanded);
     let (parent_dir, prefix) = if path.is_dir() && expanded.ends_with('/') {
+        // For directories ending with '/', list all contents
         (path.to_path_buf(), String::new())
     } else if let Some(parent) = path.parent() {
         let filename = path
@@ -139,7 +138,15 @@ pub fn list_completion_options(input: &str) -> Option<Vec<String>> {
             .unwrap_or_default();
         (parent.to_path_buf(), filename)
     } else {
-        (PathBuf::from("."), expanded.clone())
+        // Handle cases like "./" or "../" or current directory
+        let canonical_path = if expanded == "." || expanded == "./" {
+            PathBuf::from(".")
+        } else if expanded == ".." || expanded == "../" {
+            PathBuf::from("..")
+        } else {
+            PathBuf::from(".")
+        };
+        (canonical_path, String::new())
     };
 
     let entries = fs::read_dir(&parent_dir).ok()?;
@@ -147,8 +154,13 @@ pub fn list_completion_options(input: &str) -> Option<Vec<String>> {
 
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(&prefix) && !name.starts_with('.') {
-            options.push(name);
+        // For relative paths like "./" or "../", show all files/directories
+        // For other cases, filter by prefix
+        if prefix.is_empty() || name.starts_with(&prefix) {
+            // Skip hidden files unless specifically searching for them
+            if !name.starts_with('.') || prefix.starts_with('.') {
+                options.push(name);
+            }
         }
     }
 
@@ -167,24 +179,27 @@ pub fn construct_completed_path(current_input: &str, selected_option: &str) -> S
         return format!("./{}", selected_option);
     }
 
-    // Expand tilde to home directory
-    let expanded = if current_input.starts_with("~") {
-        if let Ok(home) = env::var("HOME") {
-            let home_path = PathBuf::from(home);
-            let tail = &current_input[1..];
-            if tail.is_empty() {
-                home_path.to_string_lossy().to_string() + "/"
-            } else {
-                let tail = tail.strip_prefix('/').unwrap_or(tail);
-                home_path.join(tail).to_string_lossy().to_string()
-            }
+    // Special handling for tilde paths to preserve the tilde format
+    if current_input.starts_with("~") {
+        let tail = &current_input[1..];
+        if tail.is_empty() || tail == "/" {
+            // For "~" or "~/", append the selected option
+            return format!("~/{}", selected_option);
         } else {
-            current_input.to_string()
+            // For "~/something", we need to check if we're replacing the last part
+            if let Some(last_slash_pos) = tail.rfind('/') {
+                // There's a path after ~/, replace the last component
+                let prefix = &tail[..last_slash_pos + 1]; // Include the slash
+                return format!("~{}{}", prefix, selected_option);
+            } else {
+                // Direct child of home directory, replace the tail
+                return format!("~/{}", selected_option);
+            }
         }
-    } else {
-        current_input.to_string()
-    };
+    }
 
+    // For non-tilde paths, expand and process normally
+    let expanded = current_input.to_string();
     let path = Path::new(&expanded);
 
     // If the current path is a directory and ends with '/', append the selected option
@@ -192,16 +207,40 @@ pub fn construct_completed_path(current_input: &str, selected_option: &str) -> S
         return format!("{}{}", expanded, selected_option);
     }
 
+    // Handle relative paths like "./" and "../"
+    if expanded == "./" || expanded == "../" {
+        return format!("{}{}", expanded, selected_option);
+    }
+
     // If the current path has a parent directory, replace the filename with the selected option
     if let Some(parent) = path.parent() {
         let parent_str = parent.to_string_lossy();
-        if parent_str.is_empty() || parent_str == "." {
+        if parent_str.is_empty() {
             selected_option.to_string()
+        } else if parent_str == "." {
+            // For current directory, preserve the "./" format if it was originally there
+            if current_input.starts_with("./") {
+                format!("./{}", selected_option)
+            } else {
+                selected_option.to_string()
+            }
         } else {
             format!("{}/{}", parent_str, selected_option)
         }
     } else {
         // No parent directory, just use the selected option
         selected_option.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_list_completion_options() {
+        let res = list_completion_options("./");
+        assert!(res.is_some());
+        assert!(res.unwrap().contains(&"Cargo.toml".to_string()));
     }
 }

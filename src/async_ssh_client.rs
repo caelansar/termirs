@@ -295,7 +295,7 @@ impl SshSession {
         let channel = session.channel_open_session().await?;
         channel.request_subsystem(true, "sftp").await?;
 
-        let mut local = tokio::fs::File::open(local_path).await?;
+        let mut local = tokio::fs::File::open(expand_tilde(local_path)).await?;
 
         let sftp = SftpSession::new(channel.into_stream()).await?;
         let mut remote = sftp
@@ -343,6 +343,26 @@ where
             }
         }
     }
+}
+
+pub fn expand_tilde(input: &str) -> PathBuf {
+    let expanded = if input.starts_with("~") {
+        if let Ok(home) = env::var("HOME") {
+            let home_path = PathBuf::from(home);
+            let tail = &input[1..];
+            if tail.is_empty() {
+                home_path.to_string_lossy().to_string() + "/"
+            } else {
+                let tail = tail.strip_prefix('/').unwrap_or(tail);
+                home_path.join(tail).to_string_lossy().to_string()
+            }
+        } else {
+            input.to_string()
+        }
+    } else {
+        input.to_string()
+    };
+    PathBuf::from(expanded)
 }
 
 #[cfg(test)]
