@@ -244,7 +244,11 @@ impl SshSession {
         loop {
             let msg_opt = {
                 let mut ch = self.r.lock().await;
-                ch.wait().await
+                // Add timeout to prevent busy waiting
+                match tokio::time::timeout(Duration::from_millis(100), ch.wait()).await {
+                    Ok(msg) => msg,
+                    Err(_) => continue, // Timeout, continue loop with small delay
+                }
             };
             let Some(msg) = msg_opt else { break };
             match msg {
