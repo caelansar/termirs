@@ -93,24 +93,9 @@ pub fn autocomplete_local_path(input: &str) -> Option<String> {
 
 /// List available completion options for display
 pub fn list_completion_options(input: &str) -> Option<Vec<String>> {
-    let expanded = if input.starts_with("~") {
-        if let Ok(home) = env::var("HOME") {
-            let home_path = PathBuf::from(home);
-            let tail = &input[1..];
-            if tail.is_empty() {
-                home_path.to_string_lossy().to_string() + "/"
-            } else {
-                let tail = tail.strip_prefix('/').unwrap_or(tail);
-                home_path.join(tail).to_string_lossy().to_string()
-            }
-        } else {
-            input.to_string()
-        }
-    } else {
-        input.to_string()
-    };
+    let path = crate::expand_tilde(input);
+    let expanded = path.to_string_lossy().to_string();
 
-    let path = Path::new(&expanded);
     let (parent_dir, prefix) = if path.is_dir() && expanded.ends_with('/') {
         // For directories ending with '/', list all contents
         (path.to_path_buf(), String::new())
