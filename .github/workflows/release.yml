@@ -38,5 +38,6 @@ jobs:
           archive: $bin-$tag-$target
           tar: unix
           zip: windows
+          locked: true
           target: ${{ matrix.target }}
           token: ${{ secrets.TOKEN }}
