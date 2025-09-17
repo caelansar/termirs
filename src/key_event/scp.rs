@@ -41,16 +41,7 @@ pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                                 if let Some(options) = list_completion_options(&current)
                                     && options.len() > 1
                                 {
-                                    // We need to calculate the anchor rect for the dropdown
-                                    // For now, we'll use a placeholder rect - this will be updated in the UI rendering
-                                    let anchor_rect = ratatui::layout::Rect {
-                                        x: 0,
-                                        y: 0,
-                                        width: 40,
-                                        height: 3,
-                                    };
-                                    *dropdown =
-                                        Some(crate::ui::DropdownState::new(options, anchor_rect));
+                                    *dropdown = Some(crate::ui::DropdownState::new(options));
                                 } else {
                                     form.next();
                                 }
@@ -60,16 +51,7 @@ pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                             if let Some(options) = list_completion_options(&current)
                                 && options.len() > 1
                             {
-                                // We need to calculate the anchor rect for the dropdown
-                                // For now, we'll use a placeholder rect - this will be updated in the UI rendering
-                                let anchor_rect = ratatui::layout::Rect {
-                                    x: 0,
-                                    y: 0,
-                                    width: 40,
-                                    height: 3,
-                                };
-                                *dropdown =
-                                    Some(crate::ui::DropdownState::new(options, anchor_rect));
+                                *dropdown = Some(crate::ui::DropdownState::new(options));
                             } else {
                                 form.next();
                             }

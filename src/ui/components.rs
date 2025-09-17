@@ -10,20 +10,18 @@ pub struct DropdownState {
     pub options: Vec<String>,
     pub selected: usize,
     pub visible: bool,
-    pub anchor_rect: Rect,    // The input field this dropdown is anchored to
-    pub scroll_offset: usize, // Track the scroll position
-    pub max_visible_items: usize, // Maximum items to show at once
+    pub scroll_offset: usize,            // Track the scroll position
+    pub max_visible_items: usize,        // Maximum items to show at once
     pub scrollbar_state: ScrollbarState, // State for the scrollbar widget
 }
 
 impl DropdownState {
-    pub fn new(options: Vec<String>, anchor_rect: Rect) -> Self {
+    pub fn new(options: Vec<String>) -> Self {
         let content_length = options.len();
         Self {
             options,
             selected: 0,
             visible: true,
-            anchor_rect,
             scroll_offset: 0,
             max_visible_items: 8, // Default to 8 visible items
             scrollbar_state: ScrollbarState::new(content_length).position(0),
@@ -70,11 +68,6 @@ impl DropdownState {
     pub fn get_selected(&self) -> Option<&String> {
         self.options.get(self.selected)
     }
-}
-
-pub fn draw_dropdown(dropdown: &mut DropdownState, frame: &mut ratatui::Frame<'_>) {
-    let anchor_rect = dropdown.anchor_rect;
-    draw_dropdown_with_rect(dropdown, anchor_rect, frame);
 }
 
 pub fn draw_dropdown_with_rect(
