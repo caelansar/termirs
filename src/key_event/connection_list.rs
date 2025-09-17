@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::Backend;
+use tokio_util;
 
 use super::KeyFlow;
 use crate::async_ssh_client::SshSession;
@@ -104,8 +105,10 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
                     let state = Arc::new(Mutex::new(TerminalState::new(30, 100)));
                     let app_reader = state.clone();
                     let mut client_clone = client.clone();
+                    let cancel_token = tokio_util::sync::CancellationToken::new();
+                    let cancel_for_task = cancel_token.clone();
                     tokio::spawn(async move {
-                        client_clone.read_loop(app_reader).await;
+                        client_clone.read_loop(app_reader, cancel_for_task).await;
                     });
                     let _ = app.config.touch_last_used(&conn.id);
                     app.go_to_connected(
@@ -113,6 +116,7 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
                         client,
                         state,
                         app.current_selected(),
+                        cancel_token,
                     );
                 }
                 Err(e) => {

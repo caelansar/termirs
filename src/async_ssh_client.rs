@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio_util;
+
 use russh::client::{self, AuthResult, KeyboardInteractiveAuthResponse};
 use russh::keys::{self, PrivateKeyWithHashAlg, ssh_key};
 use russh::{ChannelMsg, Disconnect, MethodKind};
@@ -240,14 +242,26 @@ impl SshSession {
         Ok(())
     }
 
-    pub async fn read_loop<B: ByteProcessor>(&mut self, processor: Arc<std::sync::Mutex<B>>) {
+    pub async fn read_loop<B: ByteProcessor>(
+        &mut self,
+        processor: Arc<std::sync::Mutex<B>>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) {
         loop {
             let msg_opt = {
                 let mut ch = self.r.lock().await;
-                // Add timeout to prevent busy waiting
-                match tokio::time::timeout(Duration::from_millis(100), ch.wait()).await {
-                    Ok(msg) => msg,
-                    Err(_) => continue, // Timeout, continue loop with small delay
+                // Add cancellation and timeout support
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        // Task was cancelled, exit cleanly
+                        break;
+                    }
+                    result = tokio::time::timeout(Duration::from_millis(100), ch.wait()) => {
+                        match result {
+                            Ok(msg) => msg,
+                            Err(_) => continue, // Timeout, continue loop with small delay
+                        }
+                    }
                 }
             };
             let Some(msg) = msg_opt else { break };
@@ -386,9 +400,13 @@ mod tests {
         let client = SshSession::connect(&conn).await.unwrap();
 
         let mut client_clone = client.clone();
+        let cancel_token = tokio_util::sync::CancellationToken::new();
         tokio::spawn(async move {
             client_clone
-                .read_loop(Arc::new(std::sync::Mutex::new(EchoByteProcessor {})))
+                .read_loop(
+                    Arc::new(std::sync::Mutex::new(EchoByteProcessor {})),
+                    cancel_token,
+                )
                 .await;
         });
 

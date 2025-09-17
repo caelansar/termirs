@@ -19,6 +19,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Margin;
 use ratatui::prelude::Backend;
 use tokio::{select, sync::mpsc, time};
+use tokio_util;
 use tui_textarea::TextArea;
 
 use async_ssh_client::SshSession;
@@ -75,6 +76,7 @@ pub(crate) enum AppMode {
         client: SshSession,
         state: Arc<Mutex<TerminalState>>,
         current_selected: usize,
+        cancel_token: tokio_util::sync::CancellationToken, // Token to cancel the read task
     },
     ScpForm {
         form: ScpForm,
@@ -192,12 +194,14 @@ impl<B: Backend + Write> App<B> {
         client: SshSession,
         state: Arc<Mutex<TerminalState>>,
         current_selected: usize,
+        cancel_token: tokio_util::sync::CancellationToken,
     ) {
         self.mode = AppMode::Connected {
             name,
             client,
             state,
             current_selected,
+            cancel_token,
         };
         self.needs_redraw = true; // Mode change requires redraw
     }

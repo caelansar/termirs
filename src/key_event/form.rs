@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::Backend;
+use tokio_util;
 use tui_textarea::Input;
 
 use super::KeyFlow;
@@ -77,12 +78,20 @@ pub async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                                 let state = Arc::new(Mutex::new(TerminalState::new(30, 100)));
                                 let app_reader = state.clone();
                                 let mut client_clone = client.clone();
+                                let cancel_token = tokio_util::sync::CancellationToken::new();
+                                let cancel_for_task = cancel_token.clone();
                                 tokio::spawn(async move {
-                                    client_clone.read_loop(app_reader).await;
+                                    client_clone.read_loop(app_reader, cancel_for_task).await;
                                 });
                                 form.error = None;
                                 let _ = app.config.touch_last_used(&conn.id);
-                                app.go_to_connected(conn.display_name.clone(), client, state, 0);
+                                app.go_to_connected(
+                                    conn.display_name.clone(),
+                                    client,
+                                    state,
+                                    0,
+                                    cancel_token,
+                                );
                             }
                             Err(e) => {
                                 app.error = Some(e);

@@ -98,6 +98,7 @@ pub async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: Key
         client,
         state,
         current_selected,
+        cancel_token,
     } = &mut app.mode
     {
         // Determine interactive mode (full-screen alt buffer or application cursor)
@@ -150,6 +151,10 @@ pub async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: Key
                         app.error = Some(e);
                     }
                 } else {
+                    // Cancel the background read task first
+                    cancel_token.cancel();
+
+                    // Then close the SSH connection
                     if let Err(e) = client.close().await {
                         app.error = Some(e);
                     }
