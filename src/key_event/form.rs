@@ -16,20 +16,26 @@ use crate::{App, AppMode};
 pub async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> KeyFlow {
     match key.code {
         KeyCode::Esc => {
-            app.go_to_connection_list();
+            if let AppMode::FormNew {
+                current_selected, ..
+            } = &mut app.mode
+            {
+                let current_selected = *current_selected;
+                app.go_to_connection_list_with_selected(current_selected);
+            }
         }
         KeyCode::Tab | KeyCode::Down => {
-            if let AppMode::FormNew { form } = &mut app.mode {
+            if let AppMode::FormNew { form, .. } = &mut app.mode {
                 form.next();
             }
         }
         KeyCode::BackTab | KeyCode::Up => {
-            if let AppMode::FormNew { form } = &mut app.mode {
+            if let AppMode::FormNew { form, .. } = &mut app.mode {
                 form.prev();
             }
         }
         KeyCode::Enter => {
-            if let AppMode::FormNew { form } = &mut app.mode {
+            if let AppMode::FormNew { form, .. } = &mut app.mode {
                 match form.validate() {
                     Ok(_) => {
                         let user = form.get_username_value().trim().to_string();
@@ -43,7 +49,7 @@ pub async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                                 passphrase: None,
                             }
                         } else {
-                            AuthMethod::Password(form.get_password_value())
+                            AuthMethod::Password(form.get_password_value().trim().to_string())
                         };
 
                         let mut conn = Connection::new(
@@ -91,7 +97,7 @@ pub async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
         }
         _ => {
             // Use textarea's built-in input handling for all other keys
-            if let AppMode::FormNew { form } = &mut app.mode {
+            if let AppMode::FormNew { form, .. } = &mut app.mode {
                 let textarea = form.focused_textarea_mut();
                 textarea.input(Input::from(key));
             }
@@ -121,24 +127,14 @@ pub async fn handle_form_edit_key<B: Backend + Write>(app: &mut App<B>, key: Key
             }
         }
         KeyCode::Enter => {
-            if let AppMode::FormEdit { form, original, .. } = &mut app.mode {
-                if form.get_host_value().trim().is_empty() {
-                    app.error = Some(AppError::ValidationError("Host is required".into()));
-                    return KeyFlow::Continue;
-                }
-                if form.get_port_value().trim().is_empty() {
-                    app.error = Some(AppError::ValidationError("Port is required".into()));
-                    return KeyFlow::Continue;
-                }
-                let parsed_port = match form.get_port_value().parse::<u16>() {
-                    Ok(p) => p,
-                    Err(_) => {
-                        app.error = Some(AppError::ValidationError("Port must be a number".into()));
-                        return KeyFlow::Continue;
-                    }
-                };
-                if form.get_username_value().trim().is_empty() {
-                    app.error = Some(AppError::ValidationError("Username is required".into()));
+            if let AppMode::FormEdit {
+                form,
+                original,
+                current_selected,
+            } = &mut app.mode
+            {
+                if let Err(e) = form.validate() {
+                    app.error = Some(AppError::ValidationError(e));
                     return KeyFlow::Continue;
                 }
 
@@ -149,14 +145,39 @@ pub async fn handle_form_edit_key<B: Backend + Write>(app: &mut App<B>, key: Key
                         _ => String::new(), // Default to empty if not password auth
                     }
                 } else {
-                    form.get_password_value()
+                    form.get_password_value().trim().to_string()
+                };
+
+                let new_private_key_path = if form.get_private_key_path_value().trim().is_empty() {
+                    match &original.auth_method {
+                        AuthMethod::PublicKey {
+                            private_key_path, ..
+                        } => private_key_path.clone(),
+                        _ => String::new(), // Default to empty if not public key auth
+                    }
+                } else {
+                    form.get_private_key_path_value().trim().to_string()
                 };
 
                 let mut updated = original.clone();
                 updated.host = form.get_host_value().trim().to_string();
+                let parsed_port = match form.get_port_value().parse::<u16>() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        app.error = Some(AppError::ValidationError("Port must be a number".into()));
+                        return KeyFlow::Continue;
+                    }
+                };
                 updated.port = parsed_port;
                 updated.username = form.get_username_value().trim().to_string();
-                updated.auth_method = AuthMethod::Password(new_password);
+                updated.auth_method = if new_private_key_path.is_empty() {
+                    AuthMethod::Password(new_password)
+                } else {
+                    AuthMethod::PublicKey {
+                        private_key_path: new_private_key_path,
+                        passphrase: None,
+                    }
+                };
                 updated.display_name = form.get_display_name_value().trim().to_string();
 
                 if let Err(e) = updated.validate() {
@@ -169,7 +190,8 @@ pub async fn handle_form_edit_key<B: Backend + Write>(app: &mut App<B>, key: Key
                         if let Err(e) = app.config.save() {
                             app.error = Some(e);
                         }
-                        app.go_to_connection_list();
+                        let current_selected = *current_selected;
+                        app.go_to_connection_list_with_selected(current_selected);
                     }
                     Err(e) => app.error = Some(e),
                 }

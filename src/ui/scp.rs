@@ -52,12 +52,12 @@ impl ScpForm {
         }
     }
 
-    pub fn get_local_path_value(&self) -> String {
-        self.local_path.lines()[0].clone()
+    pub fn get_local_path_value(&self) -> &str {
+        &self.local_path.lines()[0]
     }
 
-    pub fn get_remote_path_value(&self) -> String {
-        self.remote_path.lines()[0].clone()
+    pub fn get_remote_path_value(&self) -> &str {
+        &self.remote_path.lines()[0]
     }
 }
 

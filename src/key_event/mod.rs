@@ -72,7 +72,7 @@ pub async fn handle_key_event<B: Backend + Write>(app: &mut App<B>, key: KeyEven
 /// Paste event handler; dispatches by AppMode
 pub async fn handle_paste_event<B: Backend + Write>(app: &mut App<B>, data: &str) {
     match &mut app.mode {
-        AppMode::FormNew { form } => {
+        AppMode::FormNew { form, .. } => {
             let textarea = form.focused_textarea_mut();
             textarea.insert_str(data);
         }

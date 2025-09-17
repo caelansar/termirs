@@ -49,9 +49,7 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
     let len = app.config.connections().len();
     match key.code {
         KeyCode::Char('n') | KeyCode::Char('N') => {
-            app.mode = AppMode::FormNew {
-                form: Box::new(crate::ui::ConnectionForm::new()),
-            };
+            app.go_to_form_new();
         }
         KeyCode::Char('s') | KeyCode::Char('S') => {
             app.go_to_scp_form(app.current_selected());
@@ -123,14 +121,9 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
             }
         }
         KeyCode::Char('e') | KeyCode::Char('E') => {
-            let original = app.config.connections()[app.current_selected()].clone();
-            let form = crate::ui::ConnectionForm::from_connection(&original);
-
-            app.mode = AppMode::FormEdit {
-                form: Box::new(form),
-                original,
-                current_selected: app.current_selected(),
-            };
+            if let Some(original) = app.config.connections().get(app.current_selected()) {
+                app.go_to_form_edit(original.into(), original.clone());
+            }
         }
         KeyCode::Char('d') | KeyCode::Char('D') => {
             if let Some(conn) = app.config.connections().get(app.current_selected()) {

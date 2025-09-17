@@ -51,6 +51,8 @@ pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                                     };
                                     *dropdown =
                                         Some(crate::ui::DropdownState::new(options, anchor_rect));
+                                } else {
+                                    form.next();
                                 }
                             }
                         }
@@ -68,6 +70,8 @@ pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                                 };
                                 *dropdown =
                                     Some(crate::ui::DropdownState::new(options, anchor_rect));
+                            } else {
+                                form.next();
                             }
                         }
                     }
@@ -171,7 +175,7 @@ pub async fn handle_scp_form_dropdown_key<B: Backend + Write>(
     if let AppMode::ScpForm { form, dropdown, .. } = &mut app.mode {
         if let Some(dropdown_state) = dropdown {
             match key.code {
-                KeyCode::Down => {
+                KeyCode::Down | KeyCode::Tab => {
                     dropdown_state.next();
                     return KeyFlow::Continue;
                 }

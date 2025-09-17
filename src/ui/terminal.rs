@@ -99,8 +99,10 @@ pub fn draw_terminal(
                     current_text.push_str(to_append);
                 } else {
                     if !current_text.is_empty() {
-                        spans.push(Span::styled(current_text.clone(), current_style));
-                        current_text.clear();
+                        spans.push(Span::styled(
+                            std::mem::take(&mut current_text),
+                            current_style,
+                        ));
                     }
                     current_style = style;
                     current_text.push_str(to_append);
@@ -110,8 +112,10 @@ pub fn draw_terminal(
                     current_text.push(' ');
                 } else {
                     if !current_text.is_empty() {
-                        spans.push(Span::styled(current_text.clone(), current_style));
-                        current_text.clear();
+                        spans.push(Span::styled(
+                            std::mem::take(&mut current_text),
+                            current_style,
+                        ));
                     }
                     current_style = Style::default();
                     current_text.push(' ');

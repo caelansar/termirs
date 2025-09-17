@@ -72,7 +72,16 @@ impl DropdownState {
     }
 }
 
-pub fn draw_dropdown(dropdown: &DropdownState, frame: &mut ratatui::Frame<'_>) {
+pub fn draw_dropdown(dropdown: &mut DropdownState, frame: &mut ratatui::Frame<'_>) {
+    let anchor_rect = dropdown.anchor_rect;
+    draw_dropdown_with_rect(dropdown, anchor_rect, frame);
+}
+
+pub fn draw_dropdown_with_rect(
+    dropdown: &mut DropdownState,
+    anchor_rect: Rect,
+    frame: &mut ratatui::Frame<'_>,
+) {
     if !dropdown.visible || dropdown.options.is_empty() {
         return;
     }
@@ -82,9 +91,9 @@ pub fn draw_dropdown(dropdown: &DropdownState, frame: &mut ratatui::Frame<'_>) {
     let dropdown_height = visible_items as u16 + 2; // +2 for borders
 
     // Position dropdown below the anchor field
-    let x = dropdown.anchor_rect.x;
-    let y = dropdown.anchor_rect.y + dropdown.anchor_rect.height;
-    let width = dropdown.anchor_rect.width;
+    let x = anchor_rect.x;
+    let y = anchor_rect.y + anchor_rect.height;
+    let width = anchor_rect.width;
 
     let dropdown_rect = Rect {
         x,
@@ -139,8 +148,8 @@ pub fn draw_dropdown(dropdown: &DropdownState, frame: &mut ratatui::Frame<'_>) {
             let actual_index = dropdown.scroll_offset + visible_index;
             let style = if actual_index == dropdown.selected {
                 Style::default()
-                    .fg(Color::LightCyan)
-                    // .bg(Color::LightBlue)
+                    .bg(Color::Cyan)
+                    .fg(Color::White)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
@@ -176,10 +185,6 @@ pub fn draw_dropdown(dropdown: &DropdownState, frame: &mut ratatui::Frame<'_>) {
             .thumb_symbol("█")
             .style(Style::default().fg(Color::Cyan));
 
-        frame.render_stateful_widget(
-            scrollbar,
-            scrollbar_area,
-            &mut dropdown.scrollbar_state.clone(),
-        );
+        frame.render_stateful_widget(scrollbar, scrollbar_area, &mut dropdown.scrollbar_state);
     }
 }

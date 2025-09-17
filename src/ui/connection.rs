@@ -48,7 +48,7 @@ impl ConnectionForm {
 
         let mut password = TextArea::default();
         password.set_placeholder_text("Enter password");
-        password.set_mask_char('*');
+        password.set_mask_char('\u{2022}');
         password.set_cursor_line_style(Style::default());
 
         let mut private_key_path = TextArea::default();
@@ -104,28 +104,28 @@ impl ConnectionForm {
         }
     }
 
-    pub fn get_host_value(&self) -> String {
-        self.host.lines()[0].clone()
+    pub fn get_host_value(&self) -> &str {
+        &self.host.lines()[0]
     }
 
-    pub fn get_port_value(&self) -> String {
-        self.port.lines()[0].clone()
+    pub fn get_port_value(&self) -> &str {
+        &self.port.lines()[0]
     }
 
-    pub fn get_username_value(&self) -> String {
-        self.username.lines()[0].clone()
+    pub fn get_username_value(&self) -> &str {
+        &self.username.lines()[0]
     }
 
-    pub fn get_password_value(&self) -> String {
-        self.password.lines()[0].clone()
+    pub fn get_password_value(&self) -> &str {
+        &self.password.lines()[0]
     }
 
-    pub fn get_private_key_path_value(&self) -> String {
-        self.private_key_path.lines()[0].clone()
+    pub fn get_private_key_path_value(&self) -> &str {
+        &self.private_key_path.lines()[0]
     }
 
-    pub fn get_display_name_value(&self) -> String {
-        self.display_name.lines()[0].clone()
+    pub fn get_display_name_value(&self) -> &str {
+        &self.display_name.lines()[0]
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -147,11 +147,11 @@ impl ConnectionForm {
         Ok(())
     }
 
-    pub fn from_connection(conn: &Connection) -> Self {
+    fn from_connection(conn: &Connection) -> Self {
         let mut host = TextArea::default();
         host.set_placeholder_text("Enter hostname or IP address");
         host.set_cursor_line_style(Style::default());
-        host.insert_str(conn.host.clone());
+        host.insert_str(&conn.host);
 
         let mut port = TextArea::default();
         port.set_placeholder_text("22");
@@ -165,7 +165,7 @@ impl ConnectionForm {
 
         let mut password = TextArea::default();
         password.set_placeholder_text("Enter password");
-        password.set_mask_char('*');
+        password.set_mask_char('\u{2022}');
         password.set_cursor_line_style(Style::default());
 
         let mut private_key_path = TextArea::default();
@@ -173,7 +173,7 @@ impl ConnectionForm {
         private_key_path.set_cursor_line_style(Style::default());
         match &conn.auth_method {
             AuthMethod::Password(pwd) => {
-                password.insert_str("*".repeat(pwd.len()));
+                password.insert_str(pwd);
             }
             AuthMethod::PublicKey {
                 private_key_path: path,
@@ -329,11 +329,11 @@ pub fn draw_connection_list(
         ],
     )
     .header(header)
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(format!("Connection List ({} connections)", items.len())),
-    )
+    .block(Block::default().borders(Borders::ALL).title(format!(
+        "Connection List ({}/{})",
+        sel + 1,
+        items.len()
+    )))
     .highlight_style(
         Style::default()
             .bg(Color::Cyan)
@@ -398,5 +398,36 @@ pub fn draw_connection_list(
 
         frame.render_widget(left, footer[0]);
         frame.render_widget(right, footer[1]);
+    }
+}
+
+impl From<&Connection> for ConnectionForm {
+    fn from(conn: &Connection) -> Self {
+        ConnectionForm::from_connection(conn)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+
+    use super::*;
+
+    #[test]
+    fn test_connection_form() {
+        let conn = Connection {
+            id: "1".to_string(),
+            created_at: Utc::now(),
+            last_used: None,
+            public_key: None,
+            display_name: "test".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 22,
+            username: "test".to_string(),
+            auth_method: AuthMethod::Password("test".to_string()),
+        };
+
+        let form = ConnectionForm::from_connection(&conn);
+        assert_eq!(form.get_password_value(), "test");
     }
 }

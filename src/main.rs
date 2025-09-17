@@ -13,25 +13,23 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use futures::StreamExt;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Margin;
 use ratatui::prelude::Backend;
+use tokio::{select, sync::mpsc, time};
 use tui_textarea::TextArea;
 
 use async_ssh_client::SshSession;
+pub(crate) use async_ssh_client::expand_tilde;
 use config::manager::{ConfigManager, Connection};
 use error::{AppError, Result};
 use ui::{
     ConnectionForm, DropdownState, ScpForm, TerminalState, draw_connection_form_popup,
-    draw_connection_list, draw_delete_confirmation_popup, draw_dropdown, draw_error_popup,
-    draw_info_popup, draw_scp_popup, draw_scp_progress_popup, draw_terminal,
+    draw_connection_list, draw_delete_confirmation_popup, draw_dropdown_with_rect,
+    draw_error_popup, draw_info_popup, draw_scp_popup, draw_scp_progress_popup, draw_terminal,
 };
-
-use futures::StreamExt;
-use tokio::{select, sync::mpsc, time};
-
-pub(crate) use async_ssh_client::expand_tilde;
 
 impl crate::async_ssh_client::ByteProcessor for TerminalState {
     fn process_bytes(&mut self, bytes: &[u8]) {
@@ -64,10 +62,11 @@ pub(crate) enum AppMode {
         search_input: TextArea<'static>,
     },
     FormNew {
-        form: Box<ConnectionForm>,
+        form: ConnectionForm,
+        current_selected: usize,
     },
     FormEdit {
-        form: Box<ConnectionForm>,
+        form: ConnectionForm,
         original: Connection,
         current_selected: usize,
     },
@@ -78,7 +77,7 @@ pub(crate) enum AppMode {
         current_selected: usize,
     },
     ScpForm {
-        form: Box<ScpForm>,
+        form: ScpForm,
         dropdown: Option<DropdownState>,
         current_selected: usize,
     },
@@ -148,12 +147,7 @@ pub(crate) struct App<B: Backend + Write> {
 impl<B: Backend + Write> Drop for App<B> {
     fn drop(&mut self) {
         disable_raw_mode().ok();
-        execute!(
-            self.terminal.backend_mut(),
-            LeaveAlternateScreen,
-            DisableMouseCapture
-        )
-        .ok();
+        execute!(self.terminal.backend_mut(), LeaveAlternateScreen,).ok();
     }
 }
 
@@ -205,8 +199,19 @@ impl<B: Backend + Write> App<B> {
         };
     }
 
-    pub(crate) fn go_to_connection_list(&mut self) {
-        self.go_to_connection_list_with_selected(0);
+    pub(crate) fn go_to_form_new(&mut self) {
+        self.mode = AppMode::FormNew {
+            form: ConnectionForm::new(),
+            current_selected: self.current_selected(),
+        };
+    }
+
+    pub(crate) fn go_to_form_edit(&mut self, form: ConnectionForm, original: Connection) {
+        self.mode = AppMode::FormEdit {
+            form,
+            original,
+            current_selected: self.current_selected(),
+        };
     }
 
     pub(crate) fn go_to_connection_list_with_selected(&mut self, selected: usize) {
@@ -219,7 +224,7 @@ impl<B: Backend + Write> App<B> {
 
     pub(crate) fn go_to_scp_form(&mut self, current_selected: usize) {
         self.mode = AppMode::ScpForm {
-            form: Box::new(ScpForm::new()),
+            form: ScpForm::new(),
             dropdown: None,
             current_selected,
         };
@@ -281,8 +286,26 @@ impl<B: Backend + Write> App<B> {
     }
 }
 
+pub fn init_panic_hook() {
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        // intentionally ignore errors here since we're already in a panic
+        eprintln!("Panic hook");
+        let _ = restore_tui();
+        original_hook(panic_info);
+    }));
+}
+
+fn restore_tui() -> std::io::Result<()> {
+    disable_raw_mode()?;
+    execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture)?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    init_panic_hook();
+
     // Setup Crossterm terminal
     let stdout = std::io::stdout();
     let backend = CrosstermBackend::new(stdout);
@@ -299,7 +322,6 @@ async fn main() -> Result<()> {
     let tx_tick = tx.clone();
 
     // asynchronous: keyboard/terminal event listening
-    let tx_input = tx.clone();
     let mut event_stream = event::EventStream::new();
     tokio::spawn(async move {
         loop {
@@ -310,7 +332,7 @@ async fn main() -> Result<()> {
                         Some(Err(_)) => break,
                         Some(Ok(e)) => e,
                     };
-                    if tx_input.send(AppEvent::Input(ev)).await.is_err() {
+                    if tx.send(AppEvent::Input(ev)).await.is_err() {
                         break;
                     }
                 }
@@ -359,7 +381,7 @@ async fn run_app<B: Backend + Write>(
                     search_input,
                 } => {
                     let conns = app.config.connections();
-                    let search_query = search_input.lines()[0].clone();
+                    let search_query = &search_input.lines()[0];
 
                     if *search_mode {
                         // In search mode: custom layout with table, search input, and footer
@@ -439,10 +461,12 @@ async fn run_app<B: Backend + Write>(
                         );
                     }
                 }
-                AppMode::FormNew { .. } => {
+                AppMode::FormNew {
+                    current_selected, ..
+                } => {
                     // Render the connection list background first
                     let conns = app.config.connections();
-                    draw_connection_list(size, conns, 0, false, "", f);
+                    draw_connection_list(size, conns, *current_selected, false, "", f);
                 }
                 AppMode::FormEdit {
                     current_selected, ..
@@ -489,14 +513,12 @@ async fn run_app<B: Backend + Write>(
             }
 
             // Overlay SCP popup if in SCP form mode
-            if let AppMode::ScpForm { form, dropdown, .. } = &app.mode {
+            if let AppMode::ScpForm { form, dropdown, .. } = &mut app.mode {
                 let scp_input_rects = draw_scp_popup(size, form, f);
 
                 // Update dropdown anchor rect if dropdown exists
                 if let Some(dropdown) = dropdown {
-                    let mut updated_dropdown = dropdown.clone();
-                    updated_dropdown.anchor_rect = scp_input_rects.0; // local path rect
-                    draw_dropdown(&updated_dropdown, f);
+                    draw_dropdown_with_rect(dropdown, scp_input_rects.0, f);
                 }
             }
 
@@ -514,10 +536,10 @@ async fn run_app<B: Backend + Write>(
             }
 
             // Overlay connection form popup if in form mode
-            if let AppMode::FormNew { form } = &app.mode {
+            if let AppMode::FormNew { form, .. } = &app.mode {
                 draw_connection_form_popup(size, form, true, f);
             }
-            if let AppMode::FormEdit { form, .. } = &app.mode {
+            if let AppMode::FormEdit { form, .. } = &mut app.mode {
                 draw_connection_form_popup(size, form, false, f);
             }
 
