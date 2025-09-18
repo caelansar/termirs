@@ -219,9 +219,9 @@ pub fn draw_connection_form_popup(
     } else {
         "Edit SSH Connection"
     };
-    // Calculate popup size - compact but readable
-    let popup_w = (area.width as f32 * 0.35) as u16; // 35% of screen width for more compact look
-    let popup_h = 23u16.min(area.height.saturating_sub(4)); // Adjusted height for readable input fields
+
+    // Responsive popup sizing
+    let (popup_w, popup_h) = calculate_responsive_popup_size(area);
 
     let x = area.x + (area.width.saturating_sub(popup_w)) / 2;
     let y = area.y + (area.height.saturating_sub(popup_h)) / 2;
@@ -249,24 +249,15 @@ pub fn draw_connection_form_popup(
     // Get inner area for form content
     let inner = popup.inner(Margin::new(1, 1));
 
-    // Layout for form fields - balanced between compact and readable
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // host (enough for placeholder text)
-            Constraint::Length(3), // port
-            Constraint::Length(3), // username
-            Constraint::Length(3), // password
-            Constraint::Length(3), // private key path
-            Constraint::Length(3), // display name
-            Constraint::Min(1),    // spacer to push instructions to bottom
-            Constraint::Length(1), // error line
-            Constraint::Length(1), // instructions
-        ])
-        .split(inner);
+    // Create responsive layout based on available space
+    let layout = create_responsive_form_layout(inner);
 
-    // Helper function to render text areas
+    // Helper function to render text areas with responsive styling
     let mut render_textarea = |idx: usize, label: &str, textarea: &TextArea, focused: bool| {
+        if idx >= layout.len() {
+            return; // Skip if layout doesn't have enough space
+        }
+
         let mut widget = textarea.clone();
         let mut field_block = Block::default().borders(Borders::ALL).title(label);
         if focused {
@@ -280,67 +271,219 @@ pub fn draw_connection_form_popup(
         frame.render_widget(&widget, layout[idx]);
     };
 
-    // Render all form fields
-    render_textarea(0, "Host", &form.host, form.focus == FocusField::Host);
-    render_textarea(1, "Port", &form.port, form.focus == FocusField::Port);
-    render_textarea(
-        2,
-        "Username",
-        &form.username,
-        form.focus == FocusField::Username,
-    );
-    render_textarea(
-        3,
-        "Password",
-        &form.password,
-        form.focus == FocusField::Password,
-    );
-    render_textarea(
-        4,
-        "Private Key Path",
-        &form.private_key_path,
-        form.focus == FocusField::PrivateKeyPath,
-    );
-    render_textarea(
-        5,
-        "Display Name (optional)",
-        &form.display_name,
-        form.focus == FocusField::DisplayName,
-    );
+    // Render form fields based on available layout space
+    let field_configs = [
+        ("Host", &form.host, form.focus == FocusField::Host),
+        ("Port", &form.port, form.focus == FocusField::Port),
+        (
+            "Username",
+            &form.username,
+            form.focus == FocusField::Username,
+        ),
+        (
+            "Password",
+            &form.password,
+            form.focus == FocusField::Password,
+        ),
+        (
+            "Private Key Path",
+            &form.private_key_path,
+            form.focus == FocusField::PrivateKeyPath,
+        ),
+        (
+            "Display Name (optional)",
+            &form.display_name,
+            form.focus == FocusField::DisplayName,
+        ),
+    ];
 
-    // Show error if any (now at index 7)
-    if let Some(error) = &form.error {
-        let error_paragraph = Paragraph::new(Line::from(Span::styled(
-            error,
-            Style::default().fg(Color::Red),
-        )));
-        frame.render_widget(error_paragraph, layout[7]);
+    for (idx, (label, textarea, focused)) in field_configs.iter().enumerate() {
+        render_textarea(idx, label, textarea, *focused);
     }
 
-    // Show instructions at bottom (now at index 8)
-    let instructions = Paragraph::new(Line::from(vec![
-        Span::styled(
-            "Tab/Shift+Tab",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(": Navigate  "),
-        Span::styled(
-            "Enter",
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(": Save  "),
-        Span::styled(
-            "Esc",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(": Cancel"),
-    ]));
-    frame.render_widget(instructions, layout[8]);
+    // Try to show error if space available
+    let error_idx = field_configs.len();
+    if let Some(error) = &form.error {
+        if error_idx < layout.len() {
+            let error_paragraph = Paragraph::new(Line::from(Span::styled(
+                error,
+                Style::default().fg(Color::Red),
+            )));
+            frame.render_widget(error_paragraph, layout[error_idx]);
+        }
+    }
 
-    // Render the main block
+    // Render the main block first
     frame.render_widget(Paragraph::new("").block(block), popup);
+
+    // Render instructions at the very bottom of the popup, overlapping the border
+    let instructions_area = Rect {
+        x: popup.x + 1,
+        y: popup.y + popup.height - 2, // Position at bottom border line
+        width: popup.width.saturating_sub(2),
+        height: 1,
+    };
+    let instructions = create_responsive_instructions(instructions_area.width);
+    frame.render_widget(instructions, instructions_area);
+}
+
+// Calculate responsive popup size based on terminal dimensions
+fn calculate_responsive_popup_size(area: Rect) -> (u16, u16) {
+    let width = area.width;
+    let height = area.height;
+
+    // Responsive width calculation
+    let popup_w = if width < 60 {
+        // Very small screen: use most of the width
+        (width as f32 * 0.9) as u16
+    } else if width < 100 {
+        // Small screen: use 70% of width
+        (width as f32 * 0.7) as u16
+    } else if width < 150 {
+        // Medium screen: use 50% of width
+        (width as f32 * 0.5) as u16
+    } else {
+        // Large screen: use 35% of width but cap at reasonable size
+        ((width as f32 * 0.35) as u16).min(80)
+    };
+
+    // Responsive height calculation
+    let popup_h = if height < 20 {
+        // Very small height: use most available space
+        height.saturating_sub(2)
+    } else if height < 30 {
+        // Small height: prioritize essential fields
+        height.saturating_sub(4)
+    } else {
+        // Normal height: use ideal size
+        23u16.min(height.saturating_sub(4))
+    };
+
+    (popup_w.max(30), popup_h.max(12)) // Ensure minimum usable size
+}
+
+// Create responsive layout based on available space
+fn create_responsive_form_layout(inner: Rect) -> Vec<Rect> {
+    let available_height = inner.height;
+
+    let layout_rects = if available_height < 15 {
+        // Very compact layout: minimize spacing
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(2), // host
+                Constraint::Length(2), // port
+                Constraint::Length(2), // username
+                Constraint::Length(2), // password
+                Constraint::Length(2), // private key
+                Constraint::Length(2), // display name
+                Constraint::Min(0),    // flexible spacer
+            ])
+            .split(inner)
+    } else if available_height < 20 {
+        // Compact layout: reduce field height slightly
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(2), // host
+                Constraint::Length(2), // port
+                Constraint::Length(2), // username
+                Constraint::Length(2), // password
+                Constraint::Length(2), // private key
+                Constraint::Length(2), // display name
+                Constraint::Min(0),    // flexible spacer
+                Constraint::Length(1), // error (if any)
+            ])
+            .split(inner)
+    } else {
+        // Normal layout: comfortable spacing
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // host
+                Constraint::Length(3), // port
+                Constraint::Length(3), // username
+                Constraint::Length(3), // password
+                Constraint::Length(3), // private key
+                Constraint::Length(3), // display name
+                Constraint::Min(0),    // flexible spacer
+                Constraint::Length(1), // error (if any)
+            ])
+            .split(inner)
+    };
+
+    layout_rects.to_vec()
+}
+
+// Create responsive instructions based on available width
+fn create_responsive_instructions(width: u16) -> Paragraph<'static> {
+    if width < 40 {
+        // Very narrow: minimal instructions
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "Tab",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                "Esc",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+        ]))
+    } else if width < 60 {
+        // Narrow: short form
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "Tab",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(": Nav  "),
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(": Save  "),
+            Span::styled(
+                "Esc",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(": Cancel"),
+        ]))
+    } else {
+        // Full width: complete instructions
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "Tab/Shift+Tab",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(": Navigate  "),
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(": Save  "),
+            Span::styled(
+                "Esc",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(": Cancel"),
+        ]))
+    }
 }

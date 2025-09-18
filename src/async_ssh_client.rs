@@ -155,7 +155,7 @@ impl SshSession {
                         .await?;
                     if !auth_result.success() {
                         return Err(AppError::AuthenticationError(
-                            "Authentication failed".to_string(),
+                            "Password authentication failed".to_string(),
                         ));
                     }
                 }
@@ -184,7 +184,7 @@ impl SshSession {
                     .await?;
                 if !auth_result.success() {
                     return Err(AppError::AuthenticationError(
-                        "Authentication failed".to_string(),
+                        "Public key authentication failed".to_string(),
                     ));
                 }
             }

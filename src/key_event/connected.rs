@@ -301,6 +301,16 @@ pub async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: Key
                     app.error = Some(e);
                 }
             }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Ok(mut guard) = state.lock() {
+                    if guard.parser.screen().scrollback() > 0 {
+                        guard.scroll_to_bottom();
+                    }
+                }
+                if let Err(e) = client.write_all(&[0x17]).await {
+                    app.error = Some(e);
+                }
+            }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Ok(mut guard) = state.lock() {
                     if guard.parser.screen().scrollback() > 0 {
