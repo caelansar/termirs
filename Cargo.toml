@@ -25,3 +25,10 @@ tui-textarea = "0.6.1"
 [[example]]
 name = "async_with_tui"
 required-features = ["anyhow"]
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = 0
