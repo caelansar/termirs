@@ -26,6 +26,9 @@ A modern, async SSH terminal client built with Rust and [Ratatui](https://ratatu
 
 ## Installation
 
+### From GitHub release
+Download the latest binary from the [releases page](https://github.com/caelansar/termirs/releases)
+
 ### Prerequisites
 - Rust 1.85+ (2024 edition support)
 - A terminal that supports VT100 escape sequences

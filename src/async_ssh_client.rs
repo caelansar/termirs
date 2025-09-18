@@ -273,7 +273,6 @@ impl SshSession {
                     }
                 }
                 ChannelMsg::Eof | ChannelMsg::Close | ChannelMsg::ExitStatus { .. } => {
-                    eprintln!("here");
                     // Notify the main loop that the connection has been disconnected
                     if let Some(tx) = &event_tx {
                         let _ = tx.send(crate::AppEvent::Disconnect).await;
