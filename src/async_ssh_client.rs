@@ -246,6 +246,7 @@ impl SshSession {
         &mut self,
         processor: Arc<std::sync::Mutex<B>>,
         cancel: tokio_util::sync::CancellationToken,
+        event_tx: Option<tokio::sync::mpsc::Sender<crate::AppEvent>>,
     ) {
         loop {
             let msg_opt = {
@@ -271,7 +272,12 @@ impl SshSession {
                         guard.process_bytes(&data);
                     }
                 }
-                ChannelMsg::Eof | ChannelMsg::Close => {
+                ChannelMsg::Eof | ChannelMsg::Close | ChannelMsg::ExitStatus { .. } => {
+                    eprintln!("here");
+                    // Notify the main loop that the connection has been disconnected
+                    if let Some(tx) = &event_tx {
+                        let _ = tx.send(crate::AppEvent::Disconnect).await;
+                    }
                     break;
                 }
                 _ => {}
@@ -406,6 +412,7 @@ mod tests {
                 .read_loop(
                     Arc::new(std::sync::Mutex::new(EchoByteProcessor {})),
                     cancel_token,
+                    None, // No event sender for test
                 )
                 .await;
         });

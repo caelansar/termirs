@@ -80,8 +80,11 @@ pub async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                                 let mut client_clone = client.clone();
                                 let cancel_token = tokio_util::sync::CancellationToken::new();
                                 let cancel_for_task = cancel_token.clone();
+                                let event_tx = app.event_tx.clone();
                                 tokio::spawn(async move {
-                                    client_clone.read_loop(app_reader, cancel_for_task).await;
+                                    client_clone
+                                        .read_loop(app_reader, cancel_for_task, event_tx)
+                                        .await;
                                 });
                                 form.error = None;
                                 let _ = app.config.touch_last_used(&conn.id);

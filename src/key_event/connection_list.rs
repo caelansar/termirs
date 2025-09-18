@@ -107,8 +107,11 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
                     let mut client_clone = client.clone();
                     let cancel_token = tokio_util::sync::CancellationToken::new();
                     let cancel_for_task = cancel_token.clone();
+                    let event_tx = app.event_tx.clone();
                     tokio::spawn(async move {
-                        client_clone.read_loop(app_reader, cancel_for_task).await;
+                        client_clone
+                            .read_loop(app_reader, cancel_for_task, event_tx)
+                            .await;
                     });
                     let _ = app.config.touch_last_used(&conn.id);
                     app.go_to_connected(

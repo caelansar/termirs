@@ -54,6 +54,7 @@ pub(crate) enum ScpResult {
 enum AppEvent {
     Input(Event),
     Tick,
+    Disconnect,
 }
 
 pub(crate) enum AppMode {
@@ -145,6 +146,7 @@ pub(crate) struct App<B: Backend + Write> {
     pub(crate) config: ConfigManager,
     terminal: Terminal<B>,
     needs_redraw: bool, // Track if UI needs redrawing
+    event_tx: Option<tokio::sync::mpsc::Sender<AppEvent>>, // Event sender for SSH disconnect
 }
 
 impl<B: Backend + Write> Drop for App<B> {
@@ -174,6 +176,7 @@ impl<B: Backend + Write> App<B> {
             config: ConfigManager::new()?,
             terminal,
             needs_redraw: true, // Initial redraw needed
+            event_tx: None,     // Will be set later
         })
     }
 
@@ -186,6 +189,10 @@ impl<B: Backend + Write> App<B> {
         )?;
 
         Ok(())
+    }
+
+    pub(crate) fn set_event_sender(&mut self, sender: tokio::sync::mpsc::Sender<AppEvent>) {
+        self.event_tx = Some(sender);
     }
 
     pub(crate) fn go_to_connected(
@@ -353,6 +360,9 @@ async fn main() -> Result<()> {
 
     // async event channel
     let (tx, mut rx) = mpsc::channel::<AppEvent>(100);
+
+    // Set the event sender in the app
+    app.set_event_sender(tx.clone());
 
     // ticker - reduced frequency for better performance
     let mut ticker = time::interval(Duration::from_millis(50)); // Changed from 10ms to 50ms
@@ -670,6 +680,23 @@ async fn run_app<B: Backend + Write>(
                     }
                     Event::Resize(_, _) => {}
                     _ => {}
+                }
+            }
+            AppEvent::Disconnect => {
+                // SSH connection has been disconnected (e.g., user typed 'exit')
+                // Automatically return to the connection list
+                if let AppMode::Connected {
+                    current_selected,
+                    cancel_token,
+                    ..
+                } = &app.mode
+                {
+                    let current_selected = *current_selected;
+                    // Cancel the read task
+                    cancel_token.cancel();
+                    // Go back to connection list
+                    app.go_to_connection_list_with_selected(current_selected);
+                    app.mark_redraw();
                 }
             }
         }
