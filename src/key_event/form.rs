@@ -150,26 +150,9 @@ pub async fn handle_form_edit_key<B: Backend + Write>(app: &mut App<B>, key: Key
                     return KeyFlow::Continue;
                 }
 
-                let new_password = if form.get_password_value().is_empty() {
-                    // Extract password from original connection's auth_method
-                    match &original.auth_method {
-                        AuthMethod::Password(password) => password.clone(),
-                        _ => String::new(), // Default to empty if not password auth
-                    }
-                } else {
-                    form.get_password_value().trim().to_string()
-                };
+                let new_password = form.get_password_value().trim().to_string();
 
-                let new_private_key_path = if form.get_private_key_path_value().trim().is_empty() {
-                    match &original.auth_method {
-                        AuthMethod::PublicKey {
-                            private_key_path, ..
-                        } => private_key_path.clone(),
-                        _ => String::new(), // Default to empty if not public key auth
-                    }
-                } else {
-                    form.get_private_key_path_value().trim().to_string()
-                };
+                let new_private_key_path = form.get_private_key_path_value().trim().to_string();
 
                 let mut updated = original.clone();
                 updated.host = form.get_host_value().trim().to_string();
