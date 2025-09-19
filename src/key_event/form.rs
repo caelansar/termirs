@@ -73,6 +73,7 @@ pub async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
 
                                 if let Err(e) = app.config.add_connection(conn.clone()) {
                                     app.error = Some(e);
+                                    return KeyFlow::Continue;
                                 }
 
                                 let state = Arc::new(Mutex::new(TerminalState::new(30, 100)));

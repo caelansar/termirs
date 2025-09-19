@@ -79,7 +79,9 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
         }
         KeyCode::Char('j') | KeyCode::Down => {
             if let AppMode::ConnectionList { selected, .. } = &mut app.mode {
-                *selected = (*selected + 1) % len;
+                if len != 0 {
+                    *selected = (*selected + 1) % len;
+                }
             }
         }
         KeyCode::Enter => {

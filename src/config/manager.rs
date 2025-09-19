@@ -283,8 +283,13 @@ impl ConfigManager {
             c.host == connection.host
                 && c.port == connection.port
                 && c.username == connection.username
+                && c.display_name == connection.display_name
         }) {
             self.config.connections.push(connection);
+        } else {
+            return Err(AppError::ConfigError(
+                "Connection already exists".to_string(),
+            ));
         }
         self.save()
     }
