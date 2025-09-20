@@ -2,6 +2,8 @@
 
 A modern, async SSH terminal client built with Rust and [Ratatui](https://ratatui.rs/). TermiRs provides a fast, secure, and user-friendly terminal interface for managing SSH connections with advanced features like secure file transfers and encrypted configuration storage.
 
+![demo](./assets/demo.gif)
+
 ## Features
 
 ### 🚀 Core Features
@@ -29,18 +31,19 @@ A modern, async SSH terminal client built with Rust and [Ratatui](https://ratatu
 ### From GitHub release
 Download the latest binary from the [releases page](https://github.com/caelansar/termirs/releases)
 
-### Prerequisites
+### Building from Source
+
+#### Prerequisites
 - Rust 1.85+ (2024 edition support)
 - A terminal that supports VT100 escape sequences
 
-### Building from Source
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/termirs.git
+git clone https://github.com/caelansar/termirs.git
 cd termirs
 
 # Build the project
-cargo build --release
+cargo build --release --locked
 
 # Run the application
 ./target/release/termirs
@@ -117,9 +120,11 @@ display_name = "My Server"
 host = "example.com"
 port = 22
 username = "user"
-auth_method = { password = "encrypted-password-data" }
 created_at = "2023-01-01T00:00:00Z"
 public_key = "ssh-rsa AAAAB3NzaC1yc2E..."
+
+[connections.auth_method]
+password = "encrypted-password-data"
 ```
 
 ## Architecture
