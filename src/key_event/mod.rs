@@ -86,10 +86,9 @@ pub async fn handle_paste_event<B: Backend + Write>(app: &mut App<B>, data: &str
             state,
             ..
         } => {
-            if let Ok(mut guard) = state.lock() {
-                if guard.parser.screen().scrollback() > 0 {
-                    guard.scroll_to_bottom();
-                }
+            let mut guard = state.lock().await;
+            if guard.parser.screen().scrollback() > 0 {
+                guard.scroll_to_bottom();
             }
             if let Err(e) = client.write_all(data.as_bytes()).await {
                 app.error = Some(e);

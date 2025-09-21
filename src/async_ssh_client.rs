@@ -244,7 +244,7 @@ impl SshSession {
 
     pub async fn read_loop<B: ByteProcessor>(
         &mut self,
-        processor: Arc<std::sync::Mutex<B>>,
+        processor: Arc<tokio::sync::Mutex<B>>,
         cancel: tokio_util::sync::CancellationToken,
         event_tx: Option<tokio::sync::mpsc::Sender<crate::AppEvent>>,
     ) {
@@ -268,9 +268,8 @@ impl SshSession {
             let Some(msg) = msg_opt else { break };
             match msg {
                 ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
-                    if let Ok(mut guard) = processor.lock() {
-                        guard.process_bytes(&data);
-                    }
+                    let mut guard = processor.lock().await;
+                    guard.process_bytes(&data);
                 }
                 ChannelMsg::Eof | ChannelMsg::Close | ChannelMsg::ExitStatus { .. } => {
                     // Notify the main loop that the connection has been disconnected
@@ -409,7 +408,7 @@ mod tests {
         tokio::spawn(async move {
             client_clone
                 .read_loop(
-                    Arc::new(std::sync::Mutex::new(EchoByteProcessor {})),
+                    Arc::new(tokio::sync::Mutex::new(EchoByteProcessor {})),
                     cancel_token,
                     None, // No event sender for test
                 )

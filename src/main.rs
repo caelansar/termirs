@@ -5,8 +5,9 @@ mod key_event;
 mod ui;
 
 use std::io::Write;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 use crossterm::event::{self, DisableMouseCapture, Event};
 use crossterm::execute;
@@ -415,18 +416,17 @@ async fn run_app<B: Backend + Write>(
             // Calculate inner area for terminal content (accounting for borders)
             let h = size.height.saturating_sub(2); // Top and bottom borders
             let w = size.width.saturating_sub(2); // Left and right borders
-            if let Ok(guard) = state.lock() {
-                if guard.parser.screen().size() != (h, w) {
-                    client.request_size(w, h).await;
-                    terminal_size_changed = true;
-                }
+            let guard = state.lock().await;
+            if guard.parser.screen().size() != (h, w) {
+                client.request_size(w, h).await;
+                terminal_size_changed = true;
+            }
 
-                // Check if terminal content has been updated recently
-                // Only redraw if content changed within last few milliseconds
-                let time_since_update = guard.last_change.elapsed();
-                if time_since_update.as_millis() < 100 {
-                    has_terminal_updates = true;
-                }
+            // Check if terminal content has been updated recently
+            // Only redraw if content changed within last few milliseconds
+            let time_since_update = guard.last_change.elapsed();
+            if time_since_update.as_millis() < 100 {
+                has_terminal_updates = true;
             }
         }
 
@@ -537,7 +537,7 @@ async fn run_app<B: Backend + Write>(
                     }
                     AppMode::Connected { name, state, .. } => {
                         let inner = size.inner(Margin::new(1, 1));
-                        if let Ok(mut guard) = state.lock() {
+                        if let Ok(mut guard) = state.try_lock() {
                             if guard.parser.screen().size() != (inner.height, inner.width) {
                                 guard.resize(inner.height, inner.width);
                             }

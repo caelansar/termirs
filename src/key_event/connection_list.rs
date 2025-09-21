@@ -1,5 +1,6 @@
 use std::io::Write;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::Backend;
