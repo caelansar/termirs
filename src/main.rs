@@ -329,9 +329,316 @@ impl<B: Backend + Write> App<B> {
         self.info = Some(info);
         self.needs_redraw = true;
     }
+
+    fn draw(&mut self) -> Result<()> {
+        self.terminal.draw(|f| {
+            let size = f.area();
+            match &mut self.mode {
+                AppMode::ConnectionList {
+                    selected,
+                    search_mode,
+                    search_input,
+                } => {
+                    let conns = self.config.connections();
+                    let search_query = &search_input.lines()[0];
+
+                    if *search_mode {
+                        // In search mode: custom layout with table, search input, and footer
+                        let layout = ratatui::layout::Layout::default()
+                            .direction(ratatui::layout::Direction::Vertical)
+                            .constraints([
+                                ratatui::layout::Constraint::Min(1),    // Table area
+                                ratatui::layout::Constraint::Length(3), // Search input area
+                                ratatui::layout::Constraint::Length(1), // Footer area
+                            ])
+                            .split(size);
+
+                        // Render the table in the first area
+                        draw_connection_list(
+                            layout[0],
+                            conns,
+                            *selected,
+                            *search_mode,
+                            &search_query,
+                            f,
+                        );
+
+                        // Render search input in the second area
+                        search_input.set_block(
+                            ratatui::widgets::Block::default()
+                                .borders(ratatui::widgets::Borders::ALL)
+                                .title("Search")
+                                .style(
+                                    ratatui::style::Style::default()
+                                        .fg(ratatui::style::Color::Cyan),
+                                ),
+                        );
+                        f.render_widget(&*search_input, layout[1]);
+
+                        // Render footer in the third area
+                        let footer = ratatui::layout::Layout::default()
+                            .direction(ratatui::layout::Direction::Horizontal)
+                            .constraints([
+                                ratatui::layout::Constraint::Percentage(50),
+                                ratatui::layout::Constraint::Percentage(50),
+                            ])
+                            .split(layout[2]);
+
+                        let hint_text =
+                            "Enter: Apply Search   Esc: Exit Search   Arrow Keys: Move Cursor";
+                        let left = ratatui::widgets::Paragraph::new(ratatui::text::Line::from(
+                            ratatui::text::Span::styled(
+                                hint_text,
+                                ratatui::style::Style::default()
+                                    .fg(ratatui::style::Color::White)
+                                    .add_modifier(ratatui::style::Modifier::DIM),
+                            ),
+                        ))
+                        .alignment(ratatui::layout::Alignment::Left);
+
+                        let right = ratatui::widgets::Paragraph::new(ratatui::text::Line::from(
+                            ratatui::text::Span::styled(
+                                format!("TermiRs v{}", env!("CARGO_PKG_VERSION")),
+                                ratatui::style::Style::default()
+                                    .fg(ratatui::style::Color::White)
+                                    .add_modifier(ratatui::style::Modifier::DIM),
+                            ),
+                        ))
+                        .alignment(ratatui::layout::Alignment::Right);
+
+                        f.render_widget(left, footer[0]);
+                        f.render_widget(right, footer[1]);
+                    } else {
+                        // Normal mode: let draw_connection_list handle everything
+                        draw_connection_list(
+                            size,
+                            conns,
+                            *selected,
+                            *search_mode,
+                            &search_query,
+                            f,
+                        );
+                    }
+                }
+                AppMode::FormNew {
+                    current_selected, ..
+                } => {
+                    // Render the connection list background first
+                    let conns = self.config.connections();
+                    draw_connection_list(size, conns, *current_selected, false, "", f);
+                }
+                AppMode::FormEdit {
+                    current_selected, ..
+                } => {
+                    // Render the connection list background first
+                    let conns = self.config.connections();
+                    draw_connection_list(size, conns, *current_selected, false, "", f);
+                }
+                AppMode::Connected { name, state, .. } => {
+                    let inner = size.inner(Margin::new(1, 1));
+                    if let Ok(mut guard) = state.try_lock() {
+                        if guard.parser.screen().size() != (inner.height, inner.width) {
+                            guard.resize(inner.height, inner.width);
+                        }
+                        draw_terminal(size, &guard, name, f);
+                    }
+                }
+                AppMode::ScpForm {
+                    current_selected, ..
+                } => {
+                    // Render the connection list background first
+                    let conns = self.config.connections();
+                    draw_connection_list(size, conns, *current_selected, false, "", f);
+                }
+                AppMode::ScpProgress {
+                    current_selected, ..
+                } => {
+                    // Render the connection list background first
+                    let conns = self.config.connections();
+                    draw_connection_list(size, conns, *current_selected, false, "", f);
+                }
+                AppMode::DeleteConfirmation {
+                    current_selected, ..
+                } => {
+                    // Render the connection list background first
+                    let conns = self.config.connections();
+                    draw_connection_list(size, conns, *current_selected, false, "", f);
+                }
+            }
+
+            // Overlay info popup if any
+            if let Some(msg) = &self.info {
+                draw_info_popup(size, msg, f);
+            }
+
+            // Overlay SCP popup if in SCP form mode
+            if let AppMode::ScpForm { form, dropdown, .. } = &mut self.mode {
+                let scp_input_rects = draw_scp_popup(size, form, f);
+
+                // Update dropdown anchor rect if dropdown exists
+                if let Some(dropdown) = dropdown {
+                    draw_dropdown_with_rect(dropdown, scp_input_rects.0, f);
+                }
+            }
+
+            // Overlay SCP progress popup if in SCP progress mode
+            if let AppMode::ScpProgress { progress, .. } = &self.mode {
+                draw_scp_progress_popup(size, progress, f);
+            }
+
+            // Overlay delete confirmation popup if in delete confirmation mode
+            if let AppMode::DeleteConfirmation {
+                connection_name, ..
+            } = &self.mode
+            {
+                draw_delete_confirmation_popup(size, connection_name, f);
+            }
+
+            // Overlay connection form popup if in form mode
+            if let AppMode::FormNew { form, .. } = &self.mode {
+                draw_connection_form_popup(size, form, true, f);
+            }
+            if let AppMode::FormEdit { form, .. } = &mut self.mode {
+                draw_connection_form_popup(size, form, false, f);
+            }
+
+            // Overlay error popup if any (always on top)
+            if let Some(err) = &self.error {
+                draw_error_popup(size, &err.to_string(), f);
+            }
+        })?;
+
+        Ok(())
+    }
+
+    async fn run(&mut self, rx: &mut mpsc::Receiver<AppEvent>) -> Result<()> {
+        loop {
+            // Check terminal size changes and update SSH session if needed
+            let mut terminal_size_changed = false;
+            let mut has_terminal_updates = false;
+
+            if let AppMode::Connected { client, state, .. } = &self.mode {
+                let size = self.terminal.size()?;
+                // Calculate inner area for terminal content (accounting for borders)
+                let h = size.height.saturating_sub(2); // Top and bottom borders
+                let w = size.width.saturating_sub(2); // Left and right borders
+                let guard = state.lock().await;
+                if guard.parser.screen().size() != (h, w) {
+                    client.request_size(w, h).await;
+                    terminal_size_changed = true;
+                }
+
+                // Check if terminal content has been updated recently
+                // Only redraw if content changed within last few milliseconds
+                let time_since_update = guard.last_change.elapsed();
+                if time_since_update.as_millis() < 100 {
+                    has_terminal_updates = true;
+                }
+            }
+
+            // Only render when needed
+            if self.should_redraw() || terminal_size_changed || has_terminal_updates {
+                self.draw()?;
+            }
+
+            // wait for an event (asynchronous)
+            let ev = match rx.recv().await {
+                Some(e) => e,
+                None => break, // exit if channel is closed
+            };
+
+            match ev {
+                AppEvent::Tick => {
+                    // Update spinner animation for SCP progress and handle results
+                    if let AppMode::ScpProgress {
+                        progress,
+                        receiver,
+                        current_selected,
+                    } = &mut self.mode
+                    {
+                        progress.tick();
+                        // Mark redraw after handling the progress update
+
+                        // Drain any SCP results
+                        match receiver.try_recv() {
+                            Ok(result) => {
+                                let current_selected = *current_selected;
+
+                                // Handle the result
+                                match result {
+                                    ScpResult::Success {
+                                        local_path,
+                                        remote_path,
+                                    } => {
+                                        self.set_info(format!(
+                                            "SCP upload completed from {} to {}",
+                                            local_path, remote_path
+                                        ));
+                                    }
+                                    ScpResult::Error { error } => {
+                                        self.set_error(AppError::SshConnectionError(error));
+                                    }
+                                }
+
+                                // Go back to connection list
+                                self.go_to_connection_list_with_selected(current_selected);
+                            }
+                            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+                            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                                let current_selected = *current_selected;
+                                self.set_error(AppError::SshConnectionError(
+                                    "SCP transfer task disconnected unexpectedly".to_string(),
+                                ));
+                                self.go_to_connection_list_with_selected(current_selected);
+                            }
+                        }
+
+                        // Mark redraw after all progress handling is done
+                        self.mark_redraw();
+                    }
+                }
+                AppEvent::Input(ev) => {
+                    self.mark_redraw(); // Input events typically need redraw
+                    match ev {
+                        Event::Key(key) => {
+                            match crate::key_event::handle_key_event(self, key).await {
+                                crate::key_event::KeyFlow::Continue => {}
+                                crate::key_event::KeyFlow::Quit => {
+                                    return Ok(());
+                                }
+                            }
+                        }
+                        Event::Paste(data) => {
+                            crate::key_event::handle_paste_event(self, &data).await;
+                        }
+                        Event::Resize(_, _) => {}
+                        _ => {}
+                    }
+                }
+                AppEvent::Disconnect => {
+                    // SSH connection has been disconnected (e.g., user typed 'exit')
+                    // Automatically return to the connection list
+                    if let AppMode::Connected {
+                        current_selected,
+                        cancel_token,
+                        ..
+                    } = &self.mode
+                    {
+                        let current_selected = *current_selected;
+                        // Cancel the read task
+                        cancel_token.cancel();
+                        // Go back to connection list
+                        self.go_to_connection_list_with_selected(current_selected);
+                        self.mark_redraw();
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
-pub fn init_panic_hook() {
+fn init_panic_hook() {
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         // intentionally ignore errors here since we're already in a panic
@@ -394,312 +701,10 @@ async fn main() -> Result<()> {
     });
 
     // run app loop
-    let res = run_app(&mut app, &mut rx).await;
+    let res = app.run(&mut rx).await;
 
     // app drop restores terminal
     drop(app);
 
     res
-}
-
-async fn run_app<B: Backend + Write>(
-    app: &mut App<B>,
-    rx: &mut mpsc::Receiver<AppEvent>,
-) -> Result<()> {
-    loop {
-        // Check terminal size changes and update SSH session if needed
-        let mut terminal_size_changed = false;
-        let mut has_terminal_updates = false;
-
-        if let AppMode::Connected { client, state, .. } = &app.mode {
-            let size = app.terminal.size()?;
-            // Calculate inner area for terminal content (accounting for borders)
-            let h = size.height.saturating_sub(2); // Top and bottom borders
-            let w = size.width.saturating_sub(2); // Left and right borders
-            let guard = state.lock().await;
-            if guard.parser.screen().size() != (h, w) {
-                client.request_size(w, h).await;
-                terminal_size_changed = true;
-            }
-
-            // Check if terminal content has been updated recently
-            // Only redraw if content changed within last few milliseconds
-            let time_since_update = guard.last_change.elapsed();
-            if time_since_update.as_millis() < 100 {
-                has_terminal_updates = true;
-            }
-        }
-
-        // Only render when needed
-        if app.should_redraw() || terminal_size_changed || has_terminal_updates {
-            app.terminal.draw(|f| {
-                let size = f.area();
-                match &mut app.mode {
-                    AppMode::ConnectionList {
-                        selected,
-                        search_mode,
-                        search_input,
-                    } => {
-                        let conns = app.config.connections();
-                        let search_query = &search_input.lines()[0];
-
-                        if *search_mode {
-                            // In search mode: custom layout with table, search input, and footer
-                            let layout = ratatui::layout::Layout::default()
-                                .direction(ratatui::layout::Direction::Vertical)
-                                .constraints([
-                                    ratatui::layout::Constraint::Min(1),    // Table area
-                                    ratatui::layout::Constraint::Length(3), // Search input area
-                                    ratatui::layout::Constraint::Length(1), // Footer area
-                                ])
-                                .split(size);
-
-                            // Render the table in the first area
-                            draw_connection_list(
-                                layout[0],
-                                conns,
-                                *selected,
-                                *search_mode,
-                                &search_query,
-                                f,
-                            );
-
-                            // Render search input in the second area
-                            search_input.set_block(
-                                ratatui::widgets::Block::default()
-                                    .borders(ratatui::widgets::Borders::ALL)
-                                    .title("Search")
-                                    .style(
-                                        ratatui::style::Style::default()
-                                            .fg(ratatui::style::Color::Cyan),
-                                    ),
-                            );
-                            f.render_widget(&*search_input, layout[1]);
-
-                            // Render footer in the third area
-                            let footer = ratatui::layout::Layout::default()
-                                .direction(ratatui::layout::Direction::Horizontal)
-                                .constraints([
-                                    ratatui::layout::Constraint::Percentage(50),
-                                    ratatui::layout::Constraint::Percentage(50),
-                                ])
-                                .split(layout[2]);
-
-                            let hint_text =
-                                "Enter: Apply Search   Esc: Exit Search   Arrow Keys: Move Cursor";
-                            let left = ratatui::widgets::Paragraph::new(ratatui::text::Line::from(
-                                ratatui::text::Span::styled(
-                                    hint_text,
-                                    ratatui::style::Style::default()
-                                        .fg(ratatui::style::Color::White)
-                                        .add_modifier(ratatui::style::Modifier::DIM),
-                                ),
-                            ))
-                            .alignment(ratatui::layout::Alignment::Left);
-
-                            let right = ratatui::widgets::Paragraph::new(
-                                ratatui::text::Line::from(ratatui::text::Span::styled(
-                                    format!("TermiRs v{}", env!("CARGO_PKG_VERSION")),
-                                    ratatui::style::Style::default()
-                                        .fg(ratatui::style::Color::White)
-                                        .add_modifier(ratatui::style::Modifier::DIM),
-                                )),
-                            )
-                            .alignment(ratatui::layout::Alignment::Right);
-
-                            f.render_widget(left, footer[0]);
-                            f.render_widget(right, footer[1]);
-                        } else {
-                            // Normal mode: let draw_connection_list handle everything
-                            draw_connection_list(
-                                size,
-                                conns,
-                                *selected,
-                                *search_mode,
-                                &search_query,
-                                f,
-                            );
-                        }
-                    }
-                    AppMode::FormNew {
-                        current_selected, ..
-                    } => {
-                        // Render the connection list background first
-                        let conns = app.config.connections();
-                        draw_connection_list(size, conns, *current_selected, false, "", f);
-                    }
-                    AppMode::FormEdit {
-                        current_selected, ..
-                    } => {
-                        // Render the connection list background first
-                        let conns = app.config.connections();
-                        draw_connection_list(size, conns, *current_selected, false, "", f);
-                    }
-                    AppMode::Connected { name, state, .. } => {
-                        let inner = size.inner(Margin::new(1, 1));
-                        if let Ok(mut guard) = state.try_lock() {
-                            if guard.parser.screen().size() != (inner.height, inner.width) {
-                                guard.resize(inner.height, inner.width);
-                            }
-                            draw_terminal(size, &guard, name, f);
-                        }
-                    }
-                    AppMode::ScpForm {
-                        current_selected, ..
-                    } => {
-                        // Render the connection list background first
-                        let conns = app.config.connections();
-                        draw_connection_list(size, conns, *current_selected, false, "", f);
-                    }
-                    AppMode::ScpProgress {
-                        current_selected, ..
-                    } => {
-                        // Render the connection list background first
-                        let conns = app.config.connections();
-                        draw_connection_list(size, conns, *current_selected, false, "", f);
-                    }
-                    AppMode::DeleteConfirmation {
-                        current_selected, ..
-                    } => {
-                        // Render the connection list background first
-                        let conns = app.config.connections();
-                        draw_connection_list(size, conns, *current_selected, false, "", f);
-                    }
-                }
-
-                // Overlay info popup if any
-                if let Some(msg) = &app.info {
-                    draw_info_popup(size, msg, f);
-                }
-
-                // Overlay SCP popup if in SCP form mode
-                if let AppMode::ScpForm { form, dropdown, .. } = &mut app.mode {
-                    let scp_input_rects = draw_scp_popup(size, form, f);
-
-                    // Update dropdown anchor rect if dropdown exists
-                    if let Some(dropdown) = dropdown {
-                        draw_dropdown_with_rect(dropdown, scp_input_rects.0, f);
-                    }
-                }
-
-                // Overlay SCP progress popup if in SCP progress mode
-                if let AppMode::ScpProgress { progress, .. } = &app.mode {
-                    draw_scp_progress_popup(size, progress, f);
-                }
-
-                // Overlay delete confirmation popup if in delete confirmation mode
-                if let AppMode::DeleteConfirmation {
-                    connection_name, ..
-                } = &app.mode
-                {
-                    draw_delete_confirmation_popup(size, connection_name, f);
-                }
-
-                // Overlay connection form popup if in form mode
-                if let AppMode::FormNew { form, .. } = &app.mode {
-                    draw_connection_form_popup(size, form, true, f);
-                }
-                if let AppMode::FormEdit { form, .. } = &mut app.mode {
-                    draw_connection_form_popup(size, form, false, f);
-                }
-
-                // Overlay error popup if any (always on top)
-                if let Some(err) = &app.error {
-                    draw_error_popup(size, &err.to_string(), f);
-                }
-            })?;
-        }
-
-        // wait for an event (asynchronous)
-        let ev = match rx.recv().await {
-            Some(e) => e,
-            None => break, // exit if channel is closed
-        };
-
-        match ev {
-            AppEvent::Tick => {
-                // Update spinner animation for SCP progress and handle results
-                if let AppMode::ScpProgress {
-                    progress,
-                    receiver,
-                    current_selected,
-                } = &mut app.mode
-                {
-                    progress.tick();
-                    // Mark redraw after handling the progress update
-
-                    // Drain any SCP results
-                    match receiver.try_recv() {
-                        Ok(result) => {
-                            let current_selected = *current_selected;
-
-                            // Handle the result
-                            match result {
-                                ScpResult::Success {
-                                    local_path,
-                                    remote_path,
-                                } => {
-                                    app.set_info(format!(
-                                        "SCP upload completed from {} to {}",
-                                        local_path, remote_path
-                                    ));
-                                }
-                                ScpResult::Error { error } => {
-                                    app.set_error(AppError::SshConnectionError(error));
-                                }
-                            }
-
-                            // Go back to connection list
-                            app.go_to_connection_list_with_selected(current_selected);
-                        }
-                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
-                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                            let current_selected = *current_selected;
-                            app.set_error(AppError::SshConnectionError(
-                                "SCP transfer task disconnected unexpectedly".to_string(),
-                            ));
-                            app.go_to_connection_list_with_selected(current_selected);
-                        }
-                    }
-
-                    // Mark redraw after all progress handling is done
-                    app.mark_redraw();
-                }
-            }
-            AppEvent::Input(ev) => {
-                app.mark_redraw(); // Input events typically need redraw
-                match ev {
-                    Event::Key(key) => match crate::key_event::handle_key_event(app, key).await {
-                        crate::key_event::KeyFlow::Continue => {}
-                        crate::key_event::KeyFlow::Quit => {
-                            return Ok(());
-                        }
-                    },
-                    Event::Paste(data) => {
-                        crate::key_event::handle_paste_event(app, &data).await;
-                    }
-                    Event::Resize(_, _) => {}
-                    _ => {}
-                }
-            }
-            AppEvent::Disconnect => {
-                // SSH connection has been disconnected (e.g., user typed 'exit')
-                // Automatically return to the connection list
-                if let AppMode::Connected {
-                    current_selected,
-                    cancel_token,
-                    ..
-                } = &app.mode
-                {
-                    let current_selected = *current_selected;
-                    // Cancel the read task
-                    cancel_token.cancel();
-                    // Go back to connection list
-                    app.go_to_connection_list_with_selected(current_selected);
-                    app.mark_redraw();
-                }
-            }
-        }
-    }
-    Ok(())
 }
