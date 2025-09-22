@@ -293,6 +293,24 @@ pub async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: Key
                     app.error = Some(e);
                 }
             }
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let mut guard = state.lock().await;
+                if guard.parser.screen().scrollback() > 0 {
+                    guard.scroll_to_bottom();
+                }
+                if let Err(e) = client.write_all(&[0x01]).await {
+                    app.error = Some(e);
+                }
+            }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let mut guard = state.lock().await;
+                if guard.parser.screen().scrollback() > 0 {
+                    guard.scroll_to_bottom();
+                }
+                if let Err(e) = client.write_all(&[0x05]).await {
+                    app.error = Some(e);
+                }
+            }
             KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let AppMode::Connected { state, .. } = &mut app.mode {
                     let mut guard = state.lock().await;
