@@ -3,13 +3,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::stream::{FuturesUnordered, StreamExt};
+use tokio::io::AsyncReadExt;
 use tokio_util;
 
 use russh::client::{self, AuthResult, KeyboardInteractiveAuthResponse};
 use russh::keys::{self, PrivateKeyWithHashAlg, ssh_key};
 use russh::{ChannelMsg, Disconnect, MethodKind};
-use russh_sftp::client::SftpSession;
-use russh_sftp::protocol::OpenFlags;
+use russh_sftp::client::rawsession::RawSftpSession;
+use russh_sftp::protocol::{FileAttributes, OpenFlags};
 
 use crate::config::manager::{AuthMethod, Connection};
 use crate::error::{AppError, Result};
@@ -314,20 +316,130 @@ impl SshSession {
         let (session, _server_key) =
             Self::new_session_with_timeout(connection, timeout, cancel).await?;
 
+        // let now = std::time::Instant::now();
+
         let channel = session.channel_open_session().await?;
         channel.request_subsystem(true, "sftp").await?;
 
-        let mut local = tokio::fs::File::open(expand_tilde(local_path)).await?;
+        // Create RawSftpSession for better performance
+        let sftp = RawSftpSession::new(channel.into_stream());
 
-        let sftp = SftpSession::new(channel.into_stream()).await?;
-        let mut remote = sftp
-            .open_with_flags(
+        // Initialize the SFTP session
+        sftp.init()
+            .await
+            .map_err(|e| AppError::SftpError(format!("Failed to initialize SFTP: {}", e)))?;
+
+        // Open local file and get its size
+        let mut local_file = tokio::fs::File::open(expand_tilde(local_path)).await?;
+        let file_size = local_file.metadata().await?.len();
+
+        // Open remote file using RawSftpSession
+        let remote_handle = sftp
+            .open(
                 remote_path,
-                OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE | OpenFlags::READ,
+                OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
+                FileAttributes::empty(),
             )
-            .await?;
+            .await
+            .map_err(|e| AppError::SftpError(format!("Failed to open remote file: {}", e)))?;
 
-        tokio::io::copy(&mut local, &mut remote).await?;
+        // Use optimal buffer size for SFTP protocol (128KB for better throughput)
+        const CHUNK_SIZE: usize = 128 * 1024; // 128KB - good balance between memory and throughput
+        const MAX_CONCURRENT_WRITES: usize = 8; // Reasonable number of concurrent operations
+
+        let mut bytes_written = 0u64;
+        let mut offset = 0u64;
+        let mut last_progress_logged = 0u64;
+        let mut write_futures = FuturesUnordered::new();
+
+        // Set a shorter timeout for faster operations
+        sftp.set_timeout(3).await;
+
+        // Wrap sftp in Arc to share between tasks
+        let sftp = Arc::new(sftp);
+
+        loop {
+            // Fill the pipeline with read-ahead writes
+            while write_futures.len() < MAX_CONCURRENT_WRITES {
+                let mut buffer = vec![0u8; CHUNK_SIZE];
+
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        return Err(AppError::SftpError("Transfer cancelled".to_string()));
+                    }
+                    read_result = local_file.read(&mut buffer) => {
+                        let bytes_read = read_result.map_err(|e| {
+                            AppError::SftpError(format!("Failed to read local file: {}", e))
+                        })?;
+
+                        if bytes_read == 0 {
+                            break; // EOF reached, stop reading
+                        }
+
+                        // Prepare data for concurrent write
+                        buffer.truncate(bytes_read);
+                        let current_offset = offset;
+                        offset += bytes_read as u64;
+
+                        // Create concurrent write future
+                        let handle = remote_handle.handle.clone();
+                        let chunk_size = bytes_read as u64;
+                        let sftp_clone = Arc::clone(&sftp);
+
+                        let write_future = async move {
+                            let result = sftp_clone.write(&handle, current_offset, buffer).await;
+                            (chunk_size, result)
+                        };
+
+                        write_futures.push(write_future);
+                    }
+                }
+            }
+
+            // If no more futures to wait for, we're done
+            if write_futures.is_empty() {
+                break;
+            }
+
+            // Wait for at least one write to complete
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    return Err(AppError::SftpError("Transfer cancelled".to_string()));
+                }
+                write_result = write_futures.next() => {
+                    if let Some(result) = write_result {
+                        let (chunk_size, write_res) = result;
+                        write_res.map_err(|e| {
+                            AppError::SftpError(format!("Failed to write chunk: {}", e))
+                        })?;
+
+                        bytes_written += chunk_size;
+
+                        // Log progress for large files (every 5MB)
+                        if file_size > 5 * 1024 * 1024 && bytes_written - last_progress_logged >= 5 * 1024 * 1024 {
+                            // eprintln!("Progress: {:.1}% ({} / {} bytes)",
+                            //     (bytes_written as f64 / file_size as f64) * 100.0,
+                            //     bytes_written,
+                            //     file_size
+                            // );
+                            last_progress_logged = bytes_written;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Close the remote file handle
+        sftp.close(&remote_handle.handle)
+            .await
+            .map_err(|e| AppError::SftpError(format!("Failed to close remote file: {}", e)))?;
+
+        // eprintln!(
+        //     "Transfer completed: {} bytes in {:?}, speed: {:.2} MB/s",
+        //     bytes_written,
+        //     now.elapsed(),
+        //     bytes_written as f64 / now.elapsed().as_secs_f64() / 1024.0 / 1024.0
+        // );
 
         Ok(())
     }
