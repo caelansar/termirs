@@ -1,8 +1,10 @@
+use std::collections::VecDeque;
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::{Bytes, BytesMut};
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::io::AsyncReadExt;
 use tokio_util;
@@ -18,6 +20,46 @@ use crate::error::{AppError, Result};
 
 pub(crate) trait ByteProcessor {
     fn process_bytes(&mut self, bytes: &[u8]);
+}
+
+/// Buffer pool for efficient memory reuse during SFTP transfers
+struct BufferPool {
+    pool: Arc<tokio::sync::Mutex<VecDeque<BytesMut>>>,
+    buffer_size: usize,
+    max_buffers: usize,
+}
+
+impl BufferPool {
+    fn new(buffer_size: usize, max_buffers: usize) -> Self {
+        Self {
+            pool: Arc::new(tokio::sync::Mutex::new(VecDeque::with_capacity(
+                max_buffers,
+            ))),
+            buffer_size,
+            max_buffers,
+        }
+    }
+
+    async fn get_buffer(&self) -> BytesMut {
+        let mut pool = self.pool.lock().await;
+        if let Some(mut buffer) = pool.pop_front() {
+            // Clear and resize the buffer to the expected size
+            buffer.clear();
+            buffer.resize(self.buffer_size, 0);
+            buffer
+        } else {
+            // Create a new buffer if pool is empty
+            BytesMut::zeroed(self.buffer_size)
+        }
+    }
+
+    async fn return_buffer(&self, buffer: BytesMut) {
+        let mut pool = self.pool.lock().await;
+        if pool.len() < self.max_buffers {
+            pool.push_back(buffer);
+        }
+        // If pool is full, just drop the buffer
+    }
 }
 
 struct SshClient {
@@ -313,10 +355,10 @@ impl SshSession {
         timeout: Option<Duration>,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<()> {
+        // let now = std::time::Instant::now();
+
         let (session, _server_key) =
             Self::new_session_with_timeout(connection, timeout, cancel).await?;
-
-        // let now = std::time::Instant::now();
 
         let channel = session.channel_open_session().await?;
         channel.request_subsystem(true, "sftp").await?;
@@ -345,12 +387,13 @@ impl SshSession {
 
         // Use optimal buffer size for SFTP protocol (128KB for better throughput)
         const CHUNK_SIZE: usize = 128 * 1024; // 128KB - good balance between memory and throughput
-        const MAX_CONCURRENT_WRITES: usize = 8; // Reasonable number of concurrent operations
+        const MAX_CONCURRENT_WRITES: usize = 12; // Reasonable number of concurrent operations
 
         let mut bytes_written = 0u64;
         let mut offset = 0u64;
         let mut last_progress_logged = 0u64;
         let mut write_futures = FuturesUnordered::new();
+        let mut eof_reached = false;
 
         // Set a shorter timeout for faster operations
         sftp.set_timeout(3).await;
@@ -358,71 +401,112 @@ impl SshSession {
         // Wrap sftp in Arc to share between tasks
         let sftp = Arc::new(sftp);
 
-        loop {
-            // Fill the pipeline with read-ahead writes
-            while write_futures.len() < MAX_CONCURRENT_WRITES {
-                let mut buffer = vec![0u8; CHUNK_SIZE];
+        // Create buffer pool for efficient memory reuse
+        let buffer_pool = Arc::new(BufferPool::new(CHUNK_SIZE, MAX_CONCURRENT_WRITES * 2));
 
+        // Optimized pipeline logic: true concurrent read and write
+        loop {
+            // Check exit condition
+            if eof_reached && write_futures.is_empty() {
+                break;
+            }
+
+            // Check if we can read more data
+            let can_read = write_futures.len() < MAX_CONCURRENT_WRITES && !eof_reached;
+
+            if can_read {
+                // Try reading if we have capacity
                 tokio::select! {
                     _ = cancel.cancelled() => {
                         return Err(AppError::SftpError("Transfer cancelled".to_string()));
                     }
-                    read_result = local_file.read(&mut buffer) => {
+
+                    // Try to read next chunk
+                    read_result = async {
+                        let mut buffer = buffer_pool.get_buffer().await;
+                        let result = local_file.read(&mut buffer).await;
+                        (buffer, result)
+                    } => {
+                        let (mut buffer, read_result) = read_result;
                         let bytes_read = read_result.map_err(|e| {
                             AppError::SftpError(format!("Failed to read local file: {}", e))
                         })?;
 
                         if bytes_read == 0 {
-                            break; // EOF reached, stop reading
+                            // EOF reached
+                            buffer_pool.return_buffer(buffer).await;
+                            eof_reached = true;
+                        } else {
+                            // Prepare data for concurrent write
+                            let data: Bytes = buffer.split_to(bytes_read).freeze();
+                            let current_offset = offset;
+                            offset += bytes_read as u64;
+
+                            // Create concurrent write future
+                            let handle = remote_handle.handle.clone();
+                            let chunk_size = bytes_read as u64;
+                            let sftp_clone = Arc::clone(&sftp);
+
+                            let write_future = async move {
+                                let result = sftp_clone.write(&handle, current_offset, data.to_vec()).await;
+                                (chunk_size, result)
+                            };
+
+                            write_futures.push(write_future);
+
+                            // Return buffer to pool
+                            buffer_pool.return_buffer(buffer).await;
                         }
+                    }
 
-                        // Prepare data for concurrent write
-                        buffer.truncate(bytes_read);
-                        let current_offset = offset;
-                        offset += bytes_read as u64;
+                    // Also process any completed writes while reading
+                    write_result = write_futures.next(), if !write_futures.is_empty() => {
+                        if let Some(result) = write_result {
+                            let (chunk_size, write_res) = result;
+                            write_res.map_err(|e| {
+                                AppError::SftpError(format!("Failed to write chunk: {}", e))
+                            })?;
 
-                        // Create concurrent write future
-                        let handle = remote_handle.handle.clone();
-                        let chunk_size = bytes_read as u64;
-                        let sftp_clone = Arc::clone(&sftp);
+                            bytes_written += chunk_size;
 
-                        let write_future = async move {
-                            let result = sftp_clone.write(&handle, current_offset, buffer).await;
-                            (chunk_size, result)
-                        };
-
-                        write_futures.push(write_future);
+                            // Log progress for large files (every 5MB)
+                            if file_size > 5 * 1024 * 1024 && bytes_written - last_progress_logged >= 5 * 1024 * 1024 {
+                                // eprintln!("Progress: {:.1}% ({} / {} bytes), pipeline: {}",
+                                //     (bytes_written as f64 / file_size as f64) * 100.0,
+                                //     bytes_written,
+                                //     file_size,
+                                //     write_futures.len()
+                                // );
+                                last_progress_logged = bytes_written;
+                            }
+                        }
                     }
                 }
-            }
+            } else {
+                // Pipeline is full, only process writes
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        return Err(AppError::SftpError("Transfer cancelled".to_string()));
+                    }
+                    write_result = write_futures.next() => {
+                        if let Some(result) = write_result {
+                            let (chunk_size, write_res) = result;
+                            write_res.map_err(|e| {
+                                AppError::SftpError(format!("Failed to write chunk: {}", e))
+                            })?;
 
-            // If no more futures to wait for, we're done
-            if write_futures.is_empty() {
-                break;
-            }
+                            bytes_written += chunk_size;
 
-            // Wait for at least one write to complete
-            tokio::select! {
-                _ = cancel.cancelled() => {
-                    return Err(AppError::SftpError("Transfer cancelled".to_string()));
-                }
-                write_result = write_futures.next() => {
-                    if let Some(result) = write_result {
-                        let (chunk_size, write_res) = result;
-                        write_res.map_err(|e| {
-                            AppError::SftpError(format!("Failed to write chunk: {}", e))
-                        })?;
-
-                        bytes_written += chunk_size;
-
-                        // Log progress for large files (every 5MB)
-                        if file_size > 5 * 1024 * 1024 && bytes_written - last_progress_logged >= 5 * 1024 * 1024 {
-                            // eprintln!("Progress: {:.1}% ({} / {} bytes)",
-                            //     (bytes_written as f64 / file_size as f64) * 100.0,
-                            //     bytes_written,
-                            //     file_size
-                            // );
-                            last_progress_logged = bytes_written;
+                            // Log progress for large files (every 5MB)
+                            if file_size > 5 * 1024 * 1024 && bytes_written - last_progress_logged >= 5 * 1024 * 1024 {
+                                // eprintln!("Progress: {:.1}% ({} / {} bytes), pipeline: {}",
+                                //     (bytes_written as f64 / file_size as f64) * 100.0,
+                                //     bytes_written,
+                                //     file_size,
+                                //     write_futures.len()
+                                // );
+                                last_progress_logged = bytes_written;
+                            }
                         }
                     }
                 }

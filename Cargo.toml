@@ -21,6 +21,7 @@ russh-sftp = "2.1.1"
 futures = "0.3"
 anyhow = { version = "1", optional = true }
 tui-textarea = "0.6.1"
+bytes = "1.10.1"
 
 [[example]]
 name = "async_with_tui"
