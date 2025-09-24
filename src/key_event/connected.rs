@@ -186,13 +186,13 @@ pub async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: Key
             KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let AppMode::Connected { state, .. } = &mut app.mode {
                     let mut guard = state.lock().await;
-                    guard.scroll_by(-1);
+                    guard.scroll_by(-5);
                 }
             }
             KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let AppMode::Connected { state, .. } = &mut app.mode {
                     let mut guard = state.lock().await;
-                    guard.scroll_by(1);
+                    guard.scroll_by(5);
                 }
             }
             // All other keys can be handled by the ANSI encoder
