@@ -6,6 +6,16 @@ use ratatui::prelude::Backend;
 use super::KeyFlow;
 use crate::{App, AppMode};
 
+/// Helper function to scroll to bottom if needed
+async fn ensure_scroll_to_bottom(
+    state: &std::sync::Arc<tokio::sync::Mutex<crate::ui::TerminalState>>,
+) {
+    let mut guard = state.lock().await;
+    if guard.parser.screen().scrollback() > 0 {
+        guard.scroll_to_bottom();
+    }
+}
+
 /// Encode a key event to ANSI escape sequence
 fn encode_key_event_to_ansi(app_cursor: bool, key: &KeyEvent) -> Option<Vec<u8>> {
     match key.code {
@@ -133,10 +143,7 @@ pub async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: Key
                 drop(guard); // Release the lock early
                 // If an interactive full-screen/app-cursor mode is active, forward ESC to remote
                 if in_alt || app_cursor {
-                    let mut guard = state.lock().await;
-                    if guard.parser.screen().scrollback() > 0 {
-                        guard.scroll_to_bottom();
-                    }
+                    ensure_scroll_to_bottom(state).await;
                     if let Err(e) = client.write_all(&[0x1b]).await {
                         app.error = Some(e);
                     }
@@ -152,90 +159,7 @@ pub async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: Key
                     app.go_to_connection_list_with_selected(current_selected);
                 }
             }
-            KeyCode::Enter => {
-                let mut guard = state.lock().await;
-                if guard.parser.screen().scrollback() > 0 {
-                    guard.scroll_to_bottom();
-                }
-                if let Err(e) = client.write_all(b"\r").await {
-                    app.error = Some(e);
-                }
-            }
-            KeyCode::Backspace => {
-                let mut guard = state.lock().await;
-                if guard.parser.screen().scrollback() > 0 {
-                    guard.scroll_to_bottom();
-                }
-                if let Err(e) = client.write_all(&[0x7f]).await {
-                    app.error = Some(e);
-                }
-            }
-            KeyCode::Left => {
-                let mut guard = state.lock().await;
-                if guard.parser.screen().scrollback() > 0 {
-                    guard.scroll_to_bottom();
-                }
-                let app_cursor = guard.parser.screen().application_cursor();
-                drop(guard); // Release the lock before the async write
-                let seq = if app_cursor { b"\x1bOD" } else { b"\x1b[D" };
-                if let Err(e) = client.write_all(seq).await {
-                    app.error = Some(e);
-                }
-            }
-            KeyCode::Right => {
-                let mut guard = state.lock().await;
-                if guard.parser.screen().scrollback() > 0 {
-                    guard.scroll_to_bottom();
-                }
-                let app_cursor = guard.parser.screen().application_cursor();
-                drop(guard); // Release the lock before the async write
-                let seq = if app_cursor { b"\x1bOC" } else { b"\x1b[C" };
-                if let Err(e) = client.write_all(seq).await {
-                    app.error = Some(e);
-                }
-            }
-            KeyCode::Up => {
-                let mut guard = state.lock().await;
-                if guard.parser.screen().scrollback() > 0 {
-                    guard.scroll_to_bottom();
-                }
-                let app_cursor = guard.parser.screen().application_cursor();
-                drop(guard); // Release the lock before the async write
-                let seq = if app_cursor { b"\x1bOA" } else { b"\x1b[A" };
-                if let Err(e) = client.write_all(seq).await {
-                    app.error = Some(e);
-                }
-            }
-            KeyCode::Down => {
-                let mut guard = state.lock().await;
-                if guard.parser.screen().scrollback() > 0 {
-                    guard.scroll_to_bottom();
-                }
-                let app_cursor = guard.parser.screen().application_cursor();
-                drop(guard); // Release the lock before the async write
-                let seq = if app_cursor { b"\x1bOB" } else { b"\x1b[B" };
-                if let Err(e) = client.write_all(seq).await {
-                    app.error = Some(e);
-                }
-            }
-            KeyCode::Delete => {
-                let mut guard = state.lock().await;
-                if guard.parser.screen().scrollback() > 0 {
-                    guard.scroll_to_bottom();
-                }
-                if let Err(e) = client.write_all(&[0x1b, 0x5b, 0x33, 0x7e]).await {
-                    app.error = Some(e);
-                }
-            }
-            KeyCode::Tab => {
-                let mut guard = state.lock().await;
-                if guard.parser.screen().scrollback() > 0 {
-                    guard.scroll_to_bottom();
-                }
-                if let Err(e) = client.write_all(b"\t").await {
-                    app.error = Some(e);
-                }
-            }
+            // Special scrolling behavior for PageUp/PageDown - these need local scrolling
             KeyCode::PageUp => {
                 let mut guard = state.lock().await;
                 let rows = guard.parser.screen().size().0;
@@ -248,6 +172,7 @@ pub async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: Key
                 let page = (rows.saturating_sub(1)) as i32;
                 guard.scroll_by(-page);
             }
+            // Special scrolling behavior for Home/End - these need local scrolling
             KeyCode::Home => {
                 let mut guard = state.lock().await;
                 let top = usize::MAX;
@@ -257,60 +182,7 @@ pub async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: Key
                 let mut guard = state.lock().await;
                 guard.scroll_to_bottom();
             }
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let mut guard = state.lock().await;
-                if guard.parser.screen().scrollback() > 0 {
-                    guard.scroll_to_bottom();
-                }
-                if let Err(e) = client.write_all(&[0x03]).await {
-                    app.error = Some(e);
-                }
-            }
-            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let mut guard = state.lock().await;
-                if guard.parser.screen().scrollback() > 0 {
-                    guard.scroll_to_bottom();
-                }
-                if let Err(e) = client.write_all(&[0x17]).await {
-                    app.error = Some(e);
-                }
-            }
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let mut guard = state.lock().await;
-                if guard.parser.screen().scrollback() > 0 {
-                    guard.scroll_to_bottom();
-                }
-                if let Err(e) = client.write_all(&[0x04]).await {
-                    app.error = Some(e);
-                }
-            }
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let mut guard = state.lock().await;
-                if guard.parser.screen().scrollback() > 0 {
-                    guard.scroll_to_bottom();
-                }
-                if let Err(e) = client.write_all(&[0x15]).await {
-                    app.error = Some(e);
-                }
-            }
-            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let mut guard = state.lock().await;
-                if guard.parser.screen().scrollback() > 0 {
-                    guard.scroll_to_bottom();
-                }
-                if let Err(e) = client.write_all(&[0x01]).await {
-                    app.error = Some(e);
-                }
-            }
-            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let mut guard = state.lock().await;
-                if guard.parser.screen().scrollback() > 0 {
-                    guard.scroll_to_bottom();
-                }
-                if let Err(e) = client.write_all(&[0x05]).await {
-                    app.error = Some(e);
-                }
-            }
+            // Special local scrolling controls
             KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let AppMode::Connected { state, .. } = &mut app.mode {
                     let mut guard = state.lock().await;
@@ -323,18 +195,19 @@ pub async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: Key
                     guard.scroll_by(1);
                 }
             }
-            KeyCode::Char(ch_) => {
-                let mut guard = state.lock().await;
-                if guard.parser.screen().scrollback() > 0 {
-                    guard.scroll_to_bottom();
-                }
-                let mut tmp = [0u8; 4];
-                let s = ch_.encode_utf8(&mut tmp);
-                if let Err(e) = client.write_all(s.as_bytes()).await {
-                    app.error = Some(e);
+            // All other keys can be handled by the ANSI encoder
+            _ => {
+                let guard = state.lock().await;
+                let app_cursor = guard.parser.screen().application_cursor();
+                drop(guard);
+
+                if let Some(seq) = encode_key_event_to_ansi(app_cursor, &key) {
+                    ensure_scroll_to_bottom(state).await;
+                    if let Err(e) = client.write_all(&seq).await {
+                        app.error = Some(e);
+                    }
                 }
             }
-            _ => {}
         }
     }
     KeyFlow::Continue
