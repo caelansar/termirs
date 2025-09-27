@@ -129,7 +129,7 @@ pub fn draw_terminal(
     }
 
     let term_block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::TOP)
         .title(format!("Connected to {}", name))
         .fg(Color::Cyan);
     let para = Paragraph::new(lines).block(term_block);
@@ -137,7 +137,7 @@ pub fn draw_terminal(
 
     let (cur_row, cur_col) = screen.cursor_position();
     if !screen.hide_cursor() {
-        let cursor_x = area.x + 1 + cur_col;
+        let cursor_x = area.x + cur_col;
         let cursor_y = area.y + 1 + cur_row;
         frame.set_cursor_position((cursor_x, cursor_y));
     }

@@ -8,7 +8,7 @@ use tui_textarea::Input;
 use super::KeyFlow;
 use crate::async_ssh_client::SshSession;
 use crate::error::AppError;
-use crate::ui::ScpFocusField;
+use crate::ui::{ScpFocusField, ScpMode};
 use crate::{App, AppMode, ScpResult};
 
 use super::autocomplete::{
@@ -24,6 +24,31 @@ pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
             {
                 let current_selected = *current_selected;
                 app.go_to_connection_list_with_selected(current_selected);
+            }
+        }
+        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let AppMode::ScpForm { form, .. } = &mut app.mode {
+                // Switch between Send and Receive modes
+                let new_mode = match form.mode {
+                    ScpMode::Send => ScpMode::Receive,
+                    ScpMode::Receive => ScpMode::Send,
+                };
+
+                // Create new form with switched mode, preserving current values
+                let local_value = form.get_local_path_value().to_string();
+                let remote_value = form.get_remote_path_value().to_string();
+
+                *form = crate::ui::ScpForm::new_with_mode(new_mode);
+
+                // Restore the values
+                if !local_value.is_empty() {
+                    form.local_path.delete_line_by_head();
+                    form.local_path.insert_str(local_value);
+                }
+                if !remote_value.is_empty() {
+                    form.remote_path.delete_line_by_head();
+                    form.remote_path.insert_str(remote_value);
+                }
             }
         }
         KeyCode::Tab => {
@@ -96,47 +121,95 @@ pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
             }
 
             if let Some(conn) = conn_opt {
+                // Get the current mode from the form
+                let mode = if let AppMode::ScpForm { form, .. } = &app.mode {
+                    form.mode
+                } else {
+                    ScpMode::Send // Default fallback
+                };
+
                 // Create channel for communication with background task
                 let (sender, receiver) = tokio::sync::mpsc::channel(1);
 
                 // Start SCP transfer and show progress
                 let connection_name = conn.display_name.clone();
-                let progress =
-                    crate::ScpProgress::new(local.clone(), remote.clone(), connection_name);
+                let progress = crate::ScpProgress::new_with_mode(
+                    local.clone(),
+                    remote.clone(),
+                    connection_name,
+                    mode,
+                );
 
                 app.go_to_scp_progress(progress, receiver, current_selected);
 
-                let mut remote_final = remote.clone();
-                let local_path = Path::new(&local);
-                let remote_is_dir = remote.ends_with('/');
-                if remote_is_dir {
-                    if let Some(filename) = local_path.file_name() {
-                        remote_final.push_str(&filename.to_string_lossy());
+                match mode {
+                    ScpMode::Send => {
+                        let mut remote_final = remote.clone();
+                        let local_path = Path::new(&local);
+                        let remote_is_dir = remote.ends_with('/');
+                        if remote_is_dir {
+                            if let Some(filename) = local_path.file_name() {
+                                remote_final.push_str(&filename.to_string_lossy());
+                            }
+                        }
+
+                        // Start background send transfer
+                        let local_clone = local.clone();
+                        let remote_clone = remote_final;
+
+                        tokio::spawn(async move {
+                            let result = match SshSession::sftp_send_file(
+                                &conn,
+                                &local_clone,
+                                &remote_clone,
+                            )
+                            .await
+                            {
+                                Ok(_) => ScpResult::Success {
+                                    local_path: local_clone,
+                                    remote_path: remote_clone,
+                                },
+                                Err(e) => ScpResult::Error {
+                                    error: e.to_string(),
+                                },
+                            };
+                            let _ = sender.send(result).await;
+                        });
+                    }
+                    ScpMode::Receive => {
+                        let mut local_final = local.clone();
+                        let remote_path = Path::new(&remote);
+                        let local_is_dir = local.ends_with('/');
+                        if local_is_dir {
+                            if let Some(filename) = remote_path.file_name() {
+                                local_final.push_str(&filename.to_string_lossy());
+                            }
+                        }
+
+                        // Start background receive transfer
+                        let remote_clone = remote.clone();
+                        let local_clone = local_final;
+
+                        tokio::spawn(async move {
+                            let result = match SshSession::sftp_receive_file(
+                                &conn,
+                                &remote_clone,
+                                &local_clone,
+                            )
+                            .await
+                            {
+                                Ok(_) => ScpResult::Success {
+                                    local_path: local_clone,
+                                    remote_path: remote_clone,
+                                },
+                                Err(e) => ScpResult::Error {
+                                    error: e.to_string(),
+                                },
+                            };
+                            let _ = sender.send(result).await;
+                        });
                     }
                 }
-
-                // Start background transfer on tokio
-                let local_clone = local.clone();
-                let remote_clone = remote_final;
-
-                tokio::spawn(async move {
-                    let result = match SshSession::sftp_send_file(
-                        &conn,
-                        &local_clone,
-                        &remote_clone,
-                    )
-                    .await
-                    {
-                        Ok(_) => ScpResult::Success {
-                            local_path: local_clone,
-                            remote_path: remote_clone,
-                        },
-                        Err(e) => ScpResult::Error {
-                            error: e.to_string(),
-                        },
-                    };
-                    let _ = sender.send(result).await;
-                });
             }
         }
         _ => {

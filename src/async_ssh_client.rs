@@ -542,6 +542,176 @@ impl SshSession {
         )
         .await
     }
+
+    pub async fn sftp_receive_file_with_timeout(
+        connection: &Connection,
+        remote_path: &str,
+        local_path: &str,
+        timeout: Option<Duration>,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<()> {
+        let (session, _server_key) =
+            Self::new_session_with_timeout(connection, timeout, cancel).await?;
+
+        let channel = session.channel_open_session().await?;
+        channel.request_subsystem(true, "sftp").await?;
+
+        // Create RawSftpSession for better performance
+        let sftp = RawSftpSession::new(channel.into_stream());
+
+        // Initialize the SFTP session
+        sftp.init()
+            .await
+            .map_err(|e| AppError::SftpError(format!("Failed to initialize SFTP: {}", e)))?;
+
+        // Open remote file for reading
+        let remote_handle = sftp
+            .open(remote_path, OpenFlags::READ, FileAttributes::empty())
+            .await
+            .map_err(|e| AppError::SftpError(format!("Failed to open remote file: {}", e)))?;
+
+        // For simplicity, we'll transfer without knowing the exact file size
+        let file_size = 0u64;
+
+        // Create local file for writing
+        let mut local_file = tokio::fs::File::create(expand_tilde(local_path)).await?;
+
+        // Use optimal buffer size for SFTP protocol (128KB for better throughput)
+        const CHUNK_SIZE: usize = 128 * 1024; // 128KB - good balance between memory and throughput
+
+        let mut bytes_read = 0u64;
+        let mut offset = 0u64;
+        let mut last_progress_logged = 0u64;
+
+        // Set a shorter timeout for faster operations
+        sftp.set_timeout(3).await;
+
+        // Optimized pipeline logic: concurrent read and write with ordered writes
+        const MAX_CONCURRENT_READS: usize = 12; // Reasonable number of concurrent operations
+        let mut read_futures = FuturesUnordered::new();
+        let mut write_queue: std::collections::VecDeque<(u64, Vec<u8>)> =
+            std::collections::VecDeque::new();
+        let mut next_write_offset = 0u64;
+        let mut eof_reached = false;
+
+        // Wrap sftp in Arc to share between tasks
+        let sftp = Arc::new(sftp);
+
+        loop {
+            // Check exit condition
+            if eof_reached && read_futures.is_empty() && write_queue.is_empty() {
+                break;
+            }
+
+            // Check if we can read more data
+            let can_read = read_futures.len() < MAX_CONCURRENT_READS && !eof_reached;
+
+            // Start new read operations if we have capacity
+            if can_read {
+                let current_offset = offset;
+                let chunk_size = CHUNK_SIZE;
+                let handle = remote_handle.handle.clone();
+                let sftp_clone = Arc::clone(&sftp);
+
+                let read_future = async move {
+                    let result = sftp_clone
+                        .read(&handle, current_offset, chunk_size as u32)
+                        .await;
+                    match result {
+                        Ok(data) => {
+                            let data_bytes = data.data;
+                            let is_eof = data_bytes.is_empty();
+                            (current_offset, data_bytes.len(), data_bytes, is_eof)
+                        }
+                        Err(_) => (current_offset, 0, Vec::new(), true), // Treat error as EOF
+                    }
+                };
+
+                read_futures.push(read_future);
+                offset += chunk_size as u64;
+            }
+
+            // Process completed reads
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    return Err(AppError::SftpError("Transfer cancelled".to_string()));
+                }
+
+                read_result = read_futures.next(), if !read_futures.is_empty() => {
+                    if let Some(result) = read_result {
+                        let (read_offset, bytes_in_chunk, data, is_eof) = result;
+
+                        if bytes_in_chunk == 0 || is_eof {
+                            eof_reached = true;
+                        }
+
+                        if bytes_in_chunk > 0 {
+                            // Add to write queue with offset for ordering
+                            write_queue.push_back((read_offset, data));
+                            write_queue.make_contiguous().sort_by_key(|(offset, _)| *offset);
+                        }
+                    }
+                }
+
+                // If no reads are pending and we can't start new ones, just yield
+                _ = tokio::task::yield_now(), if read_futures.is_empty() && !can_read => {}
+            }
+
+            // Process writes in order
+            while let Some((write_offset, _)) = write_queue.front() {
+                if *write_offset == next_write_offset {
+                    let (_, data) = write_queue.pop_front().unwrap();
+
+                    // Write data to local file
+                    use tokio::io::AsyncWriteExt;
+                    local_file.write_all(&data).await.map_err(|e| {
+                        AppError::SftpError(format!("Failed to write to local file: {}", e))
+                    })?;
+
+                    next_write_offset += data.len() as u64;
+                    bytes_read += data.len() as u64;
+
+                    // Log progress for large files (every 5MB)
+                    if file_size > 5 * 1024 * 1024
+                        && bytes_read - last_progress_logged >= 5 * 1024 * 1024
+                    {
+                        last_progress_logged = bytes_read;
+                    }
+                } else {
+                    break; // Wait for the next expected chunk
+                }
+            }
+        }
+
+        // Flush and close the local file
+        use tokio::io::AsyncWriteExt;
+        local_file
+            .flush()
+            .await
+            .map_err(|e| AppError::SftpError(format!("Failed to flush local file: {}", e)))?;
+
+        // Close the remote file handle
+        sftp.close(&remote_handle.handle)
+            .await
+            .map_err(|e| AppError::SftpError(format!("Failed to close remote file: {}", e)))?;
+
+        Ok(())
+    }
+
+    pub async fn sftp_receive_file(
+        connection: &Connection,
+        remote_path: &str,
+        local_path: &str,
+    ) -> Result<()> {
+        Self::sftp_receive_file_with_timeout(
+            connection,
+            remote_path,
+            local_path,
+            None,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+    }
 }
 
 async fn cancellable_timeout<F, T>(

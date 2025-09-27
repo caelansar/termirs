@@ -106,10 +106,26 @@ pub(crate) struct ScpProgress {
     pub(crate) start_time: std::time::Instant,
     pub(crate) spinner_state: usize, // For rotating spinner animation
     pub(crate) tick_counter: usize,  // Counter to slow down spinner updates
+    pub(crate) mode: crate::ui::ScpMode, // Send or Receive mode
 }
 
 impl ScpProgress {
+    #[allow(unused)]
     pub(crate) fn new(local_path: String, remote_path: String, connection_name: String) -> Self {
+        Self::new_with_mode(
+            local_path,
+            remote_path,
+            connection_name,
+            crate::ui::ScpMode::Send,
+        )
+    }
+
+    pub(crate) fn new_with_mode(
+        local_path: String,
+        remote_path: String,
+        connection_name: String,
+        mode: crate::ui::ScpMode,
+    ) -> Self {
         Self {
             local_path,
             remote_path,
@@ -117,6 +133,7 @@ impl ScpProgress {
             start_time: std::time::Instant::now(),
             spinner_state: 0,
             tick_counter: 0,
+            mode,
         }
     }
 
