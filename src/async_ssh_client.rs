@@ -11,7 +11,7 @@ use tokio_util;
 
 use russh::client::{self, AuthResult, KeyboardInteractiveAuthResponse};
 use russh::keys::{self, PrivateKeyWithHashAlg, ssh_key};
-use russh::{ChannelMsg, Disconnect, MethodKind};
+use russh::{Channel, ChannelMsg, Disconnect, MethodKind};
 use russh_sftp::client::rawsession::RawSftpSession;
 use russh_sftp::protocol::{FileAttributes, OpenFlags};
 
@@ -62,7 +62,7 @@ impl BufferPool {
     }
 }
 
-struct SshClient {
+pub struct SshClient {
     connection: Connection,
     server_key: Arc<tokio::sync::Mutex<Option<String>>>,
 }
@@ -104,7 +104,7 @@ impl client::Handler for SshClient {
 }
 
 pub struct SshSession {
-    session: Option<client::Handle<SshClient>>,
+    pub(crate) session: Option<client::Handle<SshClient>>,
     r: Arc<tokio::sync::Mutex<russh::ChannelReadHalf>>,
     w: Arc<russh::ChannelWriteHalf<client::Msg>>,
     server_key: Arc<tokio::sync::Mutex<Option<String>>>,
@@ -349,6 +349,7 @@ impl SshSession {
     }
 
     pub async fn sftp_send_file_with_timeout(
+        channel: Option<Channel<client::Msg>>,
         connection: &Connection,
         local_path: &str,
         remote_path: &str,
@@ -357,10 +358,14 @@ impl SshSession {
     ) -> Result<()> {
         // let now = std::time::Instant::now();
 
-        let (session, _server_key) =
-            Self::new_session_with_timeout(connection, timeout, cancel).await?;
+        let channel = if let Some(channel) = channel {
+            channel
+        } else {
+            let (session, _server_key) =
+                Self::new_session_with_timeout(connection, timeout, cancel).await?;
 
-        let channel = session.channel_open_session().await?;
+            session.channel_open_session().await?
+        };
         channel.request_subsystem(true, "sftp").await?;
 
         // Create RawSftpSession for better performance
@@ -529,11 +534,13 @@ impl SshSession {
     }
 
     pub async fn sftp_send_file(
+        channel: Option<Channel<client::Msg>>,
         connection: &Connection,
         local_path: &str,
         remote_path: &str,
     ) -> Result<()> {
         Self::sftp_send_file_with_timeout(
+            channel,
             connection,
             local_path,
             remote_path,
@@ -544,16 +551,20 @@ impl SshSession {
     }
 
     pub async fn sftp_receive_file_with_timeout(
+        channel: Option<Channel<client::Msg>>,
         connection: &Connection,
         remote_path: &str,
         local_path: &str,
         timeout: Option<Duration>,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<()> {
-        let (session, _server_key) =
-            Self::new_session_with_timeout(connection, timeout, cancel).await?;
-
-        let channel = session.channel_open_session().await?;
+        let channel = if let Some(ch) = channel {
+            ch
+        } else {
+            let (session, _server_key) =
+                Self::new_session_with_timeout(connection, timeout, cancel).await?;
+            session.channel_open_session().await?
+        };
         channel.request_subsystem(true, "sftp").await?;
 
         // Create RawSftpSession for better performance
@@ -699,11 +710,13 @@ impl SshSession {
     }
 
     pub async fn sftp_receive_file(
+        channel: Option<Channel<client::Msg>>,
         connection: &Connection,
         remote_path: &str,
         local_path: &str,
     ) -> Result<()> {
         Self::sftp_receive_file_with_timeout(
+            channel,
             connection,
             remote_path,
             local_path,

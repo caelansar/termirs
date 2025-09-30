@@ -58,6 +58,20 @@ enum AppEvent {
     Disconnect,
 }
 
+/// Enum to track where to return after SCP operations
+pub(crate) enum ScpReturnMode {
+    ConnectionList {
+        current_selected: usize,
+    },
+    Connected {
+        name: String,
+        client: SshSession,
+        state: Arc<Mutex<TerminalState>>,
+        current_selected: usize,
+        cancel_token: tokio_util::sync::CancellationToken,
+    },
+}
+
 pub(crate) enum AppMode {
     ConnectionList {
         selected: usize,
@@ -83,12 +97,13 @@ pub(crate) enum AppMode {
     ScpForm {
         form: ScpForm,
         dropdown: Option<DropdownState>,
-        current_selected: usize,
+        return_mode: ScpReturnMode,
+        channel: Option<russh::Channel<russh::client::Msg>>,
     },
     ScpProgress {
         progress: ScpProgress,
         receiver: mpsc::Receiver<ScpResult>,
-        current_selected: usize,
+        return_mode: ScpReturnMode,
     },
     DeleteConfirmation {
         connection_name: String,
@@ -261,7 +276,32 @@ impl<B: Backend + Write> App<B> {
         self.mode = AppMode::ScpForm {
             form: ScpForm::new(),
             dropdown: None,
-            current_selected,
+            return_mode: ScpReturnMode::ConnectionList { current_selected },
+            channel: None,
+        };
+        self.needs_redraw = true; // Mode change requires redraw
+    }
+
+    pub(crate) fn go_to_scp_form_from_connected(
+        &mut self,
+        name: String,
+        client: SshSession,
+        state: Arc<Mutex<TerminalState>>,
+        current_selected: usize,
+        channel: Option<russh::Channel<russh::client::Msg>>,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) {
+        self.mode = AppMode::ScpForm {
+            form: ScpForm::new(),
+            dropdown: None,
+            channel,
+            return_mode: ScpReturnMode::Connected {
+                name,
+                client,
+                state,
+                current_selected,
+                cancel_token,
+            },
         };
         self.needs_redraw = true; // Mode change requires redraw
     }
@@ -270,12 +310,12 @@ impl<B: Backend + Write> App<B> {
         &mut self,
         progress: ScpProgress,
         receiver: mpsc::Receiver<ScpResult>,
-        current_selected: usize,
+        return_mode: ScpReturnMode,
     ) {
         self.mode = AppMode::ScpProgress {
             progress,
             receiver,
-            current_selected,
+            return_mode,
         };
         self.needs_redraw = true; // Mode change requires redraw
     }
@@ -310,15 +350,17 @@ impl<B: Backend + Write> App<B> {
             | AppMode::Connected {
                 current_selected, ..
             }
-            | AppMode::ScpForm {
-                current_selected, ..
-            }
-            | AppMode::ScpProgress {
-                current_selected, ..
-            }
             | AppMode::DeleteConfirmation {
                 current_selected, ..
             } => *current_selected,
+            AppMode::ScpForm { return_mode, .. } | AppMode::ScpProgress { return_mode, .. } => {
+                match return_mode {
+                    ScpReturnMode::ConnectionList { current_selected } => *current_selected,
+                    ScpReturnMode::Connected {
+                        current_selected, ..
+                    } => *current_selected,
+                }
+            }
             _ => 0,
         }
     }
@@ -460,19 +502,41 @@ impl<B: Backend + Write> App<B> {
                         draw_terminal(size, &guard, name, f);
                     }
                 }
-                AppMode::ScpForm {
-                    current_selected, ..
-                } => {
-                    // Render the connection list background first
-                    let conns = self.config.connections();
-                    draw_connection_list(size, conns, *current_selected, false, "", f);
+                AppMode::ScpForm { return_mode, .. } => {
+                    // Render appropriate background based on return mode
+                    match return_mode {
+                        ScpReturnMode::ConnectionList { current_selected } => {
+                            let conns = self.config.connections();
+                            draw_connection_list(size, conns, *current_selected, false, "", f);
+                        }
+                        ScpReturnMode::Connected { name, state, .. } => {
+                            let inner = size.inner(Margin::new(1, 1));
+                            if let Ok(mut guard) = state.try_lock() {
+                                if guard.parser.screen().size() != (inner.height, inner.width) {
+                                    guard.resize(inner.height, inner.width);
+                                }
+                                draw_terminal(size, &guard, name, f);
+                            }
+                        }
+                    }
                 }
-                AppMode::ScpProgress {
-                    current_selected, ..
-                } => {
-                    // Render the connection list background first
-                    let conns = self.config.connections();
-                    draw_connection_list(size, conns, *current_selected, false, "", f);
+                AppMode::ScpProgress { return_mode, .. } => {
+                    // Render appropriate background based on return mode
+                    match return_mode {
+                        ScpReturnMode::ConnectionList { current_selected } => {
+                            let conns = self.config.connections();
+                            draw_connection_list(size, conns, *current_selected, false, "", f);
+                        }
+                        ScpReturnMode::Connected { name, state, .. } => {
+                            let inner = size.inner(Margin::new(1, 1));
+                            if let Ok(mut guard) = state.try_lock() {
+                                if guard.parser.screen().size() != (inner.height, inner.width) {
+                                    guard.resize(inner.height, inner.width);
+                                }
+                                draw_terminal(size, &guard, name, f);
+                            }
+                        }
+                    }
                 }
                 AppMode::DeleteConfirmation {
                     current_selected, ..
@@ -570,7 +634,7 @@ impl<B: Backend + Write> App<B> {
                     if let AppMode::ScpProgress {
                         progress,
                         receiver,
-                        current_selected,
+                        return_mode,
                     } = &mut self.mode
                     {
                         progress.tick();
@@ -579,7 +643,27 @@ impl<B: Backend + Write> App<B> {
                         // Drain any SCP results
                         match receiver.try_recv() {
                             Ok(result) => {
-                                let current_selected = *current_selected;
+                                // Clone the return_mode before we change self.mode
+                                let return_mode = match return_mode {
+                                    ScpReturnMode::ConnectionList { current_selected } => {
+                                        ScpReturnMode::ConnectionList {
+                                            current_selected: *current_selected,
+                                        }
+                                    }
+                                    ScpReturnMode::Connected {
+                                        name,
+                                        client,
+                                        state,
+                                        current_selected,
+                                        cancel_token,
+                                    } => ScpReturnMode::Connected {
+                                        name: name.clone(),
+                                        client: client.clone(),
+                                        state: state.clone(),
+                                        current_selected: *current_selected,
+                                        cancel_token: cancel_token.clone(),
+                                    },
+                                };
 
                                 // Handle the result
                                 match result {
@@ -588,7 +672,7 @@ impl<B: Backend + Write> App<B> {
                                         remote_path,
                                     } => {
                                         self.set_info(format!(
-                                            "SCP upload completed from {} to {}",
+                                            "SCP transfer completed from {} to {}",
                                             local_path, remote_path
                                         ));
                                     }
@@ -597,16 +681,77 @@ impl<B: Backend + Write> App<B> {
                                     }
                                 }
 
-                                // Go back to connection list
-                                self.go_to_connection_list_with_selected(current_selected);
+                                // Return to the appropriate mode
+                                match return_mode {
+                                    ScpReturnMode::ConnectionList { current_selected } => {
+                                        self.go_to_connection_list_with_selected(current_selected);
+                                    }
+                                    ScpReturnMode::Connected {
+                                        name,
+                                        client,
+                                        state,
+                                        current_selected,
+                                        cancel_token,
+                                    } => {
+                                        self.go_to_connected(
+                                            name,
+                                            client,
+                                            state,
+                                            current_selected,
+                                            cancel_token,
+                                        );
+                                    }
+                                }
                             }
                             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
                             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                                let current_selected = *current_selected;
+                                // Clone the return_mode before we change self.mode
+                                let return_mode = match return_mode {
+                                    ScpReturnMode::ConnectionList { current_selected } => {
+                                        ScpReturnMode::ConnectionList {
+                                            current_selected: *current_selected,
+                                        }
+                                    }
+                                    ScpReturnMode::Connected {
+                                        name,
+                                        client,
+                                        state,
+                                        current_selected,
+                                        cancel_token,
+                                    } => ScpReturnMode::Connected {
+                                        name: name.clone(),
+                                        client: client.clone(),
+                                        state: state.clone(),
+                                        current_selected: *current_selected,
+                                        cancel_token: cancel_token.clone(),
+                                    },
+                                };
+
                                 self.set_error(AppError::SshConnectionError(
                                     "SCP transfer task disconnected unexpectedly".to_string(),
                                 ));
-                                self.go_to_connection_list_with_selected(current_selected);
+
+                                // Return to the appropriate mode
+                                match return_mode {
+                                    ScpReturnMode::ConnectionList { current_selected } => {
+                                        self.go_to_connection_list_with_selected(current_selected);
+                                    }
+                                    ScpReturnMode::Connected {
+                                        name,
+                                        client,
+                                        state,
+                                        current_selected,
+                                        cancel_token,
+                                    } => {
+                                        self.go_to_connected(
+                                            name,
+                                            client,
+                                            state,
+                                            current_selected,
+                                            cancel_token,
+                                        );
+                                    }
+                                }
                             }
                         }
 

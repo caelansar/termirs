@@ -18,12 +18,44 @@ use super::autocomplete::{
 pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> KeyFlow {
     match key.code {
         KeyCode::Esc => {
-            if let AppMode::ScpForm {
-                current_selected, ..
-            } = &app.mode
-            {
-                let current_selected = *current_selected;
-                app.go_to_connection_list_with_selected(current_selected);
+            if let AppMode::ScpForm { return_mode, .. } = &app.mode {
+                // Clone the return_mode before we change self.mode
+                let return_mode = match return_mode {
+                    crate::ScpReturnMode::ConnectionList { current_selected } => {
+                        crate::ScpReturnMode::ConnectionList {
+                            current_selected: *current_selected,
+                        }
+                    }
+                    crate::ScpReturnMode::Connected {
+                        name,
+                        client,
+                        state,
+                        current_selected,
+                        cancel_token,
+                    } => crate::ScpReturnMode::Connected {
+                        name: name.clone(),
+                        client: client.clone(),
+                        state: state.clone(),
+                        current_selected: *current_selected,
+                        cancel_token: cancel_token.clone(),
+                    },
+                };
+
+                // Return to the appropriate mode
+                match return_mode {
+                    crate::ScpReturnMode::ConnectionList { current_selected } => {
+                        app.go_to_connection_list_with_selected(current_selected);
+                    }
+                    crate::ScpReturnMode::Connected {
+                        name,
+                        client,
+                        state,
+                        current_selected,
+                        cancel_token,
+                    } => {
+                        app.go_to_connected(name, client, state, current_selected, cancel_token);
+                    }
+                }
             }
         }
         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -99,18 +131,58 @@ pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
         }
         KeyCode::Enter => {
             // Extract all needed values first to avoid borrow conflicts
-            let (local, remote, current_selected, conn_opt) = if let AppMode::ScpForm {
+            let (local, remote, conn_opt, return_mode) = if let AppMode::ScpForm {
                 form,
-                current_selected,
+                return_mode,
                 ..
             } = &app.mode
             {
                 let local = form.get_local_path_value().trim().to_string();
                 let remote = form.get_remote_path_value().trim().to_string();
-                let conn_opt = app.config.connections().get(*current_selected).cloned();
-                (local, remote, *current_selected, conn_opt)
+                let current_selected = match return_mode {
+                    crate::ScpReturnMode::ConnectionList { current_selected } => *current_selected,
+                    crate::ScpReturnMode::Connected {
+                        current_selected, ..
+                    } => *current_selected,
+                };
+                let conn_opt = app.config.connections().get(current_selected).cloned();
+
+                // Clone the return_mode
+                let return_mode_clone = match return_mode {
+                    crate::ScpReturnMode::ConnectionList { current_selected } => {
+                        crate::ScpReturnMode::ConnectionList {
+                            current_selected: *current_selected,
+                        }
+                    }
+                    crate::ScpReturnMode::Connected {
+                        name,
+                        client,
+                        state,
+                        current_selected,
+                        cancel_token,
+                    } => crate::ScpReturnMode::Connected {
+                        name: name.clone(),
+                        client: client.clone(),
+                        state: state.clone(),
+                        current_selected: *current_selected,
+                        cancel_token: cancel_token.clone(),
+                    },
+                };
+
+                (local, remote, conn_opt, return_mode_clone)
             } else {
                 return KeyFlow::Continue;
+            };
+
+            // Now take the channel out with mutable access
+            let channel = if let AppMode::ScpForm {
+                channel: channel_opt,
+                ..
+            } = &mut app.mode
+            {
+                channel_opt.take()
+            } else {
+                None
             };
 
             if local.is_empty() || remote.is_empty() {
@@ -140,7 +212,7 @@ pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                     mode,
                 );
 
-                app.go_to_scp_progress(progress, receiver, current_selected);
+                app.go_to_scp_progress(progress, receiver, return_mode);
 
                 match mode {
                     ScpMode::Send => {
@@ -159,6 +231,7 @@ pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
 
                         tokio::spawn(async move {
                             let result = match SshSession::sftp_send_file(
+                                channel,
                                 &conn,
                                 &local_clone,
                                 &remote_clone,
@@ -192,6 +265,7 @@ pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
 
                         tokio::spawn(async move {
                             let result = match SshSession::sftp_receive_file(
+                                channel,
                                 &conn,
                                 &remote_clone,
                                 &local_clone,
@@ -281,15 +355,48 @@ pub async fn handle_scp_progress_key<B: Backend + Write>(
     app: &mut App<B>,
     key: KeyEvent,
 ) -> KeyFlow {
-    if let AppMode::ScpProgress {
-        current_selected, ..
-    } = &mut app.mode
-    {
+    if let AppMode::ScpProgress { return_mode, .. } = &mut app.mode {
         match key.code {
             KeyCode::Esc => {
-                let current_selected = *current_selected;
+                // Clone the return_mode before we change self.mode
+                let return_mode = match return_mode {
+                    crate::ScpReturnMode::ConnectionList { current_selected } => {
+                        crate::ScpReturnMode::ConnectionList {
+                            current_selected: *current_selected,
+                        }
+                    }
+                    crate::ScpReturnMode::Connected {
+                        name,
+                        client,
+                        state,
+                        current_selected,
+                        cancel_token,
+                    } => crate::ScpReturnMode::Connected {
+                        name: name.clone(),
+                        client: client.clone(),
+                        state: state.clone(),
+                        current_selected: *current_selected,
+                        cancel_token: cancel_token.clone(),
+                    },
+                };
+
                 app.info = Some("SCP transfer cancelled".to_string());
-                app.go_to_connection_list_with_selected(current_selected);
+
+                // Return to the appropriate mode
+                match return_mode {
+                    crate::ScpReturnMode::ConnectionList { current_selected } => {
+                        app.go_to_connection_list_with_selected(current_selected);
+                    }
+                    crate::ScpReturnMode::Connected {
+                        name,
+                        client,
+                        state,
+                        current_selected,
+                        cancel_token,
+                    } => {
+                        app.go_to_connected(name, client, state, current_selected, cancel_token);
+                    }
+                }
             }
             _ => {}
         }
