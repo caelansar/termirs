@@ -54,8 +54,18 @@ pub fn draw_terminal(
     name: &str,
     frame: &mut ratatui::Frame<'_>,
 ) {
-    let height = area.height;
-    let width = area.width;
+    // Render the block separately
+    let term_block = Block::default()
+        .borders(Borders::TOP)
+        .title(format!("Connected to {name}"))
+        .fg(Color::Cyan);
+
+    frame.render_widget(&term_block, area);
+
+    // Get the inner area for terminal content
+    let inner = term_block.inner(area);
+    let height = inner.height;
+    let width = inner.width;
     let mut lines: Vec<Line> = Vec::with_capacity(height as usize);
     let screen = state.parser.screen();
 
@@ -123,20 +133,19 @@ pub fn draw_terminal(
         if !current_text.is_empty() {
             spans.push(Span::styled(current_text, current_style));
         }
+        // eprintln!("row: {}, spans: {:?}", row, spans);
         lines.push(Line::from(spans));
     }
 
-    let term_block = Block::default()
-        .borders(Borders::TOP)
-        .title(format!("Connected to {name}"))
-        .fg(Color::Cyan);
-    let para = Paragraph::new(lines).block(term_block);
-    frame.render_widget(para, area);
+    // Render paragraph directly in the inner area (without block)
+    let para = Paragraph::new(lines);
+    frame.render_widget(para.bg(Color::Red), inner);
 
     let (cur_row, cur_col) = screen.cursor_position();
     if !screen.hide_cursor() {
-        let cursor_x = area.x + cur_col;
-        let cursor_y = area.y + 1 + cur_row;
+        // Use inner area coordinates (already accounts for borders)
+        let cursor_x = inner.x + cur_col;
+        let cursor_y = inner.y + cur_row;
         frame.set_cursor_position((cursor_x, cursor_y));
     }
 }

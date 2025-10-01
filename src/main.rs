@@ -18,7 +18,6 @@ use crossterm::terminal::{
 use futures::StreamExt;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::Margin;
 use ratatui::prelude::Backend;
 use tokio::{select, sync::mpsc, time};
 use tui_textarea::TextArea;
@@ -31,6 +30,7 @@ use ui::{
     ConnectionForm, DropdownState, ScpForm, TerminalState, draw_connection_form_popup,
     draw_connection_list, draw_delete_confirmation_popup, draw_dropdown_with_rect,
     draw_error_popup, draw_info_popup, draw_scp_popup, draw_scp_progress_popup, draw_terminal,
+    rect_with_top_margin,
 };
 
 impl crate::async_ssh_client::ByteProcessor for TerminalState {
@@ -487,7 +487,7 @@ impl<B: Backend + Write> App<B> {
                     draw_connection_list(size, conns, *current_selected, false, "", f);
                 }
                 AppMode::Connected { name, state, .. } => {
-                    let inner = size.inner(Margin::new(1, 1));
+                    let inner = rect_with_top_margin(size, 1);
                     if let Ok(mut guard) = state.try_lock() {
                         if guard.parser.screen().size() != (inner.height, inner.width) {
                             guard.resize(inner.height, inner.width);
@@ -503,7 +503,7 @@ impl<B: Backend + Write> App<B> {
                             draw_connection_list(size, conns, *current_selected, false, "", f);
                         }
                         ScpReturnMode::Connected { name, state, .. } => {
-                            let inner = size.inner(Margin::new(1, 1));
+                            let inner = rect_with_top_margin(size, 1);
                             if let Ok(mut guard) = state.try_lock() {
                                 if guard.parser.screen().size() != (inner.height, inner.width) {
                                     guard.resize(inner.height, inner.width);
@@ -521,7 +521,7 @@ impl<B: Backend + Write> App<B> {
                             draw_connection_list(size, conns, *current_selected, false, "", f);
                         }
                         ScpReturnMode::Connected { name, state, .. } => {
-                            let inner = size.inner(Margin::new(1, 1));
+                            let inner = rect_with_top_margin(size, 1);
                             if let Ok(mut guard) = state.try_lock() {
                                 if guard.parser.screen().size() != (inner.height, inner.width) {
                                     guard.resize(inner.height, inner.width);
@@ -594,8 +594,8 @@ impl<B: Backend + Write> App<B> {
             if let AppMode::Connected { client, state, .. } = &self.mode {
                 let size = self.terminal.size()?;
                 // Calculate inner area for terminal content (accounting for borders)
-                let h = size.height.saturating_sub(2); // Top and bottom borders
-                let w = size.width.saturating_sub(2); // Left and right borders
+                let h = size.height.saturating_sub(1); // Top borders
+                let w = size.width;
                 let guard = state.lock().await;
                 if guard.parser.screen().size() != (h, w) {
                     client.request_size(w, h).await;

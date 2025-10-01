@@ -12,3 +12,20 @@ pub use popup::{
 };
 pub use scp::{ScpFocusField, ScpForm, ScpMode, draw_scp_popup, draw_scp_progress_popup};
 pub use terminal::{TerminalState, draw_terminal};
+
+/// Helper function to create a rect with only top margin
+///
+/// # Arguments
+/// * `rect` - The original rectangle
+/// * `top_margin` - The top margin to subtract
+///
+/// # Returns
+/// A new Rect with the top margin applied, but bottom remains unchanged
+pub fn rect_with_top_margin(rect: ratatui::layout::Rect, top_margin: u16) -> ratatui::layout::Rect {
+    ratatui::layout::Rect {
+        x: rect.x,
+        y: rect.y + top_margin,
+        width: rect.width,
+        height: rect.height.saturating_sub(top_margin),
+    }
+}
