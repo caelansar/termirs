@@ -179,7 +179,7 @@ pub fn draw_scp_progress_popup(
     let progress_text = Paragraph::new(Line::from(vec![
         Span::styled(action_text, Style::default().fg(Color::Yellow)),
         Span::styled(
-            format!("{}", spinner_char),
+            spinner_char.to_string(),
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),

@@ -19,32 +19,10 @@ pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
     match key.code {
         KeyCode::Esc => {
             if let AppMode::ScpForm { return_mode, .. } = &app.mode {
-                // Clone the return_mode before we change self.mode
-                let return_mode = match return_mode {
-                    crate::ScpReturnMode::ConnectionList { current_selected } => {
-                        crate::ScpReturnMode::ConnectionList {
-                            current_selected: *current_selected,
-                        }
-                    }
-                    crate::ScpReturnMode::Connected {
-                        name,
-                        client,
-                        state,
-                        current_selected,
-                        cancel_token,
-                    } => crate::ScpReturnMode::Connected {
-                        name: name.clone(),
-                        client: client.clone(),
-                        state: state.clone(),
-                        current_selected: *current_selected,
-                        cancel_token: cancel_token.clone(),
-                    },
-                };
-
                 // Return to the appropriate mode
                 match return_mode {
                     crate::ScpReturnMode::ConnectionList { current_selected } => {
-                        app.go_to_connection_list_with_selected(current_selected);
+                        app.go_to_connection_list_with_selected(*current_selected);
                     }
                     crate::ScpReturnMode::Connected {
                         name,
@@ -53,7 +31,13 @@ pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                         current_selected,
                         cancel_token,
                     } => {
-                        app.go_to_connected(name, client, state, current_selected, cancel_token);
+                        app.go_to_connected(
+                            name.clone(),
+                            client.clone(),
+                            state.clone(),
+                            *current_selected,
+                            cancel_token.clone(),
+                        );
                     }
                 }
             }
@@ -88,14 +72,14 @@ pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                 // Auto-complete local path when focused on LocalPath field
                 if matches!(form.focus, ScpFocusField::LocalPath) {
                     let current = form.get_local_path_value();
-                    match autocomplete_local_path(&current) {
+                    match autocomplete_local_path(current) {
                         Some(completed) => {
                             if !current.ends_with('/') && completed != current {
                                 form.local_path.delete_line_by_head();
                                 form.local_path.insert_str(completed);
                             } else {
                                 // Show dropdown with available options when no change
-                                if let Some(options) = list_completion_options(&current)
+                                if let Some(options) = list_completion_options(current)
                                     && options.len() > 1
                                 {
                                     *dropdown = Some(crate::ui::DropdownState::new(options));
@@ -105,7 +89,7 @@ pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                             }
                         }
                         None => {
-                            if let Some(options) = list_completion_options(&current)
+                            if let Some(options) = list_completion_options(current)
                                 && options.len() > 1
                             {
                                 *dropdown = Some(crate::ui::DropdownState::new(options));
@@ -327,7 +311,7 @@ pub async fn handle_scp_form_dropdown_key<B: Backend + Write>(
                             // Construct the complete path by combining current input with selected option
                             let current = form.get_local_path_value();
                             let completed_path =
-                                construct_completed_path(&current, &selected_option);
+                                construct_completed_path(current, &selected_option);
                             form.local_path.delete_line_by_head();
                             form.local_path.insert_str(completed_path);
                         }
@@ -356,49 +340,46 @@ pub async fn handle_scp_progress_key<B: Backend + Write>(
     key: KeyEvent,
 ) -> KeyFlow {
     if let AppMode::ScpProgress { return_mode, .. } = &mut app.mode {
-        match key.code {
-            KeyCode::Esc => {
-                // Clone the return_mode before we change self.mode
-                let return_mode = match return_mode {
-                    crate::ScpReturnMode::ConnectionList { current_selected } => {
-                        crate::ScpReturnMode::ConnectionList {
-                            current_selected: *current_selected,
-                        }
-                    }
-                    crate::ScpReturnMode::Connected {
-                        name,
-                        client,
-                        state,
-                        current_selected,
-                        cancel_token,
-                    } => crate::ScpReturnMode::Connected {
-                        name: name.clone(),
-                        client: client.clone(),
-                        state: state.clone(),
+        if key.code == KeyCode::Esc {
+            // Clone the return_mode before we change self.mode
+            let return_mode = match return_mode {
+                crate::ScpReturnMode::ConnectionList { current_selected } => {
+                    crate::ScpReturnMode::ConnectionList {
                         current_selected: *current_selected,
-                        cancel_token: cancel_token.clone(),
-                    },
-                };
-
-                app.info = Some("SCP transfer cancelled".to_string());
-
-                // Return to the appropriate mode
-                match return_mode {
-                    crate::ScpReturnMode::ConnectionList { current_selected } => {
-                        app.go_to_connection_list_with_selected(current_selected);
-                    }
-                    crate::ScpReturnMode::Connected {
-                        name,
-                        client,
-                        state,
-                        current_selected,
-                        cancel_token,
-                    } => {
-                        app.go_to_connected(name, client, state, current_selected, cancel_token);
                     }
                 }
+                crate::ScpReturnMode::Connected {
+                    name,
+                    client,
+                    state,
+                    current_selected,
+                    cancel_token,
+                } => crate::ScpReturnMode::Connected {
+                    name: name.clone(),
+                    client: client.clone(),
+                    state: state.clone(),
+                    current_selected: *current_selected,
+                    cancel_token: cancel_token.clone(),
+                },
+            };
+
+            app.info = Some("SCP transfer cancelled".to_string());
+
+            // Return to the appropriate mode
+            match return_mode {
+                crate::ScpReturnMode::ConnectionList { current_selected } => {
+                    app.go_to_connection_list_with_selected(current_selected);
+                }
+                crate::ScpReturnMode::Connected {
+                    name,
+                    client,
+                    state,
+                    current_selected,
+                    cancel_token,
+                } => {
+                    app.go_to_connected(name, client, state, current_selected, cancel_token);
+                }
             }
-            _ => {}
         }
     }
     KeyFlow::Continue

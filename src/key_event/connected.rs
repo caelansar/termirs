@@ -79,7 +79,7 @@ fn encode_key_event_to_ansi(app_cursor: bool, key: &KeyEvent) -> Option<Vec<u8>>
             // CTRL combinations for ASCII letters map to 0x01..0x1A
             if key.modifiers.contains(KeyModifiers::CONTROL) {
                 let lower = ch.to_ascii_lowercase();
-                if lower >= 'a' && lower <= 'z' {
+                if lower.is_ascii_lowercase() {
                     let code = (lower as u8) - b'a' + 1;
                     return Some(vec![code]);
                 }

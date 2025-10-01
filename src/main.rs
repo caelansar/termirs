@@ -20,7 +20,6 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Margin;
 use ratatui::prelude::Backend;
 use tokio::{select, sync::mpsc, time};
-use tokio_util;
 use tui_textarea::TextArea;
 
 use async_ssh_client::SshSession;
@@ -418,7 +417,7 @@ impl<B: Backend + Write> App<B> {
                             conns,
                             *selected,
                             *search_mode,
-                            &search_query,
+                            search_query,
                             f,
                         );
 
@@ -469,14 +468,7 @@ impl<B: Backend + Write> App<B> {
                         f.render_widget(right, footer[1]);
                     } else {
                         // Normal mode: let draw_connection_list handle everything
-                        draw_connection_list(
-                            size,
-                            conns,
-                            *selected,
-                            *search_mode,
-                            &search_query,
-                            f,
-                        );
+                        draw_connection_list(size, conns, *selected, *search_mode, search_query, f);
                     }
                 }
                 AppMode::FormNew {
@@ -672,8 +664,7 @@ impl<B: Backend + Write> App<B> {
                                         remote_path,
                                     } => {
                                         self.set_info(format!(
-                                            "SCP transfer completed from {} to {}",
-                                            local_path, remote_path
+                                            "SCP transfer completed from {local_path} to {remote_path}"
                                         ));
                                     }
                                     ScpResult::Error { error } => {

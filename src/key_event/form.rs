@@ -20,7 +20,7 @@ pub async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
         KeyCode::Esc => {
             if let AppMode::FormNew {
                 current_selected, ..
-            } = &mut app.mode
+            } = &app.mode
             {
                 let current_selected = *current_selected;
                 app.go_to_connection_list_with_selected(current_selected);
@@ -127,7 +127,8 @@ pub async fn handle_form_edit_key<B: Backend + Write>(app: &mut App<B>, key: Key
                 current_selected, ..
             } = &app.mode
             {
-                app.go_to_connection_list_with_selected(*current_selected);
+                let current_selected = *current_selected;
+                app.go_to_connection_list_with_selected(current_selected);
             }
         }
         KeyCode::Tab | KeyCode::Down => {

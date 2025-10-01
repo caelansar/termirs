@@ -54,9 +54,9 @@ pub fn autocomplete_local_path(input: &str) -> Option<String> {
                         if rel_str.is_empty() {
                             "~/".to_string()
                         } else if full_path.is_dir() {
-                            format!("~/{}/", rel_str)
+                            format!("~/{rel_str}/")
                         } else {
-                            format!("~/{}", rel_str)
+                            format!("~/{rel_str}")
                         }
                     } else {
                         // Fallback to absolute path
@@ -66,12 +66,10 @@ pub fn autocomplete_local_path(input: &str) -> Option<String> {
                             full_path.to_string_lossy().to_string()
                         }
                     }
+                } else if full_path.is_dir() {
+                    full_path.to_string_lossy().to_string() + "/"
                 } else {
-                    if full_path.is_dir() {
-                        full_path.to_string_lossy().to_string() + "/"
-                    } else {
-                        full_path.to_string_lossy().to_string()
-                    }
+                    full_path.to_string_lossy().to_string()
                 }
             } else {
                 // For non-tilde paths, use absolute paths as before
@@ -144,24 +142,23 @@ pub fn list_completion_options(input: &str) -> Option<Vec<String>> {
 pub fn construct_completed_path(current_input: &str, selected_option: &str) -> String {
     // Handle empty input
     if current_input.is_empty() {
-        return format!("./{}", selected_option);
+        return format!("./{selected_option}");
     }
 
     // Special handling for tilde paths to preserve the tilde format
-    if current_input.starts_with("~") {
-        let tail = &current_input[1..];
+    if let Some(tail) = current_input.strip_prefix("~") {
         if tail.is_empty() || tail == "/" {
             // For "~" or "~/", append the selected option
-            return format!("~/{}", selected_option);
+            return format!("~/{selected_option}");
         } else {
             // For "~/something", we need to check if we're replacing the last part
             if let Some(last_slash_pos) = tail.rfind('/') {
                 // There's a path after ~/, replace the last component
                 let prefix = &tail[..last_slash_pos + 1]; // Include the slash
-                return format!("~{}{}", prefix, selected_option);
+                return format!("~{prefix}{selected_option}");
             } else {
                 // Direct child of home directory, replace the tail
-                return format!("~/{}", selected_option);
+                return format!("~/{selected_option}");
             }
         }
     }
@@ -172,12 +169,12 @@ pub fn construct_completed_path(current_input: &str, selected_option: &str) -> S
 
     // If the current path is a directory and ends with '/', append the selected option
     if path.is_dir() && expanded.ends_with('/') {
-        return format!("{}{}", expanded, selected_option);
+        return format!("{expanded}{selected_option}");
     }
 
     // Handle relative paths like "./" and "../"
     if expanded == "./" || expanded == "../" {
-        return format!("{}{}", expanded, selected_option);
+        return format!("{expanded}{selected_option}");
     }
 
     // If the current path has a parent directory, replace the filename with the selected option
@@ -188,12 +185,12 @@ pub fn construct_completed_path(current_input: &str, selected_option: &str) -> S
         } else if parent_str == "." {
             // For current directory, preserve the "./" format if it was originally there
             if current_input.starts_with("./") {
-                format!("./{}", selected_option)
+                format!("./{selected_option}")
             } else {
                 selected_option.to_string()
             }
         } else {
-            format!("{}/{}", parent_str, selected_option)
+            format!("{parent_str}/{selected_option}")
         }
     } else {
         // No parent directory, just use the selected option

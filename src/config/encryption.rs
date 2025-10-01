@@ -57,7 +57,7 @@ impl PasswordEncryption {
             .or_else(|_| std::env::var("USERNAME"))
             .unwrap_or_else(|_| "default_user".to_string());
 
-        Ok(format!("termirs_{}_{}", hostname, username))
+        Ok(format!("termirs_{hostname}_{username}"))
     }
 
     /// Encrypt a password using AES-256-GCM

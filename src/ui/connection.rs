@@ -331,7 +331,7 @@ pub fn draw_connection_list(
     .header(header)
     .block(Block::default().borders(Borders::ALL).title(format!(
         "Connection List ({}/{})",
-        if items.len() > 0 { sel + 1 } else { 0 },
+        if !items.is_empty() { sel + 1 } else { 0 },
         items.len()
     )))
     .highlight_style(

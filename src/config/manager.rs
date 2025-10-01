@@ -231,7 +231,7 @@ impl ConfigManager {
         // Create config directory if it doesn't exist
         if !config_dir.exists() {
             fs::create_dir_all(&config_dir).map_err(|e| {
-                AppError::ConfigError(format!("Failed to create config directory: {}", e))
+                AppError::ConfigError(format!("Failed to create config directory: {e}"))
             })?;
         }
 
@@ -246,10 +246,10 @@ impl ConfigManager {
         }
 
         let config_content = fs::read_to_string(config_path)
-            .map_err(|e| AppError::ConfigError(format!("Failed to read config file: {}", e)))?;
+            .map_err(|e| AppError::ConfigError(format!("Failed to read config file: {e}")))?;
 
         let config: Config = toml::from_str(&config_content)
-            .map_err(|e| AppError::ConfigError(format!("Failed to parse config file: {}", e)))?;
+            .map_err(|e| AppError::ConfigError(format!("Failed to parse config file: {e}")))?;
 
         Ok(config)
     }
@@ -257,9 +257,9 @@ impl ConfigManager {
     /// Persist current config to disk
     pub fn save(&self) -> Result<()> {
         let toml = toml::to_string_pretty(&self.config)
-            .map_err(|e| AppError::ConfigError(format!("Failed to serialize config: {}", e)))?;
+            .map_err(|e| AppError::ConfigError(format!("Failed to serialize config: {e}")))?;
         fs::write(&self.config_path, toml)
-            .map_err(|e| AppError::ConfigError(format!("Failed to write config: {}", e)))?;
+            .map_err(|e| AppError::ConfigError(format!("Failed to write config: {e}")))?;
         Ok(())
     }
 

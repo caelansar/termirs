@@ -7,7 +7,6 @@ use std::time::Duration;
 use bytes::{Bytes, BytesMut};
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::io::AsyncReadExt;
-use tokio_util;
 
 use russh::client::{self, AuthResult, KeyboardInteractiveAuthResponse};
 use russh::keys::{self, PrivateKeyWithHashAlg, ssh_key};
@@ -76,7 +75,7 @@ impl client::Handler for SshClient {
     ) -> std::result::Result<bool, Self::Error> {
         // Encode the server public key in OpenSSH format
         let server_key_openssh = server_public_key.to_openssh().map_err(|e| {
-            AppError::SshPublicKeyValidationError(format!("Failed to encode server key: {}", e))
+            AppError::SshPublicKeyValidationError(format!("Failed to encode server key: {e}"))
         })?;
 
         // Store the server key for later validation
@@ -130,9 +129,11 @@ impl SshSession {
         client::Handle<SshClient>,
         Arc<tokio::sync::Mutex<Option<String>>>,
     )> {
-        let mut config = client::Config::default();
-        config.keepalive_interval = Some(std::time::Duration::from_secs(30));
-        config.keepalive_max = 3;
+        let config = client::Config {
+            keepalive_interval: Some(std::time::Duration::from_secs(30)),
+            keepalive_max: 3,
+            ..Default::default()
+        };
 
         let config = Arc::new(config);
         let server_key = Arc::new(tokio::sync::Mutex::new(None));
@@ -209,13 +210,13 @@ impl SshSession {
                 passphrase,
             } => {
                 let algo = session.best_supported_rsa_hash().await?.flatten();
-                let key_path = if private_key_path.starts_with("~/") {
+                let key_path = if let Some(path) = private_key_path.strip_prefix("~/") {
                     let home = env::var_os("HOME").ok_or_else(|| {
                         AppError::SshConnectionError(
                             "HOME environment variable is not set".to_string(),
                         )
                     })?;
-                    PathBuf::from(home).join(&private_key_path[2..])
+                    PathBuf::from(home).join(path)
                 } else {
                     PathBuf::from(private_key_path)
                 };
@@ -280,9 +281,10 @@ impl SshSession {
     pub async fn write_all(&self, data: &[u8]) -> Result<()> {
         use tokio::io::AsyncWriteExt;
         let mut writer = self.w.make_writer();
-        writer.write_all(data).await.map_err(|e| {
-            AppError::SshWriteError(format!("Failed to write to SSH channel: {}", e))
-        })?;
+        writer
+            .write_all(data)
+            .await
+            .map_err(|e| AppError::SshWriteError(format!("Failed to write to SSH channel: {e}")))?;
         Ok(())
     }
 
@@ -374,7 +376,7 @@ impl SshSession {
         // Initialize the SFTP session
         sftp.init()
             .await
-            .map_err(|e| AppError::SftpError(format!("Failed to initialize SFTP: {}", e)))?;
+            .map_err(|e| AppError::SftpError(format!("Failed to initialize SFTP: {e}")))?;
 
         // Open local file and get its size
         let mut local_file = tokio::fs::File::open(expand_tilde(local_path)).await?;
@@ -388,7 +390,7 @@ impl SshSession {
                 FileAttributes::empty(),
             )
             .await
-            .map_err(|e| AppError::SftpError(format!("Failed to open remote file: {}", e)))?;
+            .map_err(|e| AppError::SftpError(format!("Failed to open remote file: {e}")))?;
 
         // Use optimal buffer size for SFTP protocol (128KB for better throughput)
         const CHUNK_SIZE: usize = 128 * 1024; // 128KB - good balance between memory and throughput
@@ -434,7 +436,7 @@ impl SshSession {
                     } => {
                         let (mut buffer, read_result) = read_result;
                         let bytes_read = read_result.map_err(|e| {
-                            AppError::SftpError(format!("Failed to read local file: {}", e))
+                            AppError::SftpError(format!("Failed to read local file: {e}"))
                         })?;
 
                         if bytes_read == 0 {
@@ -469,7 +471,7 @@ impl SshSession {
                         if let Some(result) = write_result {
                             let (chunk_size, write_res) = result;
                             write_res.map_err(|e| {
-                                AppError::SftpError(format!("Failed to write chunk: {}", e))
+                                AppError::SftpError(format!("Failed to write chunk: {e}"))
                             })?;
 
                             bytes_written += chunk_size;
@@ -497,7 +499,7 @@ impl SshSession {
                         if let Some(result) = write_result {
                             let (chunk_size, write_res) = result;
                             write_res.map_err(|e| {
-                                AppError::SftpError(format!("Failed to write chunk: {}", e))
+                                AppError::SftpError(format!("Failed to write chunk: {e}"))
                             })?;
 
                             bytes_written += chunk_size;
@@ -521,7 +523,7 @@ impl SshSession {
         // Close the remote file handle
         sftp.close(&remote_handle.handle)
             .await
-            .map_err(|e| AppError::SftpError(format!("Failed to close remote file: {}", e)))?;
+            .map_err(|e| AppError::SftpError(format!("Failed to close remote file: {e}")))?;
 
         // eprintln!(
         //     "Transfer completed: {} bytes in {:?}, speed: {:.2} MB/s",
@@ -573,13 +575,13 @@ impl SshSession {
         // Initialize the SFTP session
         sftp.init()
             .await
-            .map_err(|e| AppError::SftpError(format!("Failed to initialize SFTP: {}", e)))?;
+            .map_err(|e| AppError::SftpError(format!("Failed to initialize SFTP: {e}")))?;
 
         // Open remote file for reading
         let remote_handle = sftp
             .open(remote_path, OpenFlags::READ, FileAttributes::empty())
             .await
-            .map_err(|e| AppError::SftpError(format!("Failed to open remote file: {}", e)))?;
+            .map_err(|e| AppError::SftpError(format!("Failed to open remote file: {e}")))?;
 
         // For simplicity, we'll transfer without knowing the exact file size
         let file_size = 0u64;
@@ -676,7 +678,7 @@ impl SshSession {
                     // Write data to local file
                     use tokio::io::AsyncWriteExt;
                     local_file.write_all(&data).await.map_err(|e| {
-                        AppError::SftpError(format!("Failed to write to local file: {}", e))
+                        AppError::SftpError(format!("Failed to write to local file: {e}"))
                     })?;
 
                     next_write_offset += data.len() as u64;
@@ -699,12 +701,12 @@ impl SshSession {
         local_file
             .flush()
             .await
-            .map_err(|e| AppError::SftpError(format!("Failed to flush local file: {}", e)))?;
+            .map_err(|e| AppError::SftpError(format!("Failed to flush local file: {e}")))?;
 
         // Close the remote file handle
         sftp.close(&remote_handle.handle)
             .await
-            .map_err(|e| AppError::SftpError(format!("Failed to close remote file: {}", e)))?;
+            .map_err(|e| AppError::SftpError(format!("Failed to close remote file: {e}")))?;
 
         Ok(())
     }

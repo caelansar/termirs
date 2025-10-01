@@ -17,7 +17,7 @@ pub fn draw_error_popup(area: Rect, message: &str, frame: &mut ratatui::Frame<'_
             if len == 0 {
                 1
             } else {
-                (len + inner_w - 1) / inner_w
+                len.div_ceil(inner_w)
             }
         })
         .sum();
@@ -68,7 +68,7 @@ pub fn draw_info_popup(area: Rect, message: &str, frame: &mut ratatui::Frame<'_>
             if len == 0 {
                 1
             } else {
-                (len + inner_w - 1) / inner_w
+                len.div_ceil(inner_w)
             }
         })
         .sum();

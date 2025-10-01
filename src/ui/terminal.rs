@@ -107,19 +107,17 @@ pub fn draw_terminal(
                     current_style = style;
                     current_text.push_str(to_append);
                 }
+            } else if current_style == Style::default() {
+                current_text.push(' ');
             } else {
-                if current_style == Style::default() {
-                    current_text.push(' ');
-                } else {
-                    if !current_text.is_empty() {
-                        spans.push(Span::styled(
-                            std::mem::take(&mut current_text),
-                            current_style,
-                        ));
-                    }
-                    current_style = Style::default();
-                    current_text.push(' ');
+                if !current_text.is_empty() {
+                    spans.push(Span::styled(
+                        std::mem::take(&mut current_text),
+                        current_style,
+                    ));
                 }
+                current_style = Style::default();
+                current_text.push(' ');
             }
         }
         if !current_text.is_empty() {
@@ -130,7 +128,7 @@ pub fn draw_terminal(
 
     let term_block = Block::default()
         .borders(Borders::TOP)
-        .title(format!("Connected to {}", name))
+        .title(format!("Connected to {name}"))
         .fg(Color::Cyan);
     let para = Paragraph::new(lines).block(term_block);
     frame.render_widget(para, area);
