@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
+use crossterm::cursor::Show;
 use crossterm::event::{self, DisableMouseCapture, Event};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -803,7 +804,7 @@ fn init_panic_hook() {
 
 fn restore_tui() -> std::io::Result<()> {
     disable_raw_mode()?;
-    execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(std::io::stdout(), LeaveAlternateScreen, Show)?;
     Ok(())
 }
 
