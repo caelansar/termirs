@@ -47,6 +47,7 @@ pub(crate) enum ScpResult {
         mode: crate::ui::ScpMode,
         local_path: String,
         remote_path: String,
+        destination_filename: String, // Filename to select after transfer
     },
     Error {
         error: String,
@@ -878,12 +879,24 @@ impl<B: Backend + Write> App<B> {
                                 let transfer_successful =
                                     matches!(result, ScpResult::Success { .. });
 
+                                // Handle the result and extract destination filename
+                                let destination_filename = if let ScpResult::Success {
+                                    ref destination_filename,
+                                    ..
+                                } = result
+                                {
+                                    Some(destination_filename.clone())
+                                } else {
+                                    None
+                                };
+
                                 // Handle the result
                                 match result {
                                     ScpResult::Success {
                                         mode,
                                         local_path,
                                         remote_path,
+                                        ..
                                     } => match mode {
                                         crate::ui::ScpMode::Send => {
                                             self.set_info(format!(
@@ -932,7 +945,7 @@ impl<B: Backend + Write> App<B> {
                                         ssh_connection,
                                         channel,
                                     } => {
-                                        // If transfer was successful, refresh the destination pane
+                                        // If transfer was successful, refresh the destination pane and select the transferred file
                                         if transfer_successful {
                                             // The active_pane is the destination pane (where paste was executed)
                                             match active_pane {
@@ -949,6 +962,11 @@ impl<B: Backend + Write> App<B> {
                                                                 e
                                                             ),
                                                         ));
+                                                    } else if let Some(ref filename) =
+                                                        destination_filename
+                                                    {
+                                                        // Select the transferred file
+                                                        local_explorer.select_file(filename);
                                                     }
                                                 }
                                                 FileExplorerPane::Remote => {
@@ -964,6 +982,11 @@ impl<B: Backend + Write> App<B> {
                                                                 e
                                                             ),
                                                         ));
+                                                    } else if let Some(ref filename) =
+                                                        destination_filename
+                                                    {
+                                                        // Select the transferred file
+                                                        remote_explorer.select_file(filename);
                                                     }
                                                 }
                                             }

@@ -240,6 +240,12 @@ pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                         let local_clone = local.clone();
                         let remote_clone = remote_final;
 
+                        // Extract destination filename for auto-selection
+                        let dest_filename = Path::new(&remote_clone)
+                            .file_name()
+                            .map(|f| f.to_string_lossy().to_string())
+                            .unwrap_or_default();
+
                         tokio::spawn(async move {
                             let result = match SshSession::sftp_send_file(
                                 channel,
@@ -253,6 +259,7 @@ pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                                     mode,
                                     local_path: local_clone,
                                     remote_path: remote_clone,
+                                    destination_filename: dest_filename,
                                 },
                                 Err(e) => ScpResult::Error {
                                     error: e.to_string(),
@@ -275,6 +282,12 @@ pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                         let remote_clone = remote.clone();
                         let local_clone = local_final;
 
+                        // Extract destination filename for auto-selection
+                        let dest_filename = Path::new(&local_clone)
+                            .file_name()
+                            .map(|f| f.to_string_lossy().to_string())
+                            .unwrap_or_default();
+
                         tokio::spawn(async move {
                             let result = match SshSession::sftp_receive_file(
                                 channel,
@@ -288,6 +301,7 @@ pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                                     mode,
                                     local_path: local_clone,
                                     remote_path: remote_clone,
+                                    destination_filename: dest_filename,
                                 },
                                 Err(e) => ScpResult::Error {
                                     error: e.to_string(),

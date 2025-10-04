@@ -258,6 +258,9 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                             app.go_to_scp_progress(progress, receiver, return_mode);
 
                             // Spawn background task to perform the transfer
+                            // Keep the destination filename for auto-selection
+                            let dest_filename = copy_op.source_name.clone();
+
                             tokio::spawn(async move {
                                 let result = match mode {
                                     crate::ui::ScpMode::Send => {
@@ -285,6 +288,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                                         mode,
                                         local_path,
                                         remote_path,
+                                        destination_filename: dest_filename,
                                     },
                                     Err(e) => crate::ScpResult::Error {
                                         error: e.to_string(),

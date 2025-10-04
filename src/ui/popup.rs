@@ -14,11 +14,7 @@ pub fn draw_error_popup(area: Rect, message: &str, frame: &mut ratatui::Frame<'_
         .lines()
         .map(|l| {
             let len = l.chars().count() as u16;
-            if len == 0 {
-                1
-            } else {
-                len.div_ceil(inner_w)
-            }
+            if len == 0 { 1 } else { len.div_ceil(inner_w) }
         })
         .sum();
     let content_h = estimated_lines.max(1) + 4; // title + message + hint
@@ -65,11 +61,7 @@ pub fn draw_info_popup(area: Rect, message: &str, frame: &mut ratatui::Frame<'_>
         .lines()
         .map(|l| {
             let len = l.chars().count() as u16;
-            if len == 0 {
-                1
-            } else {
-                len.div_ceil(inner_w)
-            }
+            if len == 0 { 1 } else { len.div_ceil(inner_w) }
         })
         .sum();
     let content_h = estimated_lines.max(1) + 4; // title + message + hint
