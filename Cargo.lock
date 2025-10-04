@@ -1673,7 +1673,7 @@ dependencies = [
 [[package]]
 name = "ratatui-explorer"
 version = "0.2.1"
-source = "git+https://github.com/caelansar/ratatui-explorer.git#09f494119ff4dc0951a9ac362b974640c26bb806"
+source = "git+https://github.com/caelansar/ratatui-explorer.git#f772088d6d59f0cb5e76d5a41a570a9c1683a02d"
 dependencies = [
  "educe",
  "ratatui",
@@ -2183,7 +2183,7 @@ dependencies = [
 
 [[package]]
 name = "termirs"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "base64",
