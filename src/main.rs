@@ -387,7 +387,7 @@ impl<B: Backend + Write> App<B> {
     ) -> Result<()> {
         // For SFTP, we need to create a new session directly since we need both the session and channel
         // We'll use the existing sftp_send_file pattern but adapt it for our needs
-        let sftp_session = Self::create_sftp_session(&conn).await?;
+        let (sftp_session, channel) = Self::create_sftp_session(&conn).await?;
         let sftp_session = Arc::new(sftp_session);
 
         // Initialize local file explorer
@@ -438,13 +438,18 @@ impl<B: Backend + Write> App<B> {
             return_to,
             sftp_session,
             ssh_connection: conn,
-            channel: None, // Channel was consumed by SFTP session
+            channel: Some(channel),
         };
         self.needs_redraw = true;
         Ok(())
     }
 
-    async fn create_sftp_session(conn: &Connection) -> Result<russh_sftp::client::SftpSession> {
+    async fn create_sftp_session(
+        conn: &Connection,
+    ) -> Result<(
+        russh_sftp::client::SftpSession,
+        russh::Channel<russh::client::Msg>,
+    )> {
         // Create a new SSH session specifically for SFTP
         let (session, _server_key) = SshSession::new_session_with_timeout(
             conn,
@@ -462,7 +467,10 @@ impl<B: Backend + Write> App<B> {
             .await
             .map_err(|e| AppError::SftpError(format!("SFTP session creation failed: {}", e)))?;
 
-        Ok(sftp)
+        let channel = session.channel_open_session().await?;
+        channel.request_subsystem(true, "sftp").await?;
+
+        Ok((sftp, channel))
     }
 
     pub(crate) fn current_selected(&self) -> usize {
