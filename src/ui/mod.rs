@@ -1,5 +1,6 @@
 pub mod components;
 pub mod connection;
+pub mod file_explorer;
 pub mod popup;
 pub mod scp;
 pub mod terminal;
@@ -7,6 +8,7 @@ pub mod terminal;
 // Re-export commonly used items for convenience
 pub use components::{DropdownState, draw_dropdown_with_rect};
 pub use connection::{ConnectionForm, draw_connection_list};
+pub use file_explorer::draw_file_explorer;
 pub use popup::{
     draw_connection_form_popup, draw_delete_confirmation_popup, draw_error_popup, draw_info_popup,
 };

@@ -56,6 +56,18 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
         KeyCode::Char('s') | KeyCode::Char('S') => {
             app.go_to_scp_form(app.current_selected());
         }
+        KeyCode::Char('i') | KeyCode::Char('I') => {
+            // Open file explorer for the selected connection
+            let selected_idx = app.current_selected();
+            if let Some(conn) = app.config.connections().get(selected_idx).cloned() {
+                match app.go_to_file_explorer(conn, selected_idx).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        app.error = Some(e);
+                    }
+                }
+            }
+        }
         KeyCode::Char('/') => {
             if let AppMode::ConnectionList {
                 search_mode,

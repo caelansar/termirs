@@ -121,7 +121,7 @@ impl Clone for SshSession {
 }
 
 impl SshSession {
-    async fn new_session_with_timeout(
+    pub(crate) async fn new_session_with_timeout(
         connection: &Connection,
         timeout: Option<Duration>,
         cancel: &tokio_util::sync::CancellationToken,

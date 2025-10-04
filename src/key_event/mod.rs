@@ -8,12 +8,14 @@ use crate::{App, AppMode};
 pub mod autocomplete;
 pub mod connected;
 pub mod connection_list;
+pub mod file_explorer;
 pub mod form;
 pub mod scp;
 
 // Re-export commonly used items for convenience
 pub use connected::handle_connected_key;
 pub use connection_list::handle_connection_list_key;
+pub use file_explorer::handle_file_explorer_key;
 pub use form::{handle_form_edit_key, handle_form_new_key};
 pub use scp::{
     handle_delete_confirmation_key, handle_scp_form_dropdown_key, handle_scp_form_key,
@@ -66,6 +68,7 @@ pub async fn handle_key_event<B: Backend + Write>(app: &mut App<B>, key: KeyEven
         AppMode::ScpForm { .. } => handle_scp_form_key(app, key).await,
         AppMode::ScpProgress { .. } => handle_scp_progress_key(app, key).await,
         AppMode::DeleteConfirmation { .. } => handle_delete_confirmation_key(app, key).await,
+        AppMode::FileExplorer { .. } => handle_file_explorer_key(app, key).await,
     }
 }
 
@@ -100,6 +103,7 @@ pub async fn handle_paste_event<B: Backend + Write>(app: &mut App<B>, data: &str
         }
         AppMode::ConnectionList { .. }
         | AppMode::ScpProgress { .. }
-        | AppMode::DeleteConfirmation { .. } => {}
+        | AppMode::DeleteConfirmation { .. }
+        | AppMode::FileExplorer { .. } => {}
     }
 }

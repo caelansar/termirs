@@ -39,6 +39,11 @@ pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                             cancel_token.clone(),
                         );
                     }
+                    crate::ScpReturnMode::FileExplorer { .. } => {
+                        // Return to file explorer - restore the entire mode
+                        // This is handled by setting app.mode directly
+                        // For now, do nothing here as we don't support Esc from FileExplorer yet
+                    }
                 }
             }
         }
@@ -128,6 +133,7 @@ pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                     crate::ScpReturnMode::Connected {
                         current_selected, ..
                     } => *current_selected,
+                    crate::ScpReturnMode::FileExplorer { return_to, .. } => *return_to,
                 };
                 let conn_opt = app.config.connections().get(current_selected).cloned();
 
@@ -150,6 +156,27 @@ pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                         state: state.clone(),
                         current_selected: *current_selected,
                         cancel_token: cancel_token.clone(),
+                    },
+                    crate::ScpReturnMode::FileExplorer {
+                        connection_name,
+                        local_explorer,
+                        remote_explorer,
+                        active_pane,
+                        copy_operation,
+                        return_to,
+                        sftp_session,
+                        ssh_connection,
+                        ..
+                    } => crate::ScpReturnMode::FileExplorer {
+                        connection_name: connection_name.clone(),
+                        local_explorer: local_explorer.clone(),
+                        remote_explorer: remote_explorer.clone(),
+                        active_pane: active_pane.clone(),
+                        copy_operation: copy_operation.clone(),
+                        return_to: *return_to,
+                        sftp_session: sftp_session.clone(),
+                        ssh_connection: ssh_connection.clone(),
+                        channel: None, // Can't clone Channel, set to None
                     },
                 };
 
@@ -223,6 +250,7 @@ pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                             .await
                             {
                                 Ok(_) => ScpResult::Success {
+                                    mode,
                                     local_path: local_clone,
                                     remote_path: remote_clone,
                                 },
@@ -257,6 +285,7 @@ pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                             .await
                             {
                                 Ok(_) => ScpResult::Success {
+                                    mode,
                                     local_path: local_clone,
                                     remote_path: remote_clone,
                                 },
@@ -361,6 +390,27 @@ pub async fn handle_scp_progress_key<B: Backend + Write>(
                     current_selected: *current_selected,
                     cancel_token: cancel_token.clone(),
                 },
+                crate::ScpReturnMode::FileExplorer {
+                    connection_name,
+                    local_explorer,
+                    remote_explorer,
+                    active_pane,
+                    copy_operation,
+                    return_to,
+                    sftp_session,
+                    ssh_connection,
+                    ..
+                } => crate::ScpReturnMode::FileExplorer {
+                    connection_name: connection_name.clone(),
+                    local_explorer: local_explorer.clone(),
+                    remote_explorer: remote_explorer.clone(),
+                    active_pane: active_pane.clone(),
+                    copy_operation: copy_operation.clone(),
+                    return_to: *return_to,
+                    sftp_session: sftp_session.clone(),
+                    ssh_connection: ssh_connection.clone(),
+                    channel: None,
+                },
             };
 
             app.info = Some("SCP transfer cancelled".to_string());
@@ -378,6 +428,30 @@ pub async fn handle_scp_progress_key<B: Backend + Write>(
                     cancel_token,
                 } => {
                     app.go_to_connected(name, client, state, current_selected, cancel_token);
+                }
+                crate::ScpReturnMode::FileExplorer {
+                    connection_name,
+                    local_explorer,
+                    remote_explorer,
+                    active_pane,
+                    copy_operation,
+                    return_to,
+                    sftp_session,
+                    ssh_connection,
+                    channel,
+                } => {
+                    // Return to file explorer mode
+                    app.mode = crate::AppMode::FileExplorer {
+                        connection_name,
+                        local_explorer,
+                        remote_explorer,
+                        active_pane,
+                        copy_operation,
+                        return_to,
+                        sftp_session,
+                        ssh_connection,
+                        channel,
+                    };
                 }
             }
         }

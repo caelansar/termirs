@@ -378,7 +378,7 @@ pub fn draw_connection_list(
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(footer_area);
 
-        let hint_text = "Enter: Connect   Esc: Cancel   K/↑: Up   J/↓: Down   N: New   S: SCP   D: Delete   E: Edit   /: Search";
+        let hint_text = "Enter: Connect   K/↑: Up   J/↓: Down   N: New   S: SCP   I: File Explorer   D: Delete   E: Edit   /: Search";
 
         let left = Paragraph::new(Line::from(Span::styled(
             hint_text,

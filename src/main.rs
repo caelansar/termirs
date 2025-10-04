@@ -1,6 +1,7 @@
 mod async_ssh_client;
 mod config;
 mod error;
+mod filesystem;
 mod key_event;
 mod ui;
 
@@ -29,8 +30,8 @@ use error::{AppError, Result};
 use ui::{
     ConnectionForm, DropdownState, ScpForm, TerminalState, draw_connection_form_popup,
     draw_connection_list, draw_delete_confirmation_popup, draw_dropdown_with_rect,
-    draw_error_popup, draw_info_popup, draw_scp_popup, draw_scp_progress_popup, draw_terminal,
-    rect_with_top_margin,
+    draw_error_popup, draw_file_explorer, draw_info_popup, draw_scp_popup, draw_scp_progress_popup,
+    draw_terminal, rect_with_top_margin,
 };
 
 impl crate::async_ssh_client::ByteProcessor for TerminalState {
@@ -43,6 +44,7 @@ impl crate::async_ssh_client::ByteProcessor for TerminalState {
 #[derive(Debug, Clone)]
 pub(crate) enum ScpResult {
     Success {
+        mode: crate::ui::ScpMode,
         local_path: String,
         remote_path: String,
     },
@@ -59,6 +61,28 @@ enum AppEvent {
 }
 
 /// Enum to track where to return after SCP operations
+/// Which pane is currently active in the file explorer
+#[derive(Clone, Debug)]
+pub(crate) enum FileExplorerPane {
+    Local,
+    Remote,
+}
+
+/// Copy operation state for file transfer
+#[derive(Clone, Debug)]
+pub(crate) struct CopyOperation {
+    pub(crate) source_path: String,
+    pub(crate) source_name: String,
+    pub(crate) direction: CopyDirection,
+}
+
+/// Direction of file transfer
+#[derive(Clone, Debug)]
+pub(crate) enum CopyDirection {
+    LocalToRemote,
+    RemoteToLocal,
+}
+
 pub(crate) enum ScpReturnMode {
     ConnectionList {
         current_selected: usize,
@@ -69,6 +93,17 @@ pub(crate) enum ScpReturnMode {
         state: Arc<Mutex<TerminalState>>,
         current_selected: usize,
         cancel_token: tokio_util::sync::CancellationToken,
+    },
+    FileExplorer {
+        connection_name: String,
+        local_explorer: ratatui_explorer::FileExplorer<ratatui_explorer::LocalFileSystem>,
+        remote_explorer: ratatui_explorer::FileExplorer<crate::filesystem::SftpFileSystem>,
+        active_pane: FileExplorerPane,
+        copy_operation: Option<CopyOperation>,
+        return_to: usize,
+        sftp_session: Arc<russh_sftp::client::SftpSession>,
+        ssh_connection: Connection,
+        channel: Option<russh::Channel<russh::client::Msg>>,
     },
 }
 
@@ -109,6 +144,17 @@ pub(crate) enum AppMode {
         connection_name: String,
         connection_id: String,
         current_selected: usize,
+    },
+    FileExplorer {
+        connection_name: String,
+        local_explorer: ratatui_explorer::FileExplorer<ratatui_explorer::LocalFileSystem>,
+        remote_explorer: ratatui_explorer::FileExplorer<crate::filesystem::SftpFileSystem>,
+        active_pane: FileExplorerPane,
+        copy_operation: Option<CopyOperation>,
+        return_to: usize,
+        sftp_session: Arc<russh_sftp::client::SftpSession>,
+        ssh_connection: Connection,
+        channel: Option<russh::Channel<russh::client::Msg>>,
     },
 }
 
@@ -334,6 +380,91 @@ impl<B: Backend + Write> App<B> {
         self.needs_redraw = true; // Mode change requires redraw
     }
 
+    pub(crate) async fn go_to_file_explorer(
+        &mut self,
+        conn: Connection,
+        return_to: usize,
+    ) -> Result<()> {
+        // For SFTP, we need to create a new session directly since we need both the session and channel
+        // We'll use the existing sftp_send_file pattern but adapt it for our needs
+        let sftp_session = Self::create_sftp_session(&conn).await?;
+        let sftp_session = Arc::new(sftp_session);
+
+        // Initialize local file explorer
+        // Use current directory as it's more reliable than HOME which might be on a slow network mount
+        let local_start_dir = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_else(|_| "/tmp".to_string());
+
+        let local_explorer = ratatui_explorer::FileExplorer::with_fs(
+            Arc::new(ratatui_explorer::LocalFileSystem),
+            local_start_dir.clone(),
+        )
+        .await
+        .map_err(|e| {
+            AppError::SftpError(format!(
+                "Failed to initialize local explorer from '{}': {}",
+                local_start_dir, e
+            ))
+        })?;
+
+        // Initialize remote file explorer (start from home directory)
+        // Canonicalize the remote home path to get the absolute path
+        let remote_home_canonical = sftp_session.canonicalize(".").await.map_err(|e| {
+            AppError::SftpError(format!("Failed to resolve remote home directory: {}", e))
+        })?;
+
+        let sftp_fs = crate::filesystem::SftpFileSystem::new(sftp_session.clone());
+        let remote_explorer = ratatui_explorer::FileExplorer::with_fs(
+            Arc::new(sftp_fs),
+            remote_home_canonical.clone(),
+        )
+        .await
+        .map_err(|e| {
+            AppError::SftpError(format!(
+                "Failed to initialize remote explorer from '{}': {}",
+                remote_home_canonical, e
+            ))
+        })?;
+
+        // Transition to FileExplorer mode
+        self.mode = AppMode::FileExplorer {
+            connection_name: conn.display_name.clone(),
+            local_explorer,
+            remote_explorer,
+            active_pane: FileExplorerPane::Local,
+            copy_operation: None,
+            return_to,
+            sftp_session,
+            ssh_connection: conn,
+            channel: None, // Channel was consumed by SFTP session
+        };
+        self.needs_redraw = true;
+        Ok(())
+    }
+
+    async fn create_sftp_session(conn: &Connection) -> Result<russh_sftp::client::SftpSession> {
+        // Create a new SSH session specifically for SFTP
+        let (session, _server_key) = SshSession::new_session_with_timeout(
+            conn,
+            None,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await?;
+
+        // Open a channel for SFTP
+        let channel = session.channel_open_session().await?;
+        channel.request_subsystem(true, "sftp").await?;
+
+        // Create and initialize SFTP session
+        let sftp = russh_sftp::client::SftpSession::new(channel.into_stream())
+            .await
+            .map_err(|e| AppError::SftpError(format!("SFTP session creation failed: {}", e)))?;
+
+        Ok(sftp)
+    }
+
     pub(crate) fn current_selected(&self) -> usize {
         match &self.mode {
             AppMode::ConnectionList { selected, .. } => {
@@ -359,9 +490,11 @@ impl<B: Backend + Write> App<B> {
                     ScpReturnMode::Connected {
                         current_selected, ..
                     } => *current_selected,
+                    ScpReturnMode::FileExplorer { return_to, .. } => *return_to,
                 }
             }
-            _ => 0,
+            AppMode::FileExplorer { return_to, .. } => *return_to,
+            AppMode::FormNew { .. } => 0,
         }
     }
 
@@ -511,6 +644,24 @@ impl<B: Backend + Write> App<B> {
                                 draw_terminal(size, &guard, name, f);
                             }
                         }
+                        ScpReturnMode::FileExplorer {
+                            connection_name,
+                            local_explorer,
+                            remote_explorer,
+                            active_pane,
+                            copy_operation,
+                            ..
+                        } => {
+                            draw_file_explorer(
+                                f,
+                                size,
+                                connection_name,
+                                local_explorer,
+                                remote_explorer,
+                                active_pane,
+                                copy_operation,
+                            );
+                        }
                     }
                 }
                 AppMode::ScpProgress { return_mode, .. } => {
@@ -529,6 +680,24 @@ impl<B: Backend + Write> App<B> {
                                 draw_terminal(size, &guard, name, f);
                             }
                         }
+                        ScpReturnMode::FileExplorer {
+                            connection_name,
+                            local_explorer,
+                            remote_explorer,
+                            active_pane,
+                            copy_operation,
+                            ..
+                        } => {
+                            draw_file_explorer(
+                                f,
+                                size,
+                                connection_name,
+                                local_explorer,
+                                remote_explorer,
+                                active_pane,
+                                copy_operation,
+                            );
+                        }
                     }
                 }
                 AppMode::DeleteConfirmation {
@@ -537,6 +706,24 @@ impl<B: Backend + Write> App<B> {
                     // Render the connection list background first
                     let conns = self.config.connections();
                     draw_connection_list(size, conns, *current_selected, false, "", f);
+                }
+                AppMode::FileExplorer {
+                    connection_name,
+                    local_explorer,
+                    remote_explorer,
+                    active_pane,
+                    copy_operation,
+                    ..
+                } => {
+                    draw_file_explorer(
+                        f,
+                        size,
+                        connection_name,
+                        local_explorer,
+                        remote_explorer,
+                        active_pane,
+                        copy_operation,
+                    );
                 }
             }
 
@@ -656,18 +843,51 @@ impl<B: Backend + Write> App<B> {
                                         current_selected: *current_selected,
                                         cancel_token: cancel_token.clone(),
                                     },
+                                    ScpReturnMode::FileExplorer {
+                                        connection_name,
+                                        local_explorer,
+                                        remote_explorer,
+                                        active_pane,
+                                        copy_operation,
+                                        return_to,
+                                        sftp_session,
+                                        ssh_connection,
+                                        ..
+                                    } => ScpReturnMode::FileExplorer {
+                                        connection_name: connection_name.clone(),
+                                        local_explorer: local_explorer.clone(),
+                                        remote_explorer: remote_explorer.clone(),
+                                        active_pane: active_pane.clone(),
+                                        copy_operation: copy_operation.clone(),
+                                        return_to: *return_to,
+                                        sftp_session: sftp_session.clone(),
+                                        ssh_connection: ssh_connection.clone(),
+                                        channel: None, // Can't clone Channel
+                                    },
                                 };
+
+                                // Check if transfer was successful before handling the result
+                                let transfer_successful =
+                                    matches!(result, ScpResult::Success { .. });
 
                                 // Handle the result
                                 match result {
                                     ScpResult::Success {
+                                        mode,
                                         local_path,
                                         remote_path,
-                                    } => {
-                                        self.set_info(format!(
-                                            "SCP transfer completed from {local_path} to {remote_path}"
-                                        ));
-                                    }
+                                    } => match mode {
+                                        crate::ui::ScpMode::Send => {
+                                            self.set_info(format!(
+                                                    "SCP transfer completed from {local_path} to {remote_path}"
+                                                ));
+                                        }
+                                        crate::ui::ScpMode::Receive => {
+                                            self.set_info(format!(
+                                                    "SCP transfer completed from {remote_path} to {local_path}"
+                                                ));
+                                        }
+                                    },
                                     ScpResult::Error { error } => {
                                         self.set_error(AppError::SshConnectionError(error));
                                     }
@@ -693,6 +913,67 @@ impl<B: Backend + Write> App<B> {
                                             cancel_token,
                                         );
                                     }
+                                    ScpReturnMode::FileExplorer {
+                                        connection_name,
+                                        mut local_explorer,
+                                        mut remote_explorer,
+                                        active_pane,
+                                        copy_operation,
+                                        return_to,
+                                        sftp_session,
+                                        ssh_connection,
+                                        channel,
+                                    } => {
+                                        // If transfer was successful, refresh the destination pane
+                                        if transfer_successful {
+                                            // The active_pane is the destination pane (where paste was executed)
+                                            match active_pane {
+                                                FileExplorerPane::Local => {
+                                                    // Refresh local pane
+                                                    let local_cwd =
+                                                        local_explorer.cwd().to_path_buf();
+                                                    if let Err(e) =
+                                                        local_explorer.set_cwd(local_cwd).await
+                                                    {
+                                                        self.set_error(AppError::SftpError(
+                                                            format!(
+                                                                "Failed to refresh local pane: {}",
+                                                                e
+                                                            ),
+                                                        ));
+                                                    }
+                                                }
+                                                FileExplorerPane::Remote => {
+                                                    // Refresh remote pane
+                                                    let remote_cwd =
+                                                        remote_explorer.cwd().to_path_buf();
+                                                    if let Err(e) =
+                                                        remote_explorer.set_cwd(remote_cwd).await
+                                                    {
+                                                        self.set_error(AppError::SftpError(
+                                                            format!(
+                                                                "Failed to refresh remote pane: {}",
+                                                                e
+                                                            ),
+                                                        ));
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // Return to file explorer mode
+                                        self.mode = AppMode::FileExplorer {
+                                            connection_name,
+                                            local_explorer,
+                                            remote_explorer,
+                                            active_pane,
+                                            copy_operation,
+                                            return_to,
+                                            sftp_session,
+                                            ssh_connection,
+                                            channel,
+                                        };
+                                    }
                                 }
                             }
                             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
@@ -716,6 +997,27 @@ impl<B: Backend + Write> App<B> {
                                         state: state.clone(),
                                         current_selected: *current_selected,
                                         cancel_token: cancel_token.clone(),
+                                    },
+                                    ScpReturnMode::FileExplorer {
+                                        connection_name,
+                                        local_explorer,
+                                        remote_explorer,
+                                        active_pane,
+                                        copy_operation,
+                                        return_to,
+                                        sftp_session,
+                                        ssh_connection,
+                                        ..
+                                    } => ScpReturnMode::FileExplorer {
+                                        connection_name: connection_name.clone(),
+                                        local_explorer: local_explorer.clone(),
+                                        remote_explorer: remote_explorer.clone(),
+                                        active_pane: active_pane.clone(),
+                                        copy_operation: copy_operation.clone(),
+                                        return_to: *return_to,
+                                        sftp_session: sftp_session.clone(),
+                                        ssh_connection: ssh_connection.clone(),
+                                        channel: None, // Can't clone Channel
                                     },
                                 };
 
@@ -742,6 +1044,30 @@ impl<B: Backend + Write> App<B> {
                                             current_selected,
                                             cancel_token,
                                         );
+                                    }
+                                    ScpReturnMode::FileExplorer {
+                                        connection_name,
+                                        local_explorer,
+                                        remote_explorer,
+                                        active_pane,
+                                        copy_operation,
+                                        return_to,
+                                        sftp_session,
+                                        ssh_connection,
+                                        channel,
+                                    } => {
+                                        // Return to file explorer mode
+                                        self.mode = AppMode::FileExplorer {
+                                            connection_name,
+                                            local_explorer,
+                                            remote_explorer,
+                                            active_pane,
+                                            copy_operation,
+                                            return_to,
+                                            sftp_session,
+                                            ssh_connection,
+                                            channel,
+                                        };
                                     }
                                 }
                             }
