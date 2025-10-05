@@ -22,11 +22,20 @@ impl FileSystem for SftpFileSystem {
     async fn read_dir(&self, path: &str) -> Result<Vec<FileEntry>> {
         let mut entries = Vec::new();
 
-        // Normalize the path (remove trailing slashes, handle empty path)
+        // Normalize the path (remove trailing slashes, handle empty path and root)
         let normalized_path = if path.is_empty() || path == "." {
             ".".to_string()
+        } else if path == "/" {
+            // Special case: root directory should remain as "/"
+            "/".to_string()
         } else {
-            path.trim_end_matches('/').to_string()
+            // Remove trailing slashes, but check if we end up with empty string (which means it was "/")
+            let trimmed = path.trim_end_matches('/');
+            if trimmed.is_empty() {
+                "/".to_string()
+            } else {
+                trimmed.to_string()
+            }
         };
 
         // Read directory from SFTP
@@ -41,11 +50,7 @@ impl FileSystem for SftpFileSystem {
             let entry = entry_result;
 
             let filename = entry.file_name().to_string();
-            let is_dir = entry.file_type().is_dir();
             let is_hidden = filename.starts_with('.');
-
-            // Get file size from metadata
-            let size = if !is_dir { entry.metadata().size } else { None };
 
             // Construct the full path carefully to avoid double slashes
             let full_path = if normalized_path == "/" {
@@ -55,6 +60,21 @@ impl FileSystem for SftpFileSystem {
             } else {
                 format!("{}/{}", normalized_path, filename)
             };
+
+            // Determine if this is a directory
+            // For symlinks, we need to follow them to check if they point to directories
+            let is_dir = if entry.file_type().is_symlink() {
+                // Try to follow the symlink to get the target's metadata
+                match self.session.metadata(&full_path).await {
+                    Ok(target_metadata) => target_metadata.is_dir(),
+                    Err(_) => false, // If we can't follow the symlink, treat it as a file
+                }
+            } else {
+                entry.file_type().is_dir()
+            };
+
+            // Get file size from metadata
+            let size = if !is_dir { entry.metadata().size } else { None };
 
             entries.push(FileEntry {
                 name: if is_dir {
@@ -104,13 +124,22 @@ impl FileSystem for SftpFileSystem {
     }
 
     fn parent(&self, path: &str) -> Option<String> {
-        let path = path.trim_end_matches('/');
-        if path.is_empty() || path == "/" {
+        // Handle root directory - it has no parent
+        if path == "/" {
             return None;
         }
 
-        path.rsplit_once('/').map(|(parent, _)| {
+        let trimmed = path.trim_end_matches('/');
+
+        // If after trimming we get empty or just "/", no parent exists
+        if trimmed.is_empty() || trimmed == "/" {
+            return None;
+        }
+
+        // Find the last slash to get the parent
+        trimmed.rsplit_once('/').map(|(parent, _)| {
             if parent.is_empty() {
+                // Parent is root
                 "/".to_string()
             } else {
                 parent.to_string()

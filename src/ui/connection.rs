@@ -375,7 +375,7 @@ pub fn draw_connection_list(
         let footer_area = layout[1];
         let footer = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])
             .split(footer_area);
 
         let hint_text = "Enter: Connect   K/↑: Up   J/↓: Down   N: New   S: SCP   I: File Explorer   D: Delete   E: Edit   /: Search";
