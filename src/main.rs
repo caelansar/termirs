@@ -634,7 +634,7 @@ impl<B: Backend + Write> App<B> {
                         if guard.parser.screen().size() != (inner.height, inner.width) {
                             guard.resize(inner.height, inner.width);
                         }
-                        draw_terminal(size, &guard, name, f);
+                        draw_terminal(size, &mut guard, name, f);
                     }
                 }
                 AppMode::ScpForm { return_mode, .. } => {
@@ -650,7 +650,7 @@ impl<B: Backend + Write> App<B> {
                                 if guard.parser.screen().size() != (inner.height, inner.width) {
                                     guard.resize(inner.height, inner.width);
                                 }
-                                draw_terminal(size, &guard, name, f);
+                                draw_terminal(size, &mut guard, name, f);
                             }
                         }
                         ScpReturnMode::FileExplorer {
@@ -686,7 +686,7 @@ impl<B: Backend + Write> App<B> {
                                 if guard.parser.screen().size() != (inner.height, inner.width) {
                                     guard.resize(inner.height, inner.width);
                                 }
-                                draw_terminal(size, &guard, name, f);
+                                draw_terminal(size, &mut guard, name, f);
                             }
                         }
                         ScpReturnMode::FileExplorer {
