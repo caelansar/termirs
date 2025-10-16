@@ -77,7 +77,10 @@ pub async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                                     return KeyFlow::Continue;
                                 }
 
-                                let state = Arc::new(Mutex::new(TerminalState::new(30, 100)));
+                                let scrollback = app.config.terminal_scrollback_lines();
+                                let state = Arc::new(Mutex::new(
+                                    TerminalState::new_with_scrollback(30, 100, scrollback),
+                                ));
                                 let app_reader = state.clone();
                                 let mut client_clone = client.clone();
                                 let cancel_token = tokio_util::sync::CancellationToken::new();

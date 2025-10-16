@@ -212,22 +212,22 @@ pub async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: Key
                     let current_selected_clone = *current_selected;
                     let cancel_token_clone = cancel_token.clone();
 
-                    let channel = client
-                        .session
-                        .as_ref()
-                        .unwrap()
-                        .channel_open_session()
-                        .await
-                        .unwrap();
-
-                    app.go_to_scp_form_from_connected(
-                        name_clone,
-                        client_clone,
-                        state_clone,
-                        current_selected_clone,
-                        Some(channel),
-                        cancel_token_clone,
-                    );
+                    match client.open_session_channel().await {
+                        Ok(channel) => {
+                            app.go_to_scp_form_from_connected(
+                                name_clone,
+                                client_clone,
+                                state_clone,
+                                current_selected_clone,
+                                Some(channel),
+                                cancel_token_clone,
+                            );
+                        }
+                        Err(e) => {
+                            app.error = Some(e);
+                            return KeyFlow::Continue;
+                        }
+                    }
                 }
             }
             // All other keys can be handled by the ANSI encoder

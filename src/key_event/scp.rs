@@ -137,48 +137,7 @@ pub async fn handle_scp_form_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                 };
                 let conn_opt = app.config.connections().get(current_selected).cloned();
 
-                // Clone the return_mode
-                let return_mode_clone = match return_mode {
-                    crate::ScpReturnMode::ConnectionList { current_selected } => {
-                        crate::ScpReturnMode::ConnectionList {
-                            current_selected: *current_selected,
-                        }
-                    }
-                    crate::ScpReturnMode::Connected {
-                        name,
-                        client,
-                        state,
-                        current_selected,
-                        cancel_token,
-                    } => crate::ScpReturnMode::Connected {
-                        name: name.clone(),
-                        client: client.clone(),
-                        state: state.clone(),
-                        current_selected: *current_selected,
-                        cancel_token: cancel_token.clone(),
-                    },
-                    crate::ScpReturnMode::FileExplorer {
-                        connection_name,
-                        local_explorer,
-                        remote_explorer,
-                        active_pane,
-                        copy_operation,
-                        return_to,
-                        sftp_session,
-                        ssh_connection,
-                        ..
-                    } => crate::ScpReturnMode::FileExplorer {
-                        connection_name: connection_name.clone(),
-                        local_explorer: local_explorer.clone(),
-                        remote_explorer: remote_explorer.clone(),
-                        active_pane: active_pane.clone(),
-                        copy_operation: copy_operation.clone(),
-                        return_to: *return_to,
-                        sftp_session: sftp_session.clone(),
-                        ssh_connection: ssh_connection.clone(),
-                        channel: None, // Can't clone Channel, set to None
-                    },
-                };
+                let return_mode_clone = return_mode.clone_without_channel();
 
                 (local, remote, conn_opt, return_mode_clone)
             } else {
@@ -385,47 +344,7 @@ pub async fn handle_scp_progress_key<B: Backend + Write>(
     if let AppMode::ScpProgress { return_mode, .. } = &mut app.mode {
         if key.code == KeyCode::Esc {
             // Clone the return_mode before we change self.mode
-            let return_mode = match return_mode {
-                crate::ScpReturnMode::ConnectionList { current_selected } => {
-                    crate::ScpReturnMode::ConnectionList {
-                        current_selected: *current_selected,
-                    }
-                }
-                crate::ScpReturnMode::Connected {
-                    name,
-                    client,
-                    state,
-                    current_selected,
-                    cancel_token,
-                } => crate::ScpReturnMode::Connected {
-                    name: name.clone(),
-                    client: client.clone(),
-                    state: state.clone(),
-                    current_selected: *current_selected,
-                    cancel_token: cancel_token.clone(),
-                },
-                crate::ScpReturnMode::FileExplorer {
-                    connection_name,
-                    local_explorer,
-                    remote_explorer,
-                    active_pane,
-                    copy_operation,
-                    return_to,
-                    sftp_session,
-                    ssh_connection,
-                    ..
-                } => crate::ScpReturnMode::FileExplorer {
-                    connection_name: connection_name.clone(),
-                    local_explorer: local_explorer.clone(),
-                    remote_explorer: remote_explorer.clone(),
-                    active_pane: active_pane.clone(),
-                    copy_operation: copy_operation.clone(),
-                    return_to: *return_to,
-                    sftp_session: sftp_session.clone(),
-                    ssh_connection: ssh_connection.clone(),
-                    channel: None,
-                },
-            };
+            let return_mode = return_mode.clone_without_channel();
 
             app.info = Some("SCP transfer cancelled".to_string());
 

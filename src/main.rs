@@ -108,6 +108,51 @@ pub(crate) enum ScpReturnMode {
     },
 }
 
+impl ScpReturnMode {
+    /// Clone the return mode while dropping non-cloneable channel handles.
+    pub(crate) fn clone_without_channel(&self) -> Self {
+        match self {
+            ScpReturnMode::ConnectionList { current_selected } => ScpReturnMode::ConnectionList {
+                current_selected: *current_selected,
+            },
+            ScpReturnMode::Connected {
+                name,
+                client,
+                state,
+                current_selected,
+                cancel_token,
+            } => ScpReturnMode::Connected {
+                name: name.clone(),
+                client: client.clone(),
+                state: state.clone(),
+                current_selected: *current_selected,
+                cancel_token: cancel_token.clone(),
+            },
+            ScpReturnMode::FileExplorer {
+                connection_name,
+                local_explorer,
+                remote_explorer,
+                active_pane,
+                copy_operation,
+                return_to,
+                sftp_session,
+                ssh_connection,
+                ..
+            } => ScpReturnMode::FileExplorer {
+                connection_name: connection_name.clone(),
+                local_explorer: local_explorer.clone(),
+                remote_explorer: remote_explorer.clone(),
+                active_pane: active_pane.clone(),
+                copy_operation: copy_operation.clone(),
+                return_to: *return_to,
+                sftp_session: sftp_session.clone(),
+                ssh_connection: ssh_connection.clone(),
+                channel: None,
+            },
+        }
+    }
+}
+
 pub(crate) enum AppMode {
     ConnectionList {
         selected: usize,
@@ -833,47 +878,7 @@ impl<B: Backend + Write> App<B> {
                         match receiver.try_recv() {
                             Ok(result) => {
                                 // Clone the return_mode before we change self.mode
-                                let return_mode = match return_mode {
-                                    ScpReturnMode::ConnectionList { current_selected } => {
-                                        ScpReturnMode::ConnectionList {
-                                            current_selected: *current_selected,
-                                        }
-                                    }
-                                    ScpReturnMode::Connected {
-                                        name,
-                                        client,
-                                        state,
-                                        current_selected,
-                                        cancel_token,
-                                    } => ScpReturnMode::Connected {
-                                        name: name.clone(),
-                                        client: client.clone(),
-                                        state: state.clone(),
-                                        current_selected: *current_selected,
-                                        cancel_token: cancel_token.clone(),
-                                    },
-                                    ScpReturnMode::FileExplorer {
-                                        connection_name,
-                                        local_explorer,
-                                        remote_explorer,
-                                        active_pane,
-                                        copy_operation,
-                                        return_to,
-                                        sftp_session,
-                                        ssh_connection,
-                                        ..
-                                    } => ScpReturnMode::FileExplorer {
-                                        connection_name: connection_name.clone(),
-                                        local_explorer: local_explorer.clone(),
-                                        remote_explorer: remote_explorer.clone(),
-                                        active_pane: active_pane.clone(),
-                                        copy_operation: copy_operation.clone(),
-                                        return_to: *return_to,
-                                        sftp_session: sftp_session.clone(),
-                                        ssh_connection: ssh_connection.clone(),
-                                        channel: None, // Can't clone Channel
-                                    },
-                                };
+                                let return_mode = return_mode.clone_without_channel();
 
                                 // Check if transfer was successful before handling the result
                                 let transfer_successful =
@@ -1010,47 +1015,7 @@ impl<B: Backend + Write> App<B> {
                             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
                             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
                                 // Clone the return_mode before we change self.mode
-                                let return_mode = match return_mode {
-                                    ScpReturnMode::ConnectionList { current_selected } => {
-                                        ScpReturnMode::ConnectionList {
-                                            current_selected: *current_selected,
-                                        }
-                                    }
-                                    ScpReturnMode::Connected {
-                                        name,
-                                        client,
-                                        state,
-                                        current_selected,
-                                        cancel_token,
-                                    } => ScpReturnMode::Connected {
-                                        name: name.clone(),
-                                        client: client.clone(),
-                                        state: state.clone(),
-                                        current_selected: *current_selected,
-                                        cancel_token: cancel_token.clone(),
-                                    },
-                                    ScpReturnMode::FileExplorer {
-                                        connection_name,
-                                        local_explorer,
-                                        remote_explorer,
-                                        active_pane,
-                                        copy_operation,
-                                        return_to,
-                                        sftp_session,
-                                        ssh_connection,
-                                        ..
-                                    } => ScpReturnMode::FileExplorer {
-                                        connection_name: connection_name.clone(),
-                                        local_explorer: local_explorer.clone(),
-                                        remote_explorer: remote_explorer.clone(),
-                                        active_pane: active_pane.clone(),
-                                        copy_operation: copy_operation.clone(),
-                                        return_to: *return_to,
-                                        sftp_session: sftp_session.clone(),
-                                        ssh_connection: ssh_connection.clone(),
-                                        channel: None, // Can't clone Channel
-                                    },
-                                };
+                                let return_mode = return_mode.clone_without_channel();
 
                                 self.set_error(AppError::SshConnectionError(
                                     "SCP transfer task disconnected unexpectedly".to_string(),

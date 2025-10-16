@@ -9,11 +9,20 @@ use uuid::Uuid;
 
 use crate::error::{AppError, Result};
 
+pub const DEFAULT_TERMINAL_SCROLLBACK_LINES: usize = 2000;
+pub const MAX_TERMINAL_SCROLLBACK_LINES: usize = 5000;
+
+fn default_terminal_scrollback_lines() -> usize {
+    DEFAULT_TERMINAL_SCROLLBACK_LINES
+}
+
 /// Application settings
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AppSettings {
     pub default_port: u16,
     pub connection_timeout: u64,
+    #[serde(default = "default_terminal_scrollback_lines")]
+    pub terminal_scrollback_lines: usize,
 }
 
 impl Default for AppSettings {
@@ -21,6 +30,7 @@ impl Default for AppSettings {
         Self {
             default_port: 22,
             connection_timeout: 20,
+            terminal_scrollback_lines: DEFAULT_TERMINAL_SCROLLBACK_LINES,
         }
     }
 }
@@ -197,7 +207,8 @@ impl ConfigManager {
     /// Create a new configuration manager
     pub fn new() -> Result<Self> {
         let config_path = Self::get_config_path()?;
-        let config = Self::load_config_from_path(&config_path)?;
+        let mut config = Self::load_config_from_path(&config_path)?;
+        Self::normalize_settings(&mut config);
 
         Ok(Self {
             config_path,
@@ -213,7 +224,8 @@ impl ConfigManager {
     #[allow(dead_code)]
     pub fn with_path<P: AsRef<Path>>(config_path: P) -> Result<Self> {
         let config_path = config_path.as_ref().to_path_buf();
-        let config = Self::load_config_from_path(&config_path)?;
+        let mut config = Self::load_config_from_path(&config_path)?;
+        Self::normalize_settings(&mut config);
 
         Ok(Self {
             config_path,
@@ -271,6 +283,10 @@ impl ConfigManager {
     /// Return mutable slice of connections
     pub fn connections_mut(&mut self) -> &mut Vec<Connection> {
         &mut self.config.connections
+    }
+
+    pub fn terminal_scrollback_lines(&self) -> usize {
+        self.config.settings.terminal_scrollback_lines
     }
 
     /// Add a new connection and persist it
@@ -332,6 +348,15 @@ impl ConfigManager {
             self.save()?;
         }
         Ok(())
+    }
+
+    fn normalize_settings(config: &mut Config) {
+        if config.settings.terminal_scrollback_lines == 0 {
+            config.settings.terminal_scrollback_lines = DEFAULT_TERMINAL_SCROLLBACK_LINES;
+        }
+        if config.settings.terminal_scrollback_lines > MAX_TERMINAL_SCROLLBACK_LINES {
+            config.settings.terminal_scrollback_lines = MAX_TERMINAL_SCROLLBACK_LINES;
+        }
     }
 }
 

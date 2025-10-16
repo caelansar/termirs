@@ -103,7 +103,7 @@ impl client::Handler for SshClient {
 }
 
 pub struct SshSession {
-    pub(crate) session: Option<client::Handle<SshClient>>,
+    session: Arc<tokio::sync::Mutex<Option<client::Handle<SshClient>>>>,
     r: Arc<tokio::sync::Mutex<russh::ChannelReadHalf>>,
     w: Arc<russh::ChannelWriteHalf<client::Msg>>,
     server_key: Arc<tokio::sync::Mutex<Option<String>>>,
@@ -112,7 +112,7 @@ pub struct SshSession {
 impl Clone for SshSession {
     fn clone(&self) -> Self {
         Self {
-            session: None,
+            session: Arc::clone(&self.session),
             r: Arc::clone(&self.r),
             w: Arc::clone(&self.w),
             server_key: Arc::clone(&self.server_key),
@@ -267,7 +267,7 @@ impl SshSession {
         let (r, w) = channel.split();
 
         Ok(Self {
-            session: Some(session),
+            session: Arc::new(tokio::sync::Mutex::new(Some(session))),
             r: Arc::new(tokio::sync::Mutex::new(r)),
             w: Arc::new(w),
             server_key,
@@ -330,10 +330,12 @@ impl SshSession {
     }
 
     pub async fn close(&self) -> Result<()> {
-        if let Some(session) = &self.session {
+        let guard = self.session.lock().await;
+        if let Some(session) = guard.as_ref() {
             session
                 .disconnect(Disconnect::ByApplication, "", "")
-                .await?;
+                .await
+                .map_err(|e| AppError::SshConnectionError(format!("Failed to disconnect: {e}")))?;
         }
         Ok(())
     }
@@ -726,6 +728,17 @@ impl SshSession {
             &tokio_util::sync::CancellationToken::new(),
         )
         .await
+    }
+
+    pub async fn open_session_channel(&self) -> Result<Channel<client::Msg>> {
+        let guard = self.session.lock().await;
+        let session = guard.as_ref().ok_or_else(|| {
+            AppError::SshConnectionError("SSH session handle unavailable".to_string())
+        })?;
+        session
+            .channel_open_session()
+            .await
+            .map_err(|e| AppError::SshConnectionError(format!("Failed to open channel: {e}")))
     }
 }
 

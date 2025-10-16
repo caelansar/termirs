@@ -9,6 +9,8 @@ use ratatui::widgets::{Block, Borders, Widget};
 use ratatui::{buffer::Buffer, style::Style as RatStyle};
 use vt100::{Color as VtColor, Parser};
 
+use crate::config::manager::DEFAULT_TERMINAL_SCROLLBACK_LINES;
+
 pub struct TerminalState {
     pub parser: Parser,
     pub last_change: Instant,
@@ -17,18 +19,26 @@ pub struct TerminalState {
     cached_height: u16,
     cached_width: u16,
     cache_invalidated: bool,
+    scrollback_limit: usize,
 }
 
 impl TerminalState {
+    #[allow(dead_code)]
     pub fn new(rows: u16, cols: u16) -> Self {
+        Self::new_with_scrollback(rows, cols, DEFAULT_TERMINAL_SCROLLBACK_LINES)
+    }
+
+    pub fn new_with_scrollback(rows: u16, cols: u16, scrollback_limit: usize) -> Self {
+        let limit = scrollback_limit.max(1);
         Self {
-            parser: Parser::new(rows, cols, 10_000),
+            parser: Parser::new(rows, cols, limit),
             last_change: Instant::now(),
             cached_lines: Vec::new(),
             row_hashes: Vec::new(),
             cached_height: 0,
             cached_width: 0,
             cache_invalidated: true,
+            scrollback_limit: limit,
         }
     }
 
@@ -54,6 +64,18 @@ impl TerminalState {
     pub fn scroll_to_bottom(&mut self) {
         self.parser.screen_mut().set_scrollback(0);
         self.invalidate_cache();
+    }
+
+    #[allow(dead_code)]
+    pub fn clear_history(&mut self) {
+        let (rows, cols) = self.parser.screen().size();
+        self.parser = Parser::new(rows, cols, self.scrollback_limit);
+        self.cached_lines.clear();
+        self.row_hashes.clear();
+        self.cached_height = 0;
+        self.cached_width = 0;
+        self.invalidate_cache();
+        self.last_change = Instant::now();
     }
 
     fn ensure_cache_dimensions(&mut self, height: u16, width: u16) {
