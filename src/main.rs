@@ -11,7 +11,9 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 use crossterm::cursor::Show;
-use crossterm::event::{self, DisableMouseCapture, Event};
+use crossterm::event::{
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, Event,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -277,7 +279,12 @@ pub(crate) struct App<B: Backend + Write> {
 impl<B: Backend + Write> Drop for App<B> {
     fn drop(&mut self) {
         disable_raw_mode().ok();
-        execute!(self.terminal.backend_mut(), LeaveAlternateScreen,).ok();
+        execute!(
+            self.terminal.backend_mut(),
+            DisableBracketedPaste,
+            LeaveAlternateScreen,
+        )
+        .ok();
     }
 }
 
@@ -310,6 +317,7 @@ impl<B: Backend + Write> App<B> {
         execute!(
             self.terminal.backend_mut(),
             EnterAlternateScreen,
+            EnableBracketedPaste,
             DisableMouseCapture
         )?;
 
