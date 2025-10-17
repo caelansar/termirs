@@ -12,6 +12,7 @@ A modern, async SSH terminal client built with Rust and [Ratatui](https://ratatu
 - **Secure Configuration**: Encrypted password storage using AES-256-GCM encryption
 - **Connection Management**: Save, edit, and organize SSH connections with a clean TUI interface
 - **File Transfer**: SFTP support for secure file uploads with progress tracking
+- **File Explorer**: Dual-pane SFTP browser with copy/paste transfers
 - **Terminal Emulation**: Full VT100 terminal emulation with color support and scrollback
 
 ### 🔒 Security Features
@@ -79,6 +80,16 @@ cargo build --release --locked
 - `↑/↓`: Switch between local and remote path fields
 - `Enter`: Start file transfer
 - `Esc`: Cancel and return to connection list
+
+#### File Explorer (SFTP)
+- `Tab`: Swap active pane between local and remote directories
+- `j/k` or `↓/↑`: Move selection within the active pane
+- `Enter` or `→`: Enter directories
+- `Backspace` or `←`: Go up one directory level
+- `c`: Copy highlighted file or folder into the transfer clipboard
+- `v`: Paste into the destination pane to start an async transfer
+- `r`: Refresh the current pane listing
+- `Esc`: Cancel file explorer and return to connection list
 
 ### Authentication Methods
 
