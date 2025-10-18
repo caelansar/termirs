@@ -54,7 +54,9 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
             app.go_to_form_new();
         }
         KeyCode::Char('s') | KeyCode::Char('S') => {
-            app.go_to_scp_form(app.current_selected());
+            if len != 0 {
+                app.go_to_scp_form(app.current_selected());
+            }
         }
         KeyCode::Char('i') | KeyCode::Char('I') => {
             // Open file explorer for the selected connection
@@ -83,11 +85,15 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
         }
         KeyCode::Char('k') | KeyCode::Up => {
             if let AppMode::ConnectionList { selected, .. } = &mut app.mode {
-                *selected = if *selected == 0 {
-                    len - 1
+                if len != 0 {
+                    *selected = if *selected == 0 {
+                        len - 1
+                    } else {
+                        (*selected - 1).min(len - 1)
+                    };
                 } else {
-                    *selected - 1
-                };
+                    *selected = 0;
+                }
             }
         }
         KeyCode::Char('j') | KeyCode::Down => {
@@ -98,51 +104,59 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
             }
         }
         KeyCode::Enter => {
-            let conn = app.config.connections()[app.current_selected()].clone();
-            match SshSession::connect(&conn).await {
-                Ok(client) => {
-                    // Save the server key if it was received and the connection doesn't have one stored
-                    if conn.public_key.is_none() {
-                        if let Some(server_key) = client.get_server_key().await {
-                            if let Some(stored_conn) =
-                                app.config.connections_mut().iter_mut().find(|c| {
-                                    c.host == conn.host
-                                        && c.port == conn.port
-                                        && c.username == conn.username
-                                })
-                            {
-                                stored_conn.public_key = Some(server_key);
-                                let _ = app.config.save();
+            if let Some(conn) = app
+                .config
+                .connections()
+                .get(app.current_selected())
+                .cloned()
+            {
+                match SshSession::connect(&conn).await {
+                    Ok(client) => {
+                        // Save the server key if it was received and the connection doesn't have one stored
+                        if conn.public_key.is_none() {
+                            if let Some(server_key) = client.get_server_key().await {
+                                if let Some(stored_conn) =
+                                    app.config.connections_mut().iter_mut().find(|c| {
+                                        c.host == conn.host
+                                            && c.port == conn.port
+                                            && c.username == conn.username
+                                    })
+                                {
+                                    stored_conn.public_key = Some(server_key);
+                                    let _ = app.config.save();
+                                }
                             }
                         }
-                    }
 
-                    let scrollback = app.config.terminal_scrollback_lines();
-                    let state = Arc::new(Mutex::new(TerminalState::new_with_scrollback(
-                        30, 100, scrollback,
-                    )));
-                    let app_reader = state.clone();
-                    let mut client_clone = client.clone();
-                    let cancel_token = tokio_util::sync::CancellationToken::new();
-                    let cancel_for_task = cancel_token.clone();
-                    let event_tx = app.event_tx.clone();
-                    tokio::spawn(async move {
-                        client_clone
-                            .read_loop(app_reader, cancel_for_task, event_tx)
-                            .await;
-                    });
-                    let _ = app.config.touch_last_used(&conn.id);
-                    app.go_to_connected(
-                        conn.display_name.clone(),
-                        client,
-                        state,
-                        app.current_selected(),
-                        cancel_token,
-                    );
+                        let scrollback = app.config.terminal_scrollback_lines();
+                        let state = Arc::new(Mutex::new(TerminalState::new_with_scrollback(
+                            30, 100, scrollback,
+                        )));
+                        let app_reader = state.clone();
+                        let mut client_clone = client.clone();
+                        let cancel_token = tokio_util::sync::CancellationToken::new();
+                        let cancel_for_task = cancel_token.clone();
+                        let event_tx = app.event_tx.clone();
+                        tokio::spawn(async move {
+                            client_clone
+                                .read_loop(app_reader, cancel_for_task, event_tx)
+                                .await;
+                        });
+                        let _ = app.config.touch_last_used(&conn.id);
+                        app.go_to_connected(
+                            conn.display_name.clone(),
+                            client,
+                            state,
+                            app.current_selected(),
+                            cancel_token,
+                        );
+                    }
+                    Err(e) => {
+                        app.error = Some(e);
+                    }
                 }
-                Err(e) => {
-                    app.error = Some(e);
-                }
+            } else if len == 0 {
+                app.info = Some("No connections available".to_string());
             }
         }
         KeyCode::Char('e') | KeyCode::Char('E') => {
