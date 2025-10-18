@@ -9,6 +9,7 @@ A modern, async SSH terminal client built with Rust and [Ratatui](https://ratatu
 ### 🚀 Core Features
 - **Async SSH Connections**: Built on `russh` for high-performance, non-blocking SSH operations
 - **Multiple Authentication Methods**: Support for password, public key, and keyboard-interactive authentication
+- **SSH Config Import**: Import connection details directly from your `~/.ssh/config` file with `Ctrl+L`
 - **Secure Configuration**: Encrypted password storage using AES-256-GCM encryption
 - **Connection Management**: Save, edit, and organize SSH connections with a clean TUI interface
 - **File Transfer**: SFTP support for secure file uploads with progress tracking
@@ -57,6 +58,7 @@ cargo build --release --locked
 1. Launch TermiRs: `./termirs` or `cargo run --release`
 2. Press `n` to create a new SSH connection
 3. Fill in the connection details (host, username, authentication method)
+   - Or press `Ctrl+L` to import from your `~/.ssh/config` file
 4. Press `Enter` to connect, connection will be saved in connection list
 5. Or select the connection and press `Enter` to connect
 
@@ -71,6 +73,12 @@ cargo build --release --locked
 - `s`: Start SFTP file transfer
 - `/`: Search connections
 - `q`: Quit application
+
+#### New Connection Form
+- `Tab/Shift+Tab`: Navigate between fields
+- `Ctrl+L`: Load connection details from `~/.ssh/config` (enter hostname first)
+- `Enter`: Save and connect
+- `Esc`: Cancel and return to connection list
 
 #### Connected Terminal
 - `Page Up/Down` or `Ctrl+b/Ctrl+f`: Scroll terminal history
@@ -108,6 +116,19 @@ Port: 22
 Username: user
 Private Key: ~/.ssh/id_rsa
 ```
+
+#### SSH Config Import
+TermiRs can import connection details from your existing `~/.ssh/config` file:
+
+1. Press `n` to create a new connection
+2. Enter the hostname or host alias from your SSH config
+3. Press `Ctrl+L` to automatically load:
+   - Hostname/IP address
+   - Port number
+   - Username
+   - Identity file path
+
+The SSH config parser supports `Include` directives, allowing you to organize your SSH configurations across multiple files.
 
 #### Keyboard Interactive
 Automatically handled when the server requires interactive authentication.
