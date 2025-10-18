@@ -789,11 +789,6 @@ impl<B: Backend + Write> App<B> {
                 }
             }
 
-            // Overlay info popup if any
-            if let Some(msg) = &self.info {
-                draw_info_popup(size, msg, f);
-            }
-
             // Overlay SCP popup if in SCP form mode
             if let AppMode::ScpForm { form, dropdown, .. } = &mut self.mode {
                 let scp_input_rects = draw_scp_popup(size, form, f);
@@ -823,6 +818,11 @@ impl<B: Backend + Write> App<B> {
             }
             if let AppMode::FormEdit { form, .. } = &mut self.mode {
                 draw_connection_form_popup(size, form, false, f);
+            }
+
+            // Overlay info popup if any
+            if let Some(msg) = &self.info {
+                draw_info_popup(size, msg, f);
             }
 
             // Overlay error popup if any (always on top)

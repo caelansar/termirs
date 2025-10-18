@@ -206,8 +206,17 @@ pub fn draw_connection_form_popup(
     new: bool,
     frame: &mut ratatui::Frame<'_>,
 ) {
+    draw_connection_form_popup_with_mode(area, form, new, frame);
+}
+
+fn draw_connection_form_popup_with_mode(
+    area: Rect,
+    form: &ConnectionForm,
+    new: bool,
+    frame: &mut ratatui::Frame<'_>,
+) {
     let title = if new {
-        "New SSH Connection"
+        "New SSH Connection / Import from SSH Config"
     } else {
         "Edit SSH Connection"
     };
@@ -315,7 +324,11 @@ pub fn draw_connection_form_popup(
         width: popup.width.saturating_sub(2),
         height: 1,
     };
-    let instructions = create_responsive_instructions(instructions_area.width);
+    let instructions = if new {
+        create_responsive_instructions_with_import(instructions_area.width)
+    } else {
+        create_responsive_instructions(instructions_area.width)
+    };
     frame.render_widget(instructions, instructions_area);
 }
 
@@ -459,6 +472,85 @@ fn create_responsive_instructions(width: u16) -> Paragraph<'static> {
         Paragraph::new(Line::from(vec![
             Span::styled(
                 "Tab/Shift+Tab",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(": Navigate  "),
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(": Save  "),
+            Span::styled(
+                "Esc",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(": Cancel"),
+        ]))
+    }
+}
+
+fn create_responsive_instructions_with_import(width: u16) -> Paragraph<'static> {
+    if width < 50 {
+        // Very narrow: minimal instructions
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "Ctrl+L",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                "Esc",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+        ]))
+    } else if width < 80 {
+        // Narrow: short form
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "Ctrl+L",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(": Load  "),
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(": Save  "),
+            Span::styled(
+                "Esc",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(": Cancel"),
+        ]))
+    } else {
+        // Full width: complete instructions
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "Ctrl+L",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(": Load from SSH Config  "),
+            Span::styled(
+                "Tab",
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),

@@ -2,7 +2,7 @@ use std::io::Write;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::Backend;
 use tokio_util;
 use tui_textarea::Input;
@@ -34,6 +34,70 @@ pub async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
         KeyCode::BackTab | KeyCode::Up => {
             if let AppMode::FormNew { form, .. } = &mut app.mode {
                 form.prev();
+            }
+        }
+        KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Ctrl+L: Load from SSH config
+            if let AppMode::FormNew { form, .. } = &mut app.mode {
+                let host_pattern = form.get_host_value().trim().to_string();
+
+                if host_pattern.is_empty() {
+                    app.error = Some(AppError::ValidationError(
+                        "Please enter a hostname to import".to_string(),
+                    ));
+                    return KeyFlow::Continue;
+                }
+
+                match crate::config::ssh_config::query_ssh_config(&host_pattern) {
+                    Ok(ssh_host) => {
+                        // Populate form fields from SSH config
+                        // Clear and set hostname
+                        form.host.delete_line_by_head();
+                        form.host.delete_line_by_end();
+                        form.host.insert_str(&ssh_host.hostname);
+
+                        // Set port if available
+                        if let Some(port) = ssh_host.port {
+                            form.port.delete_line_by_head();
+                            form.port.delete_line_by_end();
+                            form.port.insert_str(port.to_string());
+                        } else {
+                            app.error = Some(AppError::ValidationError(
+                                "Host not found in SSH config".to_string(),
+                            ));
+                            return KeyFlow::Continue;
+                        }
+
+                        // Set username if available
+                        if let Some(user) = &ssh_host.user {
+                            form.username.delete_line_by_head();
+                            form.username.delete_line_by_end();
+                            form.username.insert_str(user);
+                        } else {
+                            app.error = Some(AppError::ValidationError(
+                                "Host not found in SSH config".to_string(),
+                            ));
+                            return KeyFlow::Continue;
+                        }
+
+                        // Set identity file if available
+                        if let Some(identity_file) = &ssh_host.identity_file {
+                            form.private_key_path.delete_line_by_head();
+                            form.private_key_path.delete_line_by_end();
+                            form.private_key_path.insert_str(identity_file);
+                        }
+
+                        // Set display name to the original host pattern
+                        form.display_name.delete_line_by_head();
+                        form.display_name.delete_line_by_end();
+                        form.display_name.insert_str(&host_pattern);
+
+                        app.info = Some("SSH config loaded successfully".to_string());
+                    }
+                    Err(e) => {
+                        app.error = Some(e);
+                    }
+                }
             }
         }
         KeyCode::Enter => {
