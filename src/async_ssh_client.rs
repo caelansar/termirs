@@ -778,6 +778,249 @@ pub fn expand_tilde(input: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
+    use std::sync::Arc;
+
+    use russh::server::{self, Auth, Msg, Server as _, Session};
+    use russh::{Channel, ChannelId, CryptoVec, MethodKind, MethodSet, Pty};
+    use tokio::net::TcpListener;
+
+    const TEST_SERVER_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\n\
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\n\
+QyNTUxOQAAACAnHPG3J8U6lMZEixxg5IsP7JhRjl6nr2elNYTDWinZRQAAAJDL3Tply906\n\
+ZQAAAAtzc2gtZWQyNTUxOQAAACAnHPG3J8U6lMZEixxg5IsP7JhRjl6nr2elNYTDWinZRQ\n\
+AAAECZgBqNRwO+b/Gi/IeJMkbw3GT0jje9jiCsrzFCjLpLoycc8bcnxTqUxkSLHGDkiw/s\n\
+mFGOXqevZ6U1hMNaKdlFAAAACXRlc3RAdGVzdAECAwQ=\n\
+-----END OPENSSH PRIVATE KEY-----";
+
+    const TEST_CLIENT_PRIVATE_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\n\
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\n\
+QyNTUxOQAAACD5HoUzlZEiEcszvrgjoVwm7ZFgnM0dzXwCF4+hzSeQxAAAAJjYpDAP2KQw\n\
+DwAAAAtzc2gtZWQyNTUxOQAAACD5HoUzlZEiEcszvrgjoVwm7ZFgnM0dzXwCF4+hzSeQxA\n\
+AAAEC7XSKV4/1F7qMJQyaBniq4DNgwFEUjPDuxYKq9RWViKvkehTOVkSIRyzO+uCOhXCbt\n\
+kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
+-----END OPENSSH PRIVATE KEY-----";
+
+    const TEST_CLIENT_PUBLIC_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPkehTOVkSIRyzO+uCOhXCbtkWCczR3NfAIXj6HNJ5DE test_client@test";
+
+    struct EmbeddedSshServer {
+        port: u16,
+    }
+
+    impl EmbeddedSshServer {
+        async fn start(username: &str, password: &str) -> io::Result<Self> {
+            Self::start_with_auth(username, password, None).await
+        }
+
+        async fn start_with_auth(
+            username: &str,
+            password: &str,
+            public_key: Option<String>,
+        ) -> io::Result<Self> {
+            let mut config = server::Config::default();
+            config.auth_rejection_time = Duration::from_millis(50);
+            let private_key = russh::keys::PrivateKey::from_openssh(TEST_SERVER_KEY)
+                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+            config.keys.push(private_key);
+
+            let config = Arc::new(config);
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+            let port = listener.local_addr()?.port();
+
+            let credentials = TestCredentials {
+                username: username.to_string(),
+                password: password.to_string(),
+                public_key,
+            };
+
+            let mut server = TestServer {
+                creds: Arc::new(credentials),
+            };
+
+            // Spawn the server to run in the background
+            tokio::spawn(async move { server.run_on_socket(config, &listener).await });
+
+            // Give the server a moment to start
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            Ok(Self { port })
+        }
+
+        fn port(&self) -> u16 {
+            self.port
+        }
+
+        async fn shutdown(self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Drop for EmbeddedSshServer {
+        fn drop(&mut self) {
+            // Server will be shut down when the task completes
+        }
+    }
+
+    #[derive(Clone)]
+    struct TestCredentials {
+        username: String,
+        password: String,
+        public_key: Option<String>,
+    }
+
+    #[derive(Clone)]
+    struct TestServer {
+        creds: Arc<TestCredentials>,
+    }
+
+    impl server::Server for TestServer {
+        type Handler = EmbeddedSshHandler;
+
+        fn new_client(&mut self, _: Option<std::net::SocketAddr>) -> Self::Handler {
+            EmbeddedSshHandler::new(self.creds.clone())
+        }
+
+        fn handle_session_error(
+            &mut self,
+            _error: <Self::Handler as russh::server::Handler>::Error,
+        ) {
+            eprintln!("Session error: {:#?}", _error);
+        }
+    }
+
+    #[derive(Clone)]
+    struct EmbeddedSshHandler {
+        creds: Arc<TestCredentials>,
+    }
+
+    impl EmbeddedSshHandler {
+        fn new(creds: Arc<TestCredentials>) -> Self {
+            Self { creds }
+        }
+
+        fn auth_methods(&self) -> Option<MethodSet> {
+            let mut methods = MethodSet::empty();
+            methods.push(MethodKind::Password);
+            if self.creds.public_key.is_some() {
+                methods.push(MethodKind::PublicKey);
+            }
+            Some(methods)
+        }
+    }
+
+    impl server::Handler for EmbeddedSshHandler {
+        type Error = russh::Error;
+
+        async fn auth_none(&mut self, _user: &str) -> std::result::Result<Auth, Self::Error> {
+            Ok(Auth::Reject {
+                proceed_with_methods: self.auth_methods(),
+                partial_success: false,
+            })
+        }
+
+        async fn auth_password(
+            &mut self,
+            user: &str,
+            password: &str,
+        ) -> std::result::Result<Auth, Self::Error> {
+            if user == self.creds.username && password == self.creds.password {
+                Ok(Auth::Accept)
+            } else {
+                Ok(Auth::Reject {
+                    proceed_with_methods: self.auth_methods(),
+                    partial_success: false,
+                })
+            }
+        }
+
+        async fn auth_publickey(
+            &mut self,
+            user: &str,
+            public_key: &ssh_key::PublicKey,
+        ) -> std::result::Result<Auth, Self::Error> {
+            if user != self.creds.username {
+                return Ok(Auth::Reject {
+                    proceed_with_methods: self.auth_methods(),
+                    partial_success: false,
+                });
+            }
+
+            if let Some(expected_key) = &self.creds.public_key {
+                // Parse the expected public key from OpenSSH format
+                let expected_pk = match ssh_key::PublicKey::from_openssh(expected_key) {
+                    Ok(pk) => pk,
+                    Err(_) => {
+                        return Ok(Auth::Reject {
+                            proceed_with_methods: self.auth_methods(),
+                            partial_success: false,
+                        });
+                    }
+                };
+
+                // Compare the key data directly
+                if public_key.key_data() == expected_pk.key_data() {
+                    Ok(Auth::Accept)
+                } else {
+                    Ok(Auth::Reject {
+                        proceed_with_methods: self.auth_methods(),
+                        partial_success: false,
+                    })
+                }
+            } else {
+                Ok(Auth::Reject {
+                    proceed_with_methods: self.auth_methods(),
+                    partial_success: false,
+                })
+            }
+        }
+
+        async fn channel_open_session(
+            &mut self,
+            _channel: Channel<Msg>,
+            _session: &mut Session,
+        ) -> std::result::Result<bool, Self::Error> {
+            Ok(true)
+        }
+
+        async fn pty_request(
+            &mut self,
+            channel: ChannelId,
+            _term: &str,
+            _col_width: u32,
+            _row_height: u32,
+            _pix_width: u32,
+            _pix_height: u32,
+            _modes: &[(Pty, u32)],
+            session: &mut Session,
+        ) -> std::result::Result<(), Self::Error> {
+            session.channel_success(channel)?;
+            Ok(())
+        }
+
+        async fn shell_request(
+            &mut self,
+            channel: ChannelId,
+            session: &mut Session,
+        ) -> std::result::Result<(), Self::Error> {
+            session.channel_success(channel)?;
+            session.data(channel, CryptoVec::from_slice(b"Welcome to test shell\n"))?;
+            Ok(())
+        }
+
+        async fn data(
+            &mut self,
+            channel: ChannelId,
+            data: &[u8],
+            session: &mut Session,
+        ) -> std::result::Result<(), Self::Error> {
+            if data.eq_ignore_ascii_case(b"pwd\n") {
+                session.data(channel, CryptoVec::from_slice(b"/cae\n"))?;
+            } else {
+                session.data(channel, CryptoVec::from_slice(data))?;
+            }
+            Ok(())
+        }
+    }
 
     struct EchoByteProcessor {}
     impl ByteProcessor for EchoByteProcessor {
@@ -787,66 +1030,116 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a running ssh server"]
-    async fn test_connect_docker() {
+    async fn test_connect_embedded_server() {
+        let server = EmbeddedSshServer::start("tester", "testerpass")
+            .await
+            .expect("failed to start embedded server");
+        let port = server.port();
         let conn = Connection::new(
             "127.0.0.1".to_string(),
-            2222,
-            "dockeruser".to_string(),
-            AuthMethod::Password("dockerpass".to_string()),
+            port,
+            "tester".to_string(),
+            AuthMethod::Password("testerpass".to_string()),
         );
         let client = SshSession::connect(&conn).await.unwrap();
 
         let mut client_clone = client.clone();
         let cancel_token = tokio_util::sync::CancellationToken::new();
+        let cancel_clone = cancel_token.clone();
         tokio::spawn(async move {
             client_clone
                 .read_loop(
                     Arc::new(tokio::sync::Mutex::new(EchoByteProcessor {})),
-                    cancel_token,
+                    cancel_clone,
                     None, // No event sender for test
                 )
                 .await;
         });
 
         // make sure the read_loop is started before writing
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         client.write_all(b"pwd\n").await.unwrap();
 
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        cancel_token.cancel();
 
         client.close().await.unwrap();
+
+        server.shutdown().await.unwrap();
     }
 
     #[tokio::test]
-    #[ignore = "requires a running ssh server"]
-    async fn test_connect_interactive_keyboard() {
-        let conn = Connection::new(
-            "192.168.1.1".to_string(),
-            22,
-            "root".to_string(),
-            AuthMethod::Password("password".to_string()),
-        );
-        let client = SshSession::connect(&conn).await.unwrap();
-        client.close().await.unwrap();
-    }
+    async fn test_connect_embedded_server_public_key() {
+        use std::io::Write;
 
-    #[tokio::test]
-    #[ignore = "requires a running orbstack ssh server"]
-    async fn test_connect_orbstack() {
-        // https://docs.orbstack.dev/machines/ssh#connection-details
+        // Create a temporary file for the private key
+        let temp_dir = std::env::temp_dir();
+        let key_path = temp_dir.join("test_ssh_key");
+        let mut key_file = std::fs::File::create(&key_path).unwrap();
+        key_file
+            .write_all(TEST_CLIENT_PRIVATE_KEY.as_bytes())
+            .unwrap();
+        drop(key_file);
+
+        // Set appropriate permissions (Unix-like systems only)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&key_path).unwrap().permissions();
+            perms.set_mode(0o600);
+            std::fs::set_permissions(&key_path, perms).unwrap();
+        }
+
+        let server = EmbeddedSshServer::start_with_auth(
+            "tester",
+            "testerpass",
+            Some(TEST_CLIENT_PUBLIC_KEY.to_string()),
+        )
+        .await
+        .expect("failed to start embedded server");
+        let port = server.port();
+
         let conn = Connection::new(
             "127.0.0.1".to_string(),
-            32222,
-            "default".to_string(),
+            port,
+            "tester".to_string(),
             AuthMethod::PublicKey {
-                private_key_path: "~/.orbstack/ssh/id_ed25519".to_string(),
+                private_key_path: key_path.to_string_lossy().to_string(),
                 passphrase: None,
             },
         );
         let client = SshSession::connect(&conn).await.unwrap();
+
+        let mut client_clone = client.clone();
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let cancel_clone = cancel_token.clone();
+        tokio::spawn(async move {
+            client_clone
+                .read_loop(
+                    Arc::new(tokio::sync::Mutex::new(EchoByteProcessor {})),
+                    cancel_clone,
+                    None, // No event sender for test
+                )
+                .await;
+        });
+
+        // make sure the read_loop is started before writing
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        client.write_all(b"pwd\n").await.unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        cancel_token.cancel();
+
         client.close().await.unwrap();
+
+        server.shutdown().await.unwrap();
+
+        // Clean up the temporary key file
+        let _ = std::fs::remove_file(key_path);
     }
 
     #[tokio::test]
