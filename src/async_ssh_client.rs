@@ -150,92 +150,167 @@ impl SshSession {
             cancellable_timeout(timeout.unwrap_or(Duration::from_secs(10)), f, cancel).await?
         };
 
-        let auth_result = session.authenticate_none(&connection.username).await?;
-        let mut interactive = false;
-        if let AuthResult::Failure {
-            remaining_methods, ..
-        } = auth_result
-        {
-            if remaining_methods.contains(&MethodKind::KeyboardInteractive) {
-                interactive = true;
-            }
-        }
-
-        match &connection.auth_method {
-            AuthMethod::Password(password) => {
-                if interactive {
-                    let mut step1 = session
-                        .authenticate_keyboard_interactive_start(&connection.username, None)
-                        .await?;
-                    loop {
-                        match step1 {
-                            KeyboardInteractiveAuthResponse::Success => {
-                                break;
-                            }
-                            KeyboardInteractiveAuthResponse::Failure { .. } => {
-                                return Err(AppError::AuthenticationError(
-                                    "Authentication failed".to_string(),
-                                ));
-                            }
-                            KeyboardInteractiveAuthResponse::InfoRequest {
-                                ref prompts, ..
-                            } => {
-                                if prompts.is_empty() {
-                                    step1 = session
-                                        .authenticate_keyboard_interactive_respond(vec![])
-                                        .await?;
-                                } else {
-                                    step1 = session
-                                        .authenticate_keyboard_interactive_respond(vec![
-                                            password.clone(),
-                                        ])
-                                        .await?;
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    let auth_result = session
-                        .authenticate_password(&connection.username, password)
-                        .await?;
-                    if !auth_result.success() {
-                        return Err(AppError::AuthenticationError(
-                            "Password authentication failed".to_string(),
-                        ));
-                    }
-                }
-            }
-            AuthMethod::PublicKey {
-                private_key_path,
-                passphrase,
-            } => {
-                let algo = session.best_supported_rsa_hash().await?.flatten();
-                let key_path = if let Some(path) = private_key_path.strip_prefix("~/") {
-                    let home = env::var_os("HOME").ok_or_else(|| {
-                        AppError::SshConnectionError(
-                            "HOME environment variable is not set".to_string(),
-                        )
-                    })?;
-                    PathBuf::from(home).join(path)
-                } else {
-                    PathBuf::from(private_key_path)
-                };
-                let private_key = keys::load_secret_key(key_path, passphrase.as_deref())
-                    .map_err(|e| AppError::AuthenticationError(e.to_string()))?;
-                let private_key_with_hash_alg =
-                    PrivateKeyWithHashAlg::new(Arc::new(private_key), algo);
-                let auth_result = session
-                    .authenticate_publickey(&connection.username, private_key_with_hash_alg)
-                    .await?;
-                if !auth_result.success() {
-                    return Err(AppError::AuthenticationError(
-                        "Public key authentication failed".to_string(),
-                    ));
-                }
-            }
-        }
+        Self::authenticate_session(&mut session, connection).await?;
 
         Ok((session, server_key))
+    }
+
+    async fn authenticate_session(
+        session: &mut client::Handle<SshClient>,
+        connection: &Connection,
+    ) -> Result<()> {
+        let username = &connection.username;
+        let mut attempted = Vec::new();
+        let mut auth_result = session.authenticate_none(username).await?;
+
+        loop {
+            if auth_result.success() {
+                return Ok(());
+            }
+
+            let methods: Vec<MethodKind> = match &auth_result {
+                AuthResult::Failure {
+                    remaining_methods, ..
+                } => remaining_methods.iter().copied().collect(),
+                AuthResult::Success => unreachable!(),
+            };
+            let Some(next_method) = methods.iter().copied().find(|method| {
+                !attempted.contains(method)
+                    && Self::supports_method(*method, &connection.auth_method)
+            }) else {
+                let offered = Self::format_method_list(&methods);
+                return Err(AppError::AuthenticationError(format!(
+                    "Server does not offer a supported authentication method. Offered: {offered}"
+                )));
+            };
+
+            attempted.push(next_method);
+            auth_result = match next_method {
+                MethodKind::Password => {
+                    let password = Self::password_from_auth(&connection.auth_method)?;
+                    session.authenticate_password(username, password).await?
+                }
+                MethodKind::KeyboardInteractive => {
+                    let password = Self::password_from_auth(&connection.auth_method)?;
+                    Self::authenticate_keyboard_interactive(session, username, password).await?;
+                    AuthResult::Success
+                }
+                MethodKind::PublicKey => {
+                    Self::authenticate_public_key(session, username, &connection.auth_method)
+                        .await?
+                }
+                MethodKind::None | MethodKind::HostBased => unreachable!(),
+            };
+        }
+    }
+
+    fn supports_method(method: MethodKind, auth_method: &AuthMethod) -> bool {
+        matches!(
+            (method, auth_method),
+            (MethodKind::Password, AuthMethod::Password(_))
+                | (MethodKind::KeyboardInteractive, AuthMethod::Password(_))
+                | (MethodKind::PublicKey, AuthMethod::PublicKey { .. })
+        )
+    }
+
+    fn format_method_list(methods: &[MethodKind]) -> String {
+        if methods.is_empty() {
+            return "none".to_string();
+        }
+        methods
+            .iter()
+            .map(|method| {
+                let label: &'static str = method.into();
+                label
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    async fn authenticate_keyboard_interactive(
+        session: &mut client::Handle<SshClient>,
+        username: &str,
+        password: &str,
+    ) -> Result<()> {
+        let mut response = session
+            .authenticate_keyboard_interactive_start(username, None)
+            .await?;
+
+        loop {
+            match response {
+                KeyboardInteractiveAuthResponse::Success => break,
+                KeyboardInteractiveAuthResponse::Failure { .. } => {
+                    return Err(AppError::AuthenticationError(
+                        "Keyboard-interactive authentication failed".to_string(),
+                    ));
+                }
+                KeyboardInteractiveAuthResponse::InfoRequest { ref prompts, .. } => {
+                    let responses = if prompts.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![password.to_owned(); prompts.len()]
+                    };
+                    response = session
+                        .authenticate_keyboard_interactive_respond(responses)
+                        .await?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn authenticate_public_key(
+        session: &mut client::Handle<SshClient>,
+        username: &str,
+        auth_method: &AuthMethod,
+    ) -> Result<AuthResult> {
+        let AuthMethod::PublicKey {
+            private_key_path,
+            passphrase,
+        } = auth_method
+        else {
+            return Err(AppError::AuthenticationError(
+                "Server requested public key authentication, but the connection is not configured for it".to_string(),
+            ));
+        };
+
+        let key_path = Self::resolve_private_key_path(private_key_path)?;
+        let algo = session.best_supported_rsa_hash().await?.flatten();
+        let private_key = keys::load_secret_key(key_path, passphrase.as_deref())
+            .map_err(|e| AppError::AuthenticationError(e.to_string()))?;
+
+        let private_key_with_hash_alg = PrivateKeyWithHashAlg::new(Arc::new(private_key), algo);
+        let result = session
+            .authenticate_publickey(username, private_key_with_hash_alg)
+            .await?;
+        Ok(result)
+    }
+
+    fn password_from_auth(auth_method: &AuthMethod) -> Result<&str> {
+        if let AuthMethod::Password(password) = auth_method {
+            Ok(password.as_str())
+        } else {
+            Err(AppError::AuthenticationError(
+                "Server requested password authentication, but the connection is not configured for it".to_string(),
+            ))
+        }
+    }
+
+    fn resolve_private_key_path(private_key_path: &str) -> Result<PathBuf> {
+        if let Some(stripped) = private_key_path.strip_prefix("~/") {
+            let home = env::var_os("HOME").ok_or_else(|| {
+                AppError::SshConnectionError("HOME environment variable is not set".to_string())
+            })?;
+            Ok(PathBuf::from(home).join(stripped))
+        } else if private_key_path == "~" {
+            let home = env::var_os("HOME").ok_or_else(|| {
+                AppError::SshConnectionError("HOME environment variable is not set".to_string())
+            })?;
+            Ok(PathBuf::from(home))
+        } else {
+            Ok(PathBuf::from(private_key_path))
+        }
     }
 
     async fn new_session(
@@ -1022,7 +1097,7 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
         }
     }
 
-    struct EchoByteProcessor {}
+    struct EchoByteProcessor;
     impl ByteProcessor for EchoByteProcessor {
         fn process_bytes(&mut self, bytes: &[u8]) {
             println!("Received bytes:\n {}", String::from_utf8_lossy(bytes));
@@ -1049,7 +1124,7 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
         tokio::spawn(async move {
             client_clone
                 .read_loop(
-                    Arc::new(tokio::sync::Mutex::new(EchoByteProcessor {})),
+                    Arc::new(tokio::sync::Mutex::new(EchoByteProcessor)),
                     cancel_clone,
                     None, // No event sender for test
                 )
@@ -1118,7 +1193,7 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
         tokio::spawn(async move {
             client_clone
                 .read_loop(
-                    Arc::new(tokio::sync::Mutex::new(EchoByteProcessor {})),
+                    Arc::new(tokio::sync::Mutex::new(EchoByteProcessor)),
                     cancel_clone,
                     None, // No event sender for test
                 )
