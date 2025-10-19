@@ -38,7 +38,10 @@ pub async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
         }
         KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             // Ctrl+L: Load from SSH config
-            if let AppMode::FormNew { form, .. } = &mut app.mode {
+            if let AppMode::FormNew {
+                auto_auth, form, ..
+            } = &mut app.mode
+            {
                 let host_pattern = form.get_host_value().trim().to_string();
 
                 if host_pattern.is_empty() {
@@ -85,6 +88,9 @@ pub async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                             form.private_key_path.delete_line_by_head();
                             form.private_key_path.delete_line_by_end();
                             form.private_key_path.insert_str(identity_file);
+                        } else {
+                            // No identity file found - use auto-auth here so we can skip auth validation
+                            *auto_auth = true;
                         }
 
                         // Set display name to the original host pattern
@@ -101,8 +107,11 @@ pub async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
             }
         }
         KeyCode::Enter => {
-            if let AppMode::FormNew { form, .. } = &mut app.mode {
-                match form.validate() {
+            if let AppMode::FormNew {
+                auto_auth, form, ..
+            } = &mut app.mode
+            {
+                match form.validate(*auto_auth) {
                     Ok(_) => {
                         let user = form.get_username_value().trim().to_string();
 
@@ -114,8 +123,11 @@ pub async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                                     .to_string(),
                                 passphrase: None,
                             }
-                        } else {
+                        } else if !form.get_password_value().trim().is_empty() {
                             AuthMethod::Password(form.get_password_value().trim().to_string())
+                        } else {
+                            // Both password and private_key_path are empty - use AutoLoadKey
+                            AuthMethod::AutoLoadKey
                         };
 
                         let mut conn = Connection::new(
@@ -215,7 +227,9 @@ pub async fn handle_form_edit_key<B: Backend + Write>(app: &mut App<B>, key: Key
                 current_selected,
             } = &mut app.mode
             {
-                if let Err(e) = form.validate() {
+                if let Err(e) =
+                    form.validate(matches!(original.auth_method, AuthMethod::AutoLoadKey))
+                {
                     app.error = Some(AppError::ValidationError(e));
                     return KeyFlow::Continue;
                 }

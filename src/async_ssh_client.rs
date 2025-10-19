@@ -17,6 +17,14 @@ use russh_sftp::protocol::{FileAttributes, OpenFlags};
 use crate::config::manager::{AuthMethod, Connection};
 use crate::error::{AppError, Result};
 
+const STANDARD_KEY_PATHS: &[&str] = &[
+    "~/.ssh/id_rsa",
+    "~/.ssh/id_ecdsa",
+    "~/.ssh/id_ecdsa_sk",
+    "~/.ssh/id_ed25519",
+    "~/.ssh/id_ed25519_sk",
+];
+
 pub(crate) trait ByteProcessor {
     fn process_bytes(&mut self, bytes: &[u8]);
 }
@@ -195,10 +203,15 @@ impl SshSession {
                     Self::authenticate_keyboard_interactive(session, username, password).await?;
                     AuthResult::Success
                 }
-                MethodKind::PublicKey => {
-                    Self::authenticate_public_key(session, username, &connection.auth_method)
-                        .await?
-                }
+                MethodKind::PublicKey => match &connection.auth_method {
+                    AuthMethod::AutoLoadKey => {
+                        Self::authenticate_auto_load_key(session, username).await?
+                    }
+                    _ => {
+                        Self::authenticate_public_key(session, username, &connection.auth_method)
+                            .await?
+                    }
+                },
                 MethodKind::None | MethodKind::HostBased => unreachable!(),
             };
         }
@@ -210,6 +223,7 @@ impl SshSession {
             (MethodKind::Password, AuthMethod::Password(_))
                 | (MethodKind::KeyboardInteractive, AuthMethod::Password(_))
                 | (MethodKind::PublicKey, AuthMethod::PublicKey { .. })
+                | (MethodKind::PublicKey, AuthMethod::AutoLoadKey)
         )
     }
 
@@ -285,6 +299,59 @@ impl SshSession {
             .authenticate_publickey(username, private_key_with_hash_alg)
             .await?;
         Ok(result)
+    }
+
+    async fn authenticate_auto_load_key(
+        session: &mut client::Handle<SshClient>,
+        username: &str,
+    ) -> Result<AuthResult> {
+        let mut last_error = None;
+
+        for key_path in STANDARD_KEY_PATHS {
+            let expanded_path = match Self::resolve_private_key_path(key_path) {
+                Ok(path) => path,
+                Err(_) => continue,
+            };
+
+            // Skip if key doesn't exist
+            if !expanded_path.exists() {
+                continue;
+            }
+
+            // Try loading key with no passphrase (skip if encrypted)
+            let private_key = match keys::load_secret_key(&expanded_path, None) {
+                Ok(key) => key,
+                Err(_) => {
+                    last_error = Some(format!(
+                        "Key at {} requires passphrase or is invalid",
+                        key_path
+                    ));
+                    continue;
+                }
+            };
+
+            let algo = match session.best_supported_rsa_hash().await {
+                Ok(algo) => algo.flatten(),
+                Err(_) => continue,
+            };
+            let private_key_with_hash_alg = PrivateKeyWithHashAlg::new(Arc::new(private_key), algo);
+
+            match session
+                .authenticate_publickey(username, private_key_with_hash_alg)
+                .await
+            {
+                Ok(result) if result.success() => return Ok(result),
+                Ok(_) | Err(_) => {
+                    last_error = Some(format!("Authentication failed with key: {}", key_path));
+                    continue;
+                }
+            }
+        }
+
+        Err(AppError::AuthenticationError(format!(
+            "Auto-load key authentication failed. Tried standard key paths but none worked. {}",
+            last_error.unwrap_or_default()
+        )))
     }
 
     fn password_from_auth(auth_method: &AuthMethod) -> Result<&str> {
@@ -1267,5 +1334,97 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
         } else {
             unreachable!();
         }
+    }
+
+    #[tokio::test]
+    async fn test_connect_embedded_server_auto_load_key() {
+        use std::io::Write;
+
+        // Create a temporary directory for SSH keys
+        let temp_dir = std::env::temp_dir().join("test_ssh_auto_load");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        // Create a fake .ssh directory structure
+        let ssh_dir = temp_dir.join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).unwrap();
+
+        // Write one of the standard keys (id_ed25519) to the temp location
+        let key_path = ssh_dir.join("id_ed25519");
+        let mut key_file = std::fs::File::create(&key_path).unwrap();
+        key_file
+            .write_all(TEST_CLIENT_PRIVATE_KEY.as_bytes())
+            .unwrap();
+        drop(key_file);
+
+        // Set appropriate permissions (Unix-like systems only)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&key_path).unwrap().permissions();
+            perms.set_mode(0o600);
+            std::fs::set_permissions(&key_path, perms).unwrap();
+        }
+
+        // Temporarily override HOME to point to our temp dir
+        let original_home = std::env::var("HOME").ok();
+        unsafe {
+            std::env::set_var("HOME", &temp_dir);
+        }
+
+        // Start the test server with public key auth
+        let server = EmbeddedSshServer::start_with_auth(
+            "tester",
+            "testerpass",
+            Some(TEST_CLIENT_PUBLIC_KEY.to_string()),
+        )
+        .await
+        .expect("failed to start embedded server");
+        let port = server.port();
+
+        // Create connection with AutoLoadKey
+        let conn = Connection::new(
+            "127.0.0.1".to_string(),
+            port,
+            "tester".to_string(),
+            AuthMethod::AutoLoadKey,
+        );
+
+        // Test connection
+        let client = SshSession::connect(&conn).await.unwrap();
+
+        let mut client_clone = client.clone();
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let cancel_clone = cancel_token.clone();
+        tokio::spawn(async move {
+            client_clone
+                .read_loop(
+                    Arc::new(tokio::sync::Mutex::new(EchoByteProcessor)),
+                    cancel_clone,
+                    None,
+                )
+                .await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        client.write_all(b"pwd\n").await.unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        cancel_token.cancel();
+        client.close().await.unwrap();
+        server.shutdown().await.unwrap();
+
+        // Restore original HOME
+        unsafe {
+            if let Some(home) = original_home {
+                std::env::set_var("HOME", home);
+            } else {
+                std::env::remove_var("HOME");
+            }
+        }
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
