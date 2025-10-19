@@ -126,6 +126,8 @@ pub enum AuthMethod {
         )]
         passphrase: Option<String>,
     },
+    #[serde(rename = "auto_load_key")]
+    AutoLoadKey,
 }
 
 impl Connection {

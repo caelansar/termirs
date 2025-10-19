@@ -128,7 +128,7 @@ impl ConnectionForm {
         &self.display_name.lines()[0]
     }
 
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self, auto_auth: bool) -> Result<(), String> {
         if self.get_host_value().trim().is_empty() {
             return Err("Host is required".into());
         }
@@ -138,7 +138,10 @@ impl ConnectionForm {
         if self.get_username_value().trim().is_empty() {
             return Err("Username is required".into());
         }
-        if self.get_password_value().is_empty() && self.get_private_key_path_value().is_empty() {
+        if !auto_auth
+            && self.get_password_value().is_empty()
+            && self.get_private_key_path_value().is_empty()
+        {
             return Err("Password or private key is required".into());
         }
         if !self.get_port_value().is_empty() && self.get_port_value().parse::<u16>().is_err() {
@@ -180,6 +183,9 @@ impl ConnectionForm {
                 ..
             } => {
                 private_key_path.insert_str(path);
+            }
+            AuthMethod::AutoLoadKey => {
+                // No fields to populate for auto-load key
             }
         }
 
@@ -235,6 +241,7 @@ pub fn draw_connection_list(
             auth_method: match &c.auth_method {
                 AuthMethod::Password(_) => "password",
                 AuthMethod::PublicKey { .. } => "public key",
+                AuthMethod::AutoLoadKey => "auto-load key",
             },
             last_used: c
                 .last_used
@@ -322,7 +329,7 @@ pub fn draw_connection_list(
             Constraint::Min(8),     // Host (reduced from 15 to 8)
             Constraint::Length(6),  // Port
             Constraint::Min(6),     // User (reduced from 12 to 6)
-            Constraint::Length(12), // Auth
+            Constraint::Length(16), // Auth
             Constraint::Length(16), // Created
             Constraint::Length(16), // Last Used
             Constraint::Length(1),  // Scrollbar

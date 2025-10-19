@@ -162,6 +162,7 @@ pub(crate) enum AppMode {
         search_input: TextArea<'static>,
     },
     FormNew {
+        auto_auth: bool,
         form: ConnectionForm,
         current_selected: usize,
     },
@@ -348,6 +349,7 @@ impl<B: Backend + Write> App<B> {
 
     pub(crate) fn go_to_form_new(&mut self) {
         self.mode = AppMode::FormNew {
+            auto_auth: false,
             form: ConnectionForm::new(),
             current_selected: self.current_selected(),
         };
