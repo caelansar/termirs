@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::convert::TryFrom;
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,7 +13,7 @@ use russh::client::{self, AuthResult, KeyboardInteractiveAuthResponse};
 use russh::keys::{self, PrivateKeyWithHashAlg, ssh_key};
 use russh::{Channel, ChannelMsg, Disconnect, MethodKind};
 use russh_sftp::client::rawsession::RawSftpSession;
-use russh_sftp::protocol::{FileAttributes, OpenFlags};
+use russh_sftp::protocol::{FileAttributes, OpenFlags, StatusCode};
 
 use crate::config::manager::{AuthMethod, Connection};
 use crate::error::{AppError, Result};
@@ -746,46 +747,60 @@ impl SshSession {
         // Optimized pipeline logic: concurrent read and write with ordered writes
         const MAX_CONCURRENT_READS: usize = 12; // Reasonable number of concurrent operations
         let mut read_futures = FuturesUnordered::new();
-        let mut write_queue: std::collections::VecDeque<(u64, Vec<u8>)> =
-            std::collections::VecDeque::new();
+        let mut write_queue: VecDeque<(u64, Vec<u8>)> = VecDeque::new();
         let mut next_write_offset = 0u64;
         let mut eof_reached = false;
+        let mut pending_reads: VecDeque<(u64, u32)> = VecDeque::new();
 
         // Wrap sftp in Arc to share between tasks
         let sftp = Arc::new(sftp);
 
         loop {
             // Check exit condition
-            if eof_reached && read_futures.is_empty() && write_queue.is_empty() {
+            if eof_reached
+                && read_futures.is_empty()
+                && write_queue.is_empty()
+                && pending_reads.is_empty()
+            {
                 break;
             }
 
             // Check if we can read more data
-            let can_read = read_futures.len() < MAX_CONCURRENT_READS && !eof_reached;
+            let can_read = read_futures.len() < MAX_CONCURRENT_READS
+                && (!eof_reached || !pending_reads.is_empty());
 
             // Start new read operations if we have capacity
             if can_read {
-                let current_offset = offset;
-                let chunk_size = CHUNK_SIZE;
-                let handle = remote_handle.handle.clone();
-                let sftp_clone = Arc::clone(&sftp);
+                let (current_offset, requested_len) =
+                    if let Some((pending_offset, pending_len)) = pending_reads.pop_front() {
+                        (pending_offset, pending_len)
+                    } else {
+                        let next_offset = offset;
+                        offset += CHUNK_SIZE as u64;
+                        (next_offset, CHUNK_SIZE as u32)
+                    };
 
-                let read_future = async move {
-                    let result = sftp_clone
-                        .read(&handle, current_offset, chunk_size as u32)
-                        .await;
-                    match result {
-                        Ok(data) => {
-                            let data_bytes = data.data;
-                            let is_eof = data_bytes.is_empty();
-                            (current_offset, data_bytes.len(), data_bytes, is_eof)
+                if requested_len > 0 {
+                    let handle = remote_handle.handle.clone();
+                    let sftp_clone = Arc::clone(&sftp);
+
+                    let read_future = async move {
+                        let result = sftp_clone
+                            .read(&handle, current_offset, requested_len)
+                            .await;
+                        match result {
+                            Ok(data) => Ok((current_offset, requested_len, data.data, false)),
+                            Err(russh_sftp::client::error::Error::Status(status))
+                                if status.status_code == StatusCode::Eof =>
+                            {
+                                Ok((current_offset, requested_len, Vec::new(), true))
+                            }
+                            Err(err) => Err(AppError::RusshSftpError(err)),
                         }
-                        Err(_) => (current_offset, 0, Vec::new(), true), // Treat error as EOF
-                    }
-                };
+                    };
 
-                read_futures.push(read_future);
-                offset += chunk_size as u64;
+                    read_futures.push(read_future);
+                }
             }
 
             // Process completed reads
@@ -796,16 +811,28 @@ impl SshSession {
 
                 read_result = read_futures.next(), if !read_futures.is_empty() => {
                     if let Some(result) = read_result {
-                        let (read_offset, bytes_in_chunk, data, is_eof) = result;
+                        let result = result?;
+                        let (read_offset, requested_len, data, is_eof) = result;
+                        let bytes_in_chunk = data.len();
+                        let bytes_in_chunk_u32 = u32::try_from(bytes_in_chunk).map_err(|_| {
+                            AppError::SftpError(
+                                "Received chunk larger than u32::MAX; unsupported transfer size"
+                                    .to_string(),
+                            )
+                        })?;
 
-                        if bytes_in_chunk == 0 || is_eof {
+                        if bytes_in_chunk_u32 == 0 || is_eof {
                             eof_reached = true;
-                        }
-
-                        if bytes_in_chunk > 0 {
+                        } else {
                             // Add to write queue with offset for ordering
                             write_queue.push_back((read_offset, data));
                             write_queue.make_contiguous().sort_by_key(|(offset, _)| *offset);
+
+                            if !is_eof && bytes_in_chunk_u32 < requested_len {
+                                let remaining = requested_len - bytes_in_chunk_u32;
+                                let next_offset = read_offset + u64::from(bytes_in_chunk_u32);
+                                pending_reads.push_back((next_offset, remaining));
+                            }
                         }
                     }
                 }
@@ -947,6 +974,7 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
 
     struct EmbeddedSshServer {
         port: u16,
+        temp_dir: Option<std::path::PathBuf>,
     }
 
     impl EmbeddedSshServer {
@@ -977,6 +1005,7 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
 
             let mut server = TestServer {
                 creds: Arc::new(credentials),
+                sftp_root: None,
             };
 
             // Spawn the server to run in the background
@@ -985,11 +1014,55 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
             // Give the server a moment to start
             tokio::time::sleep(Duration::from_millis(100)).await;
 
-            Ok(Self { port })
+            Ok(Self {
+                port,
+                temp_dir: None,
+            })
+        }
+
+        async fn start_with_sftp(username: &str, password: &str) -> io::Result<Self> {
+            let temp_dir = std::env::temp_dir().join(format!("sftp_test_{}", uuid::Uuid::new_v4()));
+            tokio::fs::create_dir_all(&temp_dir).await?;
+
+            let mut config = server::Config::default();
+            config.auth_rejection_time = Duration::from_millis(50);
+            let private_key = russh::keys::PrivateKey::from_openssh(TEST_SERVER_KEY)
+                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+            config.keys.push(private_key);
+
+            let config = Arc::new(config);
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+            let port = listener.local_addr()?.port();
+
+            let credentials = TestCredentials {
+                username: username.to_string(),
+                password: password.to_string(),
+                public_key: None,
+            };
+
+            let mut server = TestServer {
+                creds: Arc::new(credentials),
+                sftp_root: Some(temp_dir.clone()),
+            };
+
+            // Spawn the server to run in the background
+            tokio::spawn(async move { server.run_on_socket(config, &listener).await });
+
+            // Give the server a moment to start
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            Ok(Self {
+                port,
+                temp_dir: Some(temp_dir),
+            })
         }
 
         fn port(&self) -> u16 {
             self.port
+        }
+
+        fn temp_dir(&self) -> Option<&std::path::Path> {
+            self.temp_dir.as_deref()
         }
 
         async fn shutdown(self) -> io::Result<()> {
@@ -999,6 +1072,10 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
 
     impl Drop for EmbeddedSshServer {
         fn drop(&mut self) {
+            // Clean up temp directory if it exists
+            if let Some(temp_dir) = &self.temp_dir {
+                let _ = std::fs::remove_dir_all(temp_dir);
+            }
             // Server will be shut down when the task completes
         }
     }
@@ -1013,31 +1090,40 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
     #[derive(Clone)]
     struct TestServer {
         creds: Arc<TestCredentials>,
+        sftp_root: Option<std::path::PathBuf>,
     }
 
     impl server::Server for TestServer {
         type Handler = EmbeddedSshHandler;
 
         fn new_client(&mut self, _: Option<std::net::SocketAddr>) -> Self::Handler {
-            EmbeddedSshHandler::new(self.creds.clone())
+            EmbeddedSshHandler::new(self.creds.clone(), self.sftp_root.clone())
         }
 
         fn handle_session_error(
             &mut self,
             _error: <Self::Handler as russh::server::Handler>::Error,
         ) {
-            eprintln!("Session error: {:#?}", _error);
+            // eprintln!("Session error: {:#?}", _error);
         }
     }
 
     #[derive(Clone)]
     struct EmbeddedSshHandler {
         creds: Arc<TestCredentials>,
+        sftp_root: Option<std::path::PathBuf>,
+        sftp_buffer: Arc<tokio::sync::Mutex<Vec<u8>>>,
+        sftp_active: Arc<tokio::sync::Mutex<bool>>,
     }
 
     impl EmbeddedSshHandler {
-        fn new(creds: Arc<TestCredentials>) -> Self {
-            Self { creds }
+        fn new(creds: Arc<TestCredentials>, sftp_root: Option<std::path::PathBuf>) -> Self {
+            Self {
+                creds,
+                sftp_root,
+                sftp_buffer: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+                sftp_active: Arc::new(tokio::sync::Mutex::new(false)),
+            }
         }
 
         fn auth_methods(&self) -> Option<MethodSet> {
@@ -1155,12 +1241,430 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
             data: &[u8],
             session: &mut Session,
         ) -> std::result::Result<(), Self::Error> {
-            if data.eq_ignore_ascii_case(b"pwd\n") {
+            let is_sftp = *self.sftp_active.lock().await;
+
+            if is_sftp {
+                // Handle SFTP data
+                if let Some(sftp_root) = &self.sftp_root {
+                    let mut buffer = self.sftp_buffer.lock().await;
+                    buffer.extend_from_slice(data);
+
+                    // Process complete SFTP packets
+                    loop {
+                        if buffer.len() < 4 {
+                            break;
+                        }
+
+                        let packet_len =
+                            u32::from_be_bytes([buffer[0], buffer[1], buffer[2], buffer[3]])
+                                as usize;
+
+                        if buffer.len() < packet_len + 4 {
+                            break;
+                        }
+
+                        let packet = buffer.drain(..packet_len + 4).collect::<Vec<_>>();
+
+                        // Process SFTP packet
+                        if let Some(response) =
+                            Self::process_sftp_packet(&packet[4..], sftp_root).await
+                        {
+                            // Send response
+                            let mut response_with_len = Vec::with_capacity(response.len() + 4);
+                            response_with_len
+                                .extend_from_slice(&(response.len() as u32).to_be_bytes());
+                            response_with_len.extend_from_slice(&response);
+                            session.data(channel, CryptoVec::from_slice(&response_with_len))?;
+                        }
+                    }
+                }
+            } else if data.eq_ignore_ascii_case(b"pwd\n") {
                 session.data(channel, CryptoVec::from_slice(b"/cae\n"))?;
             } else {
                 session.data(channel, CryptoVec::from_slice(data))?;
             }
             Ok(())
+        }
+
+        async fn subsystem_request(
+            &mut self,
+            channel_id: ChannelId,
+            name: &str,
+            session: &mut Session,
+        ) -> std::result::Result<(), Self::Error> {
+            if name == "sftp" {
+                if self.sftp_root.is_some() {
+                    *self.sftp_active.lock().await = true;
+                    session.channel_success(channel_id)?;
+                    Ok(())
+                } else {
+                    session.channel_failure(channel_id)?;
+                    Ok(())
+                }
+            } else {
+                session.channel_failure(channel_id)?;
+                Ok(())
+            }
+        }
+    }
+
+    impl EmbeddedSshHandler {
+        async fn process_sftp_packet(
+            packet: &[u8],
+            sftp_root: &std::path::Path,
+        ) -> Option<Vec<u8>> {
+            if packet.is_empty() {
+                return None;
+            }
+
+            let packet_type = packet[0];
+
+            match packet_type {
+                1 => {
+                    // SSH_FXP_INIT
+                    // Response: SSH_FXP_VERSION
+                    let mut response = Vec::new();
+                    response.push(2); // SSH_FXP_VERSION
+                    response.extend_from_slice(&3u32.to_be_bytes()); // version 3
+                    Some(response)
+                }
+                3 => {
+                    // SSH_FXP_OPEN
+                    if let Ok((request_id, filename, flags, _attrs)) =
+                        Self::parse_open_request(&packet[1..])
+                    {
+                        Self::handle_open(request_id, &filename, flags, sftp_root).await
+                    } else {
+                        None
+                    }
+                }
+                4 => {
+                    // SSH_FXP_CLOSE
+                    if let Ok((request_id, _handle)) = Self::parse_close_request(&packet[1..]) {
+                        Self::handle_close(request_id).await
+                    } else {
+                        None
+                    }
+                }
+                5 => {
+                    // SSH_FXP_READ
+                    if let Ok((request_id, handle, offset, len)) =
+                        Self::parse_read_request(&packet[1..])
+                    {
+                        Self::handle_read(request_id, &handle, offset, len, sftp_root).await
+                    } else {
+                        None
+                    }
+                }
+                6 => {
+                    // SSH_FXP_WRITE
+                    if let Ok((request_id, handle, offset, data)) =
+                        Self::parse_write_request(&packet[1..])
+                    {
+                        Self::handle_write(request_id, &handle, offset, data, sftp_root).await
+                    } else {
+                        None
+                    }
+                }
+                _ => {
+                    // Unsupported operation
+                    None
+                }
+            }
+        }
+
+        fn parse_open_request(
+            data: &[u8],
+        ) -> std::result::Result<(u32, String, u32, FileAttributes), ()> {
+            let mut pos = 0;
+            if data.len() < 4 {
+                return Err(());
+            }
+            let request_id = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+            pos += 4;
+
+            if data.len() < pos + 4 {
+                return Err(());
+            }
+            let filename_len =
+                u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+                    as usize;
+            pos += 4;
+
+            if data.len() < pos + filename_len {
+                return Err(());
+            }
+            let filename = String::from_utf8_lossy(&data[pos..pos + filename_len]).to_string();
+            pos += filename_len;
+
+            if data.len() < pos + 4 {
+                return Err(());
+            }
+            let flags =
+                u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+
+            Ok((request_id, filename, flags, FileAttributes::empty()))
+        }
+
+        fn parse_close_request(data: &[u8]) -> std::result::Result<(u32, String), ()> {
+            let mut pos = 0;
+            if data.len() < 4 {
+                return Err(());
+            }
+            let request_id = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+            pos += 4;
+
+            if data.len() < pos + 4 {
+                return Err(());
+            }
+            let handle_len =
+                u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+                    as usize;
+            pos += 4;
+
+            if data.len() < pos + handle_len {
+                return Err(());
+            }
+            let handle = String::from_utf8_lossy(&data[pos..pos + handle_len]).to_string();
+
+            Ok((request_id, handle))
+        }
+
+        fn parse_read_request(data: &[u8]) -> std::result::Result<(u32, String, u64, u32), ()> {
+            let mut pos = 0;
+            if data.len() < 4 {
+                return Err(());
+            }
+            let request_id = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+            pos += 4;
+
+            if data.len() < pos + 4 {
+                return Err(());
+            }
+            let handle_len =
+                u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+                    as usize;
+            pos += 4;
+
+            if data.len() < pos + handle_len {
+                return Err(());
+            }
+            let handle = String::from_utf8_lossy(&data[pos..pos + handle_len]).to_string();
+            pos += handle_len;
+
+            if data.len() < pos + 8 {
+                return Err(());
+            }
+            let offset = u64::from_be_bytes([
+                data[pos],
+                data[pos + 1],
+                data[pos + 2],
+                data[pos + 3],
+                data[pos + 4],
+                data[pos + 5],
+                data[pos + 6],
+                data[pos + 7],
+            ]);
+            pos += 8;
+
+            if data.len() < pos + 4 {
+                return Err(());
+            }
+            let len = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+
+            Ok((request_id, handle, offset, len))
+        }
+
+        fn parse_write_request(
+            data: &[u8],
+        ) -> std::result::Result<(u32, String, u64, Vec<u8>), ()> {
+            let mut pos = 0;
+            if data.len() < 4 {
+                return Err(());
+            }
+            let request_id = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+            pos += 4;
+
+            if data.len() < pos + 4 {
+                return Err(());
+            }
+            let handle_len =
+                u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+                    as usize;
+            pos += 4;
+
+            if data.len() < pos + handle_len {
+                return Err(());
+            }
+            let handle = String::from_utf8_lossy(&data[pos..pos + handle_len]).to_string();
+            pos += handle_len;
+
+            if data.len() < pos + 8 {
+                return Err(());
+            }
+            let offset = u64::from_be_bytes([
+                data[pos],
+                data[pos + 1],
+                data[pos + 2],
+                data[pos + 3],
+                data[pos + 4],
+                data[pos + 5],
+                data[pos + 6],
+                data[pos + 7],
+            ]);
+            pos += 8;
+
+            if data.len() < pos + 4 {
+                return Err(());
+            }
+            let data_len =
+                u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+                    as usize;
+            pos += 4;
+
+            if data.len() < pos + data_len {
+                return Err(());
+            }
+            let file_data = data[pos..pos + data_len].to_vec();
+
+            Ok((request_id, handle, offset, file_data))
+        }
+
+        async fn handle_open(
+            request_id: u32,
+            filename: &str,
+            _flags: u32,
+            _sftp_root: &std::path::Path,
+        ) -> Option<Vec<u8>> {
+            // Create a simple handle (use filename as handle for simplicity)
+            let handle = filename.to_string();
+
+            let mut response = Vec::new();
+            response.push(102); // SSH_FXP_HANDLE
+            response.extend_from_slice(&request_id.to_be_bytes());
+            let handle_bytes = handle.as_bytes();
+            response.extend_from_slice(&(handle_bytes.len() as u32).to_be_bytes());
+            response.extend_from_slice(handle_bytes);
+
+            Some(response)
+        }
+
+        async fn handle_close(request_id: u32) -> Option<Vec<u8>> {
+            let mut response = Vec::new();
+            response.push(101); // SSH_FXP_STATUS
+            response.extend_from_slice(&request_id.to_be_bytes());
+            response.extend_from_slice(&0u32.to_be_bytes()); // SSH_FX_OK
+            // Empty error message
+            response.extend_from_slice(&0u32.to_be_bytes());
+            // Empty language tag
+            response.extend_from_slice(&0u32.to_be_bytes());
+            Some(response)
+        }
+
+        async fn handle_read(
+            request_id: u32,
+            handle: &str,
+            offset: u64,
+            len: u32,
+            sftp_root: &std::path::Path,
+        ) -> Option<Vec<u8>> {
+            use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+            let file_path = sftp_root.join(handle);
+
+            match tokio::fs::File::open(&file_path).await {
+                Ok(mut file) => {
+                    if file.seek(std::io::SeekFrom::Start(offset)).await.is_err() {
+                        return Self::create_error_response(request_id, 2); // SSH_FX_EOF
+                    }
+
+                    let mut buffer = vec![0u8; len as usize];
+                    match file.read(&mut buffer).await {
+                        Ok(0) => {
+                            // EOF
+                            Self::create_error_response(request_id, 1) // SSH_FX_EOF
+                        }
+                        Ok(n) => {
+                            buffer.truncate(n);
+                            let mut response = Vec::new();
+                            response.push(103); // SSH_FXP_DATA
+                            response.extend_from_slice(&request_id.to_be_bytes());
+                            response.extend_from_slice(&(buffer.len() as u32).to_be_bytes());
+                            response.extend_from_slice(&buffer);
+                            Some(response)
+                        }
+                        Err(_) => {
+                            Self::create_error_response(request_id, 2) // SSH_FX_FAILURE
+                        }
+                    }
+                }
+                Err(_) => {
+                    Self::create_error_response(request_id, 2) // SSH_FX_NO_SUCH_FILE
+                }
+            }
+        }
+
+        async fn handle_write(
+            request_id: u32,
+            handle: &str,
+            offset: u64,
+            data: Vec<u8>,
+            sftp_root: &std::path::Path,
+        ) -> Option<Vec<u8>> {
+            use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+
+            let file_path = sftp_root.join(handle);
+
+            // Ensure parent directory exists
+            if let Some(parent) = file_path.parent() {
+                let _ = tokio::fs::create_dir_all(parent).await;
+            }
+
+            match tokio::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&file_path)
+                .await
+            {
+                Ok(mut file) => {
+                    if file.seek(std::io::SeekFrom::Start(offset)).await.is_err() {
+                        return Self::create_error_response(request_id, 2); // SSH_FX_FAILURE
+                    }
+
+                    match file.write_all(&data).await {
+                        Ok(_) => {
+                            let mut response = Vec::new();
+                            response.push(101); // SSH_FXP_STATUS
+                            response.extend_from_slice(&request_id.to_be_bytes());
+                            response.extend_from_slice(&0u32.to_be_bytes()); // SSH_FX_OK
+                            // Empty error message
+                            response.extend_from_slice(&0u32.to_be_bytes());
+                            // Empty language tag
+                            response.extend_from_slice(&0u32.to_be_bytes());
+                            Some(response)
+                        }
+                        Err(_) => {
+                            Self::create_error_response(request_id, 2) // SSH_FX_FAILURE
+                        }
+                    }
+                }
+                Err(_) => {
+                    Self::create_error_response(request_id, 2) // SSH_FX_FAILURE
+                }
+            }
+        }
+
+        fn create_error_response(request_id: u32, error_code: u32) -> Option<Vec<u8>> {
+            let mut response = Vec::new();
+            response.push(101); // SSH_FXP_STATUS
+            response.extend_from_slice(&request_id.to_be_bytes());
+            response.extend_from_slice(&error_code.to_be_bytes());
+            // Empty error message
+            response.extend_from_slice(&0u32.to_be_bytes());
+            // Empty language tag
+            response.extend_from_slice(&0u32.to_be_bytes());
+            Some(response)
         }
     }
 
@@ -1426,5 +1930,177 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
 
         // Clean up
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    // Helper functions for SFTP tests
+    async fn create_test_file(path: &std::path::Path, size: usize) -> io::Result<()> {
+        use rand::RngCore;
+        let mut rng = rand::thread_rng();
+        let mut data = vec![0u8; size];
+        rng.fill_bytes(&mut data);
+        tokio::fs::write(path, data).await
+    }
+
+    async fn verify_file_content(
+        path1: &std::path::Path,
+        path2: &std::path::Path,
+    ) -> io::Result<bool> {
+        let content1 = tokio::fs::read(path1).await?;
+        let content2 = tokio::fs::read(path2).await?;
+        Ok(content1 == content2)
+    }
+
+    #[tokio::test]
+    async fn test_sftp_send_large_file() {
+        let server = EmbeddedSshServer::start_with_sftp("tester", "testerpass")
+            .await
+            .expect("failed to start embedded server");
+        let port = server.port();
+        let temp_dir = server.temp_dir().unwrap();
+
+        let conn = Connection::new(
+            "127.0.0.1".to_string(),
+            port,
+            "tester".to_string(),
+            AuthMethod::Password("testerpass".to_string()),
+        );
+
+        // Create a local test file
+        let local_file_path = std::env::temp_dir().join("test_large_file.txt");
+        create_test_file(&local_file_path, 80 * 1024 * 1024)
+            .await
+            .unwrap(); // 80 MB
+
+        // Upload the file
+        let remote_file_name = "uploaded_large_file.txt";
+        SshSession::sftp_send_file(
+            None,
+            &conn,
+            local_file_path.to_str().unwrap(),
+            remote_file_name,
+        )
+        .await
+        .expect("failed to send file");
+
+        // Verify the file exists on the server
+        let server_file_path = temp_dir.join(remote_file_name);
+        assert!(server_file_path.exists(), "File should exist on server");
+
+        // Verify content matches
+        assert!(
+            verify_file_content(&local_file_path, &server_file_path)
+                .await
+                .unwrap(),
+            "File content should match"
+        );
+
+        // Cleanup
+        let _ = tokio::fs::remove_file(&local_file_path).await;
+        server.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_sftp_receive_large_file() {
+        let server = EmbeddedSshServer::start_with_sftp("tester", "testerpass")
+            .await
+            .expect("failed to start embedded server");
+        let port = server.port();
+        let temp_dir = server.temp_dir().unwrap();
+
+        let conn = Connection::new(
+            "127.0.0.1".to_string(),
+            port,
+            "tester".to_string(),
+            AuthMethod::Password("testerpass".to_string()),
+        );
+
+        // Create a remote test file
+        let remote_file_name = "remote_large_file.txt";
+        let remote_file_path = temp_dir.join(remote_file_name);
+        create_test_file(&remote_file_path, 80 * 1024 * 1024)
+            .await
+            .unwrap(); // 80 MB
+
+        // Download the file
+        let local_file_path = std::env::temp_dir().join("downloaded_large_file.txt");
+        SshSession::sftp_receive_file(
+            None,
+            &conn,
+            remote_file_name,
+            local_file_path.to_str().unwrap(),
+        )
+        .await
+        .expect("failed to receive file");
+
+        // Verify the file exists locally
+        assert!(local_file_path.exists(), "File should exist locally");
+
+        // Verify content matches
+        assert!(
+            verify_file_content(&remote_file_path, &local_file_path)
+                .await
+                .unwrap(),
+            "File content should match"
+        );
+
+        // Cleanup
+        let _ = tokio::fs::remove_file(&local_file_path).await;
+        server.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_sftp_send_receive_roundtrip() {
+        let server = EmbeddedSshServer::start_with_sftp("tester", "testerpass")
+            .await
+            .expect("failed to start embedded server");
+        let port = server.port();
+
+        let conn = Connection::new(
+            "127.0.0.1".to_string(),
+            port,
+            "tester".to_string(),
+            AuthMethod::Password("testerpass".to_string()),
+        );
+
+        // Create an original test file
+        let original_file_path = std::env::temp_dir().join("original_file.txt");
+        create_test_file(&original_file_path, 50 * 1024)
+            .await
+            .unwrap(); // 50 KB
+
+        // Upload the file
+        let remote_file_name = "roundtrip_file.txt";
+        SshSession::sftp_send_file(
+            None,
+            &conn,
+            original_file_path.to_str().unwrap(),
+            remote_file_name,
+        )
+        .await
+        .expect("failed to send file");
+
+        // Download the file back
+        let downloaded_file_path = std::env::temp_dir().join("downloaded_roundtrip_file.txt");
+        SshSession::sftp_receive_file(
+            None,
+            &conn,
+            remote_file_name,
+            downloaded_file_path.to_str().unwrap(),
+        )
+        .await
+        .expect("failed to receive file");
+
+        // Verify the downloaded file matches the original
+        assert!(
+            verify_file_content(&original_file_path, &downloaded_file_path)
+                .await
+                .unwrap(),
+            "Round-trip file content should match original"
+        );
+
+        // Cleanup
+        let _ = tokio::fs::remove_file(&original_file_path).await;
+        let _ = tokio::fs::remove_file(&downloaded_file_path).await;
+        server.shutdown().await.unwrap();
     }
 }
