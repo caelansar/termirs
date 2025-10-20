@@ -2498,6 +2498,7 @@ dependencies = [
  "chrono",
  "crossterm",
  "futures",
+ "rand",
  "ratatui",
  "ratatui-explorer",
  "ring",
