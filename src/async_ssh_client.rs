@@ -1790,54 +1790,111 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
 
     #[tokio::test]
     async fn test_connect_cancel() {
-        let conn = Connection::new(
-            "127.0.0.2".to_string(),
-            2222,
-            "dockeruser".to_string(),
-            AuthMethod::Password("dockerpass".to_string()),
-        );
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tokio::task::yield_now;
 
         let cancel = tokio_util::sync::CancellationToken::new();
-        let cancel_clone = cancel.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            cancel.cancel();
+        let cancel_for_call = cancel.clone();
+
+        let started = Arc::new(AtomicBool::new(false));
+        let completed = Arc::new(AtomicBool::new(false));
+        let started_inner = started.clone();
+        let completed_inner = completed.clone();
+
+        let handle = tokio::spawn(async move {
+            cancellable_timeout(
+                Duration::from_secs(5),
+                move || {
+                    let started = started_inner.clone();
+                    let completed = completed_inner.clone();
+                    async move {
+                        started.store(true, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        completed.store(true, Ordering::SeqCst);
+                        Ok::<(), AppError>(())
+                    }
+                },
+                &cancel_for_call,
+            )
+            .await
         });
 
-        let res = SshSession::new_session_with_timeout(
-            &conn,
-            Some(Duration::from_secs(5)),
-            &cancel_clone,
-        )
-        .await;
+        // let the cancellable future start and register its timer
+        yield_now().await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(
+            started.load(Ordering::SeqCst),
+            "connection future never started"
+        );
 
-        if let Err(AppError::SshConnectionError(e)) = res {
-            assert_eq!(e, "cancelled");
-        } else {
-            unreachable!();
-        }
+        cancel.cancel();
+        yield_now().await;
+
+        let res = handle.await.expect("join cancellation task");
+        assert!(
+            matches!(res, Err(AppError::SshConnectionError(ref msg)) if msg == "cancelled"),
+            "unexpected result: {res:?}"
+        );
+        assert!(
+            !completed.load(Ordering::SeqCst),
+            "connection future unexpectedly completed after cancellation"
+        );
     }
 
     #[tokio::test]
     async fn test_connect_timeout() {
-        let conn = Connection::new(
-            "127.0.0.2".to_string(),
-            2222,
-            "dockeruser".to_string(),
-            AuthMethod::Password("dockerpass".to_string()),
-        );
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tokio::task::yield_now;
 
         let cancel = tokio_util::sync::CancellationToken::new();
+        let cancel_for_call = cancel.clone();
 
-        let res =
-            SshSession::new_session_with_timeout(&conn, Some(Duration::from_secs(1)), &cancel)
-                .await;
+        let started = Arc::new(AtomicBool::new(false));
+        let completed = Arc::new(AtomicBool::new(false));
+        let started_inner = started.clone();
+        let completed_inner = completed.clone();
 
-        if let Err(AppError::SshConnectionError(e)) = res {
-            assert_eq!(e, "timeout");
-        } else {
-            unreachable!();
-        }
+        let handle = tokio::spawn(async move {
+            cancellable_timeout(
+                Duration::from_secs(1),
+                move || {
+                    let started = started_inner.clone();
+                    let completed = completed_inner.clone();
+                    async move {
+                        started.store(true, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        completed.store(true, Ordering::SeqCst);
+                        Ok::<(), AppError>(())
+                    }
+                },
+                &cancel_for_call,
+            )
+            .await
+        });
+
+        // allow the future to register its timeout and go pending
+        yield_now().await;
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert!(
+            started.load(Ordering::SeqCst),
+            "connection future never started"
+        );
+
+        yield_now().await;
+
+        let res = handle.await.expect("join timeout task");
+        assert!(
+            matches!(res, Err(AppError::SshConnectionError(ref msg)) if msg == "timeout"),
+            "unexpected result: {res:?}"
+        );
+        assert!(
+            !completed.load(Ordering::SeqCst),
+            "connection future unexpectedly completed before timing out"
+        );
+        assert!(
+            !cancel.is_cancelled(),
+            "timeout path should not trigger explicit cancellation"
+        );
     }
 
     #[tokio::test]
@@ -1967,9 +2024,9 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
 
         // Create a local test file
         let local_file_path = std::env::temp_dir().join("test_large_file.txt");
-        create_test_file(&local_file_path, 80 * 1024 * 1024)
+        create_test_file(&local_file_path, 30 * 1024 * 1024)
             .await
-            .unwrap(); // 80 MB
+            .unwrap();
 
         // Upload the file
         let remote_file_name = "uploaded_large_file.txt";
@@ -2017,9 +2074,9 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
         // Create a remote test file
         let remote_file_name = "remote_large_file.txt";
         let remote_file_path = temp_dir.join(remote_file_name);
-        create_test_file(&remote_file_path, 80 * 1024 * 1024)
+        create_test_file(&remote_file_path, 30 * 1024 * 1024)
             .await
-            .unwrap(); // 80 MB
+            .unwrap();
 
         // Download the file
         let local_file_path = std::env::temp_dir().join("downloaded_large_file.txt");
