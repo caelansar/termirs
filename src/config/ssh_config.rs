@@ -86,7 +86,7 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore]
+    #[ignore = "this test requires a real SSH config file in ~/.ssh/config"]
     fn test_query_ssh_config_real() {
         // This test verifies against your actual SSH config
         // Make sure you have "orb" configured in ~/.ssh/config
