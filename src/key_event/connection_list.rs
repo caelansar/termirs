@@ -62,6 +62,7 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
             // Open file explorer for the selected connection
             let selected_idx = app.current_selected();
             if let Some(conn) = app.config.connections().get(selected_idx).cloned() {
+                let _ = app.config.touch_last_used(&conn.id);
                 match app.go_to_file_explorer(conn, selected_idx).await {
                     Ok(_) => {}
                     Err(e) => {
