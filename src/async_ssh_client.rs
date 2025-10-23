@@ -1668,10 +1668,57 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
         }
     }
 
-    struct EchoByteProcessor;
-    impl ByteProcessor for EchoByteProcessor {
+    struct TestByteProcessor {
+        expected_lines: VecDeque<Vec<u8>>,
+        buffer: Vec<u8>,
+    }
+
+    impl TestByteProcessor {
+        fn with_expectations(expected: &[&[u8]]) -> Self {
+            Self {
+                expected_lines: expected.iter().map(|line| line.to_vec()).collect(),
+                buffer: Vec::new(),
+            }
+        }
+
+        fn assert_expectations_met(&self) {
+            assert!(
+                self.expected_lines.is_empty(),
+                "Missing SSH output lines: {:?}",
+                self.expected_lines
+                    .iter()
+                    .map(|line| String::from_utf8_lossy(line).into_owned())
+                    .collect::<Vec<_>>()
+            );
+            assert!(
+                self.buffer.is_empty(),
+                "Unprocessed trailing bytes: {}",
+                String::from_utf8_lossy(&self.buffer)
+            );
+        }
+    }
+
+    impl ByteProcessor for TestByteProcessor {
         fn process_bytes(&mut self, bytes: &[u8]) {
-            println!("Received bytes:\n {}", String::from_utf8_lossy(bytes));
+            self.buffer.extend_from_slice(bytes);
+
+            while let Some(pos) = self.buffer.iter().position(|&b| b == b'\n') {
+                let line = self.buffer.drain(..=pos).collect::<Vec<_>>();
+                let expected = self.expected_lines.pop_front().unwrap_or_else(|| {
+                    panic!(
+                        "Received unexpected SSH output line: {}",
+                        String::from_utf8_lossy(&line)
+                    )
+                });
+
+                assert_eq!(
+                    line,
+                    expected,
+                    "SSH output mismatch. expected '{}', got '{}'",
+                    String::from_utf8_lossy(&expected),
+                    String::from_utf8_lossy(&line)
+                );
+            }
         }
     }
 
@@ -1692,10 +1739,14 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
         let mut client_clone = client.clone();
         let cancel_token = tokio_util::sync::CancellationToken::new();
         let cancel_clone = cancel_token.clone();
-        tokio::spawn(async move {
+        let processor = Arc::new(tokio::sync::Mutex::new(
+            TestByteProcessor::with_expectations(&[b"Welcome to test shell\n", b"/cae\n"]),
+        ));
+        let reader_processor = processor.clone();
+        let read_handle = tokio::spawn(async move {
             client_clone
                 .read_loop(
-                    Arc::new(tokio::sync::Mutex::new(EchoByteProcessor)),
+                    reader_processor,
                     cancel_clone,
                     None, // No event sender for test
                 )
@@ -1710,6 +1761,12 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         cancel_token.cancel();
+        read_handle.await.unwrap();
+
+        {
+            let guard = processor.lock().await;
+            guard.assert_expectations_met();
+        }
 
         client.close().await.unwrap();
 
@@ -1761,10 +1818,14 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
         let mut client_clone = client.clone();
         let cancel_token = tokio_util::sync::CancellationToken::new();
         let cancel_clone = cancel_token.clone();
-        tokio::spawn(async move {
+        let processor = Arc::new(tokio::sync::Mutex::new(
+            TestByteProcessor::with_expectations(&[b"Welcome to test shell\n", b"/cae\n"]),
+        ));
+        let reader_processor = processor.clone();
+        let read_handle = tokio::spawn(async move {
             client_clone
                 .read_loop(
-                    Arc::new(tokio::sync::Mutex::new(EchoByteProcessor)),
+                    reader_processor,
                     cancel_clone,
                     None, // No event sender for test
                 )
@@ -1779,6 +1840,12 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         cancel_token.cancel();
+        read_handle.await.unwrap();
+
+        {
+            let guard = processor.lock().await;
+            guard.assert_expectations_met();
+        }
 
         client.close().await.unwrap();
 
@@ -1786,6 +1853,104 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
 
         // Clean up the temporary key file
         let _ = std::fs::remove_file(key_path);
+    }
+
+    #[tokio::test]
+    async fn test_connect_embedded_server_auto_load_key() {
+        use std::io::Write;
+
+        // Create a temporary directory for SSH keys
+        let temp_dir = std::env::temp_dir().join("test_ssh_auto_load");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        // Create a fake .ssh directory structure
+        let ssh_dir = temp_dir.join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).unwrap();
+
+        // Write one of the standard keys (id_ed25519) to the temp location
+        let key_path = ssh_dir.join("id_ed25519");
+        let mut key_file = std::fs::File::create(&key_path).unwrap();
+        key_file
+            .write_all(TEST_CLIENT_PRIVATE_KEY.as_bytes())
+            .unwrap();
+        drop(key_file);
+
+        // Set appropriate permissions (Unix-like systems only)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&key_path).unwrap().permissions();
+            perms.set_mode(0o600);
+            std::fs::set_permissions(&key_path, perms).unwrap();
+        }
+
+        // Temporarily override HOME to point to our temp dir
+        let original_home = std::env::var("HOME").ok();
+        unsafe {
+            std::env::set_var("HOME", &temp_dir);
+        }
+
+        // Start the test server with public key auth
+        let server = EmbeddedSshServer::start_with_auth(
+            "tester",
+            "testerpass",
+            Some(TEST_CLIENT_PUBLIC_KEY.to_string()),
+        )
+        .await
+        .expect("failed to start embedded server");
+        let port = server.port();
+
+        // Create connection with AutoLoadKey
+        let conn = Connection::new(
+            "127.0.0.1".to_string(),
+            port,
+            "tester".to_string(),
+            AuthMethod::AutoLoadKey,
+        );
+
+        // Test connection
+        let client = SshSession::connect(&conn).await.unwrap();
+
+        let mut client_clone = client.clone();
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let cancel_clone = cancel_token.clone();
+        let processor = Arc::new(tokio::sync::Mutex::new(
+            TestByteProcessor::with_expectations(&[b"Welcome to test shell\n", b"/cae\n"]),
+        ));
+        let reader_processor = processor.clone();
+        let read_handle = tokio::spawn(async move {
+            client_clone
+                .read_loop(reader_processor, cancel_clone, None)
+                .await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        client.write_all(b"pwd\n").await.unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        cancel_token.cancel();
+        read_handle.await.unwrap();
+
+        {
+            let guard = processor.lock().await;
+            guard.assert_expectations_met();
+        }
+        client.close().await.unwrap();
+        server.shutdown().await.unwrap();
+
+        // Restore original HOME
+        unsafe {
+            if let Some(home) = original_home {
+                std::env::set_var("HOME", home);
+            } else {
+                std::env::remove_var("HOME");
+            }
+        }
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[tokio::test]
@@ -1896,99 +2061,6 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
             "timeout path should not trigger explicit cancellation"
         );
     }
-
-    #[tokio::test]
-    async fn test_connect_embedded_server_auto_load_key() {
-        use std::io::Write;
-
-        // Create a temporary directory for SSH keys
-        let temp_dir = std::env::temp_dir().join("test_ssh_auto_load");
-        std::fs::create_dir_all(&temp_dir).unwrap();
-
-        // Create a fake .ssh directory structure
-        let ssh_dir = temp_dir.join(".ssh");
-        std::fs::create_dir_all(&ssh_dir).unwrap();
-
-        // Write one of the standard keys (id_ed25519) to the temp location
-        let key_path = ssh_dir.join("id_ed25519");
-        let mut key_file = std::fs::File::create(&key_path).unwrap();
-        key_file
-            .write_all(TEST_CLIENT_PRIVATE_KEY.as_bytes())
-            .unwrap();
-        drop(key_file);
-
-        // Set appropriate permissions (Unix-like systems only)
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&key_path).unwrap().permissions();
-            perms.set_mode(0o600);
-            std::fs::set_permissions(&key_path, perms).unwrap();
-        }
-
-        // Temporarily override HOME to point to our temp dir
-        let original_home = std::env::var("HOME").ok();
-        unsafe {
-            std::env::set_var("HOME", &temp_dir);
-        }
-
-        // Start the test server with public key auth
-        let server = EmbeddedSshServer::start_with_auth(
-            "tester",
-            "testerpass",
-            Some(TEST_CLIENT_PUBLIC_KEY.to_string()),
-        )
-        .await
-        .expect("failed to start embedded server");
-        let port = server.port();
-
-        // Create connection with AutoLoadKey
-        let conn = Connection::new(
-            "127.0.0.1".to_string(),
-            port,
-            "tester".to_string(),
-            AuthMethod::AutoLoadKey,
-        );
-
-        // Test connection
-        let client = SshSession::connect(&conn).await.unwrap();
-
-        let mut client_clone = client.clone();
-        let cancel_token = tokio_util::sync::CancellationToken::new();
-        let cancel_clone = cancel_token.clone();
-        tokio::spawn(async move {
-            client_clone
-                .read_loop(
-                    Arc::new(tokio::sync::Mutex::new(EchoByteProcessor)),
-                    cancel_clone,
-                    None,
-                )
-                .await;
-        });
-
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        client.write_all(b"pwd\n").await.unwrap();
-
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        cancel_token.cancel();
-        client.close().await.unwrap();
-        server.shutdown().await.unwrap();
-
-        // Restore original HOME
-        unsafe {
-            if let Some(home) = original_home {
-                std::env::set_var("HOME", home);
-            } else {
-                std::env::remove_var("HOME");
-            }
-        }
-
-        // Clean up
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
     // Helper functions for SFTP tests
     async fn create_test_file(path: &std::path::Path, size: usize) -> io::Result<()> {
         use rand::RngCore;
