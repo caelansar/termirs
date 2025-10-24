@@ -406,7 +406,7 @@ pub async fn handle_delete_confirmation_key<B: Backend + Write>(
         let current_selected = *current_selected;
 
         match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
                 // Confirm deletion
                 match app.config.remove_connection(&connection_id) {
                     Ok(_) => {

@@ -3698,7 +3698,7 @@ dependencies = [
 [[package]]
 name = "ssh2-config"
 version = "0.6.2"
-source = "git+https://github.com/caelansar/ssh2-config.git?branch=develop#4221906edfa1d7c4ebe06164202775b68e23a65f"
+source = "git+https://github.com/caelansar/ssh2-config.git?branch=develop#1bcf78d587ebff631bb3b75a5b08c8c538a292f9"
 dependencies = [
  "anyhow",
  "bitflags",

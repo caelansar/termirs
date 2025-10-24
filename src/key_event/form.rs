@@ -85,9 +85,12 @@ pub async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
 
                         // Set identity file if available
                         if let Some(identity_file) = &ssh_host.identity_file {
-                            form.private_key_path.delete_line_by_head();
-                            form.private_key_path.delete_line_by_end();
-                            form.private_key_path.insert_str(identity_file);
+                            if let Some(identity_file) = identity_file.first() {
+                                form.private_key_path.delete_line_by_head();
+                                form.private_key_path.delete_line_by_end();
+                                form.private_key_path
+                                    .insert_str(identity_file.to_string_lossy().to_string());
+                            }
                         } else {
                             // No identity file found - use auto-auth here so we can skip auth validation
                             *auto_auth = true;
