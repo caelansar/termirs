@@ -20,6 +20,8 @@ use crate::{CopyOperation, FileExplorerPane, filesystem::SftpFileSystem};
 /// * `remote_explorer` - The remote SFTP file explorer
 /// * `active_pane` - Which pane is currently active
 /// * `copy_operation` - Optional copy operation in progress
+/// * `search_mode` - Whether search mode is active
+/// * `search_query` - Current search query string
 pub fn draw_file_explorer(
     f: &mut Frame,
     area: Rect,
@@ -28,15 +30,28 @@ pub fn draw_file_explorer(
     remote_explorer: &mut ratatui_explorer::FileExplorer<SftpFileSystem>,
     active_pane: &FileExplorerPane,
     copy_operation: &Option<CopyOperation>,
+    search_mode: bool,
+    search_query: &str,
 ) {
-    // Main layout: header, content, footer
-    let main_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
+    // Main layout: header, content, footer (and optional search input)
+    let constraints = if search_mode {
+        vec![
             Constraint::Length(3), // Header
             Constraint::Min(1),    // Content (dual panes)
-            Constraint::Length(3), // Footer
-        ])
+            Constraint::Length(3), // Search input
+            Constraint::Length(1), // Footer
+        ]
+    } else {
+        vec![
+            Constraint::Length(3), // Header
+            Constraint::Min(1),    // Content (dual panes)
+            Constraint::Length(1), // Footer
+        ]
+    };
+
+    let main_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
         .split(area);
 
     // Render header
@@ -68,8 +83,13 @@ pub fn draw_file_explorer(
         copy_operation,
     );
 
-    // Render footer
-    draw_footer(f, main_layout[2], copy_operation);
+    // Render search input if in search mode
+    if search_mode {
+        draw_search_input(f, main_layout[2], search_query);
+        draw_footer(f, main_layout[3], copy_operation, search_mode);
+    } else {
+        draw_footer(f, main_layout[2], copy_operation, search_mode);
+    }
 }
 
 /// Draw the header showing connection name and copy status
@@ -163,7 +183,10 @@ fn draw_pane<F: ratatui_explorer::FileSystem>(
     explorer.widget_stateful().render(inner, f.buffer_mut());
 
     // Calculate scrollbar state
-    let total_items = explorer.files().len();
+    // let total_items = explorer.files().len();
+
+    let total_items = explorer.filtered_files().len();
+
     let selected = explorer.selected_idx();
 
     let mut scrollbar_state = ScrollbarState::new(total_items).position(selected);
@@ -184,21 +207,56 @@ fn draw_pane<F: ratatui_explorer::FileSystem>(
     // TODO: Show copy marker for files in copy mode
 }
 
+/// Draw the search input bar
+fn draw_search_input(f: &mut Frame, area: Rect, search_query: &str) {
+    let search_widget = Paragraph::new(search_query).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Search")
+            .style(Style::default().fg(Color::Cyan)),
+    );
+
+    f.render_widget(search_widget, area);
+}
+
 /// Draw the footer showing available keybindings
-fn draw_footer(f: &mut Frame, area: Rect, copy_operation: &Option<CopyOperation>) {
-    let footer_text = if copy_operation.is_some() {
+fn draw_footer(
+    f: &mut Frame,
+    area: Rect,
+    copy_operation: &Option<CopyOperation>,
+    search_mode: bool,
+) {
+    use ratatui::layout::{Alignment, Constraint, Direction, Layout};
+
+    let footer_layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
+
+    let hint_text = if search_mode {
+        "Enter/Esc: Exit Search   Backspace: Delete   Arrow Keys: Navigate"
+    } else if copy_operation.is_some() {
         "Esc: Cancel | Tab: Switch Pane | v: Paste | q: Quit"
     } else {
-        "↑↓/jk: Move | ←→: Dir | Tab: Switch | c: Copy | h: Hidden | r: Refresh | q: Quit"
+        "↑↓/jk: Move | ←→: Dir | Tab: Switch | c: Copy | /: Search | h: Hidden | r: Refresh | q: Quit"
     };
 
-    let footer = Paragraph::new(Line::from(vec![Span::styled(
-        footer_text,
+    let left = Paragraph::new(Line::from(Span::styled(
+        hint_text,
         Style::default()
             .fg(Color::White)
             .add_modifier(Modifier::DIM),
-    )]))
-    .block(Block::default().borders(Borders::ALL));
+    )))
+    .alignment(Alignment::Left);
 
-    f.render_widget(footer, area);
+    let right = Paragraph::new(Line::from(Span::styled(
+        format!("TermiRs v{}", env!("CARGO_PKG_VERSION")),
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::DIM),
+    )))
+    .alignment(Alignment::Right);
+
+    f.render_widget(left, footer_layout[0]);
+    f.render_widget(right, footer_layout[1]);
 }

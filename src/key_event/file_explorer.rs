@@ -18,9 +18,78 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
         active_pane,
         copy_operation,
         return_to,
+        search_mode,
+        search_query,
         ..
     } = &mut app.mode
     {
+        // Handle search mode first
+        if *search_mode {
+            match key.code {
+                KeyCode::Char(c) => {
+                    // Append character to search query
+                    search_query.push(c);
+
+                    // Apply filter and select first match
+                    match active_pane {
+                        FileExplorerPane::Local => {
+                            local_explorer.set_search_filter(Some(search_query.clone()));
+                            // Select first match if available
+                            if !local_explorer.files().is_empty() {
+                                local_explorer.set_selected_idx(0);
+                            }
+                        }
+                        FileExplorerPane::Remote => {
+                            remote_explorer.set_search_filter(Some(search_query.clone()));
+                            // Select first match if available
+                            if !remote_explorer.files().is_empty() {
+                                remote_explorer.set_selected_idx(0);
+                            }
+                        }
+                    }
+                    app.mark_redraw();
+                    return KeyFlow::Continue;
+                }
+                KeyCode::Backspace => {
+                    // Remove last character from search query
+                    search_query.pop();
+
+                    // Apply updated filter
+                    let filter = if search_query.is_empty() {
+                        None
+                    } else {
+                        Some(search_query.clone())
+                    };
+
+                    match active_pane {
+                        FileExplorerPane::Local => {
+                            local_explorer.set_search_filter(filter);
+                            if !search_query.is_empty() && !local_explorer.files().is_empty() {
+                                local_explorer.set_selected_idx(0);
+                            }
+                        }
+                        FileExplorerPane::Remote => {
+                            remote_explorer.set_search_filter(filter);
+                            if !search_query.is_empty() && !remote_explorer.files().is_empty() {
+                                remote_explorer.set_selected_idx(0);
+                            }
+                        }
+                    }
+                    app.mark_redraw();
+                    return KeyFlow::Continue;
+                }
+                KeyCode::Enter | KeyCode::Esc => {
+                    // Exit search mode
+                    *search_mode = false;
+                    app.mark_redraw();
+                    return KeyFlow::Continue;
+                }
+                _ => {
+                    return KeyFlow::Continue;
+                }
+            }
+        }
+
         // Handle copy mode cancellation first
         if key.code == KeyCode::Esc && copy_operation.is_some() {
             *copy_operation = None;
@@ -93,6 +162,11 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                         e
                     )));
                 }
+                // Clear search filter when changing directories
+                search_query.clear();
+                *search_mode = false;
+                local_explorer.set_search_filter(None);
+                remote_explorer.set_search_filter(None);
                 app.mark_redraw();
             }
 
@@ -112,6 +186,11 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                         e
                     )));
                 }
+                // Clear search filter when changing directories
+                search_query.clear();
+                *search_mode = false;
+                local_explorer.set_search_filter(None);
+                remote_explorer.set_search_filter(None);
                 app.mark_redraw();
             }
 
@@ -228,6 +307,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                             sftp_session,
                             ssh_connection,
                             channel,
+                            search_mode,
+                            search_query,
                         } = old_mode
                         {
                             // Create channel for communication with background task
@@ -252,6 +333,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                                 sftp_session,
                                 ssh_connection: ssh_connection.clone(),
                                 channel: None, // Channel will be consumed by transfer
+                                search_mode,
+                                search_query,
                             };
 
                             // Transition to progress mode
@@ -442,6 +525,16 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                         e
                     )));
                 }
+                app.mark_redraw();
+            }
+
+            // Enter search mode with '/'
+            KeyCode::Char('/') => {
+                *search_mode = true;
+                search_query.clear();
+                // Clear any existing filters to show all items
+                local_explorer.set_search_filter(None);
+                remote_explorer.set_search_filter(None);
                 app.mark_redraw();
             }
 

@@ -107,6 +107,8 @@ pub(crate) enum ScpReturnMode {
         sftp_session: Arc<russh_sftp::client::SftpSession>,
         ssh_connection: Connection,
         channel: Option<russh::Channel<russh::client::Msg>>,
+        search_mode: bool,
+        search_query: String,
     },
 }
 
@@ -139,6 +141,8 @@ impl ScpReturnMode {
                 return_to,
                 sftp_session,
                 ssh_connection,
+                search_mode,
+                search_query,
                 ..
             } => ScpReturnMode::FileExplorer {
                 connection_name: connection_name.clone(),
@@ -150,6 +154,8 @@ impl ScpReturnMode {
                 sftp_session: sftp_session.clone(),
                 ssh_connection: ssh_connection.clone(),
                 channel: None,
+                search_mode: *search_mode,
+                search_query: search_query.clone(),
             },
         }
     }
@@ -204,6 +210,8 @@ pub(crate) enum AppMode {
         sftp_session: Arc<russh_sftp::client::SftpSession>,
         ssh_connection: Connection,
         channel: Option<russh::Channel<russh::client::Msg>>,
+        search_mode: bool,
+        search_query: String,
     },
 }
 
@@ -495,6 +503,8 @@ impl<B: Backend + Write> App<B> {
             sftp_session,
             ssh_connection: conn,
             channel: Some(channel),
+            search_mode: false,
+            search_query: String::new(),
         };
         self.needs_redraw = true;
         Ok(())
@@ -714,6 +724,8 @@ impl<B: Backend + Write> App<B> {
                             remote_explorer,
                             active_pane,
                             copy_operation,
+                            search_mode,
+                            search_query,
                             ..
                         } => {
                             draw_file_explorer(
@@ -724,6 +736,8 @@ impl<B: Backend + Write> App<B> {
                                 remote_explorer,
                                 active_pane,
                                 copy_operation,
+                                *search_mode,
+                                search_query,
                             );
                         }
                     }
@@ -750,6 +764,8 @@ impl<B: Backend + Write> App<B> {
                             remote_explorer,
                             active_pane,
                             copy_operation,
+                            search_mode,
+                            search_query,
                             ..
                         } => {
                             draw_file_explorer(
@@ -760,6 +776,8 @@ impl<B: Backend + Write> App<B> {
                                 remote_explorer,
                                 active_pane,
                                 copy_operation,
+                                *search_mode,
+                                search_query,
                             );
                         }
                     }
@@ -777,6 +795,8 @@ impl<B: Backend + Write> App<B> {
                     remote_explorer,
                     active_pane,
                     copy_operation,
+                    search_mode,
+                    search_query,
                     ..
                 } => {
                     draw_file_explorer(
@@ -787,6 +807,8 @@ impl<B: Backend + Write> App<B> {
                         remote_explorer,
                         active_pane,
                         copy_operation,
+                        *search_mode,
+                        search_query,
                     );
                 }
             }
@@ -959,6 +981,8 @@ impl<B: Backend + Write> App<B> {
                                         sftp_session,
                                         ssh_connection,
                                         channel,
+                                        search_mode,
+                                        search_query,
                                     } => {
                                         // If transfer was successful, refresh the destination pane and select the transferred file
                                         if transfer_successful {
@@ -1018,6 +1042,8 @@ impl<B: Backend + Write> App<B> {
                                             sftp_session,
                                             ssh_connection,
                                             channel,
+                                            search_mode,
+                                            search_query,
                                         };
                                     }
                                 }
@@ -1061,6 +1087,8 @@ impl<B: Backend + Write> App<B> {
                                         sftp_session,
                                         ssh_connection,
                                         channel,
+                                        search_mode,
+                                        search_query,
                                     } => {
                                         // Return to file explorer mode
                                         self.mode = AppMode::FileExplorer {
@@ -1073,6 +1101,8 @@ impl<B: Backend + Write> App<B> {
                                             sftp_session,
                                             ssh_connection,
                                             channel,
+                                            search_mode,
+                                            search_query,
                                         };
                                     }
                                 }

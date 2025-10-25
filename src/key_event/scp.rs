@@ -372,6 +372,8 @@ pub async fn handle_scp_progress_key<B: Backend + Write>(
                     sftp_session,
                     ssh_connection,
                     channel,
+                    search_mode,
+                    search_query,
                 } => {
                     // Return to file explorer mode
                     app.mode = crate::AppMode::FileExplorer {
@@ -384,6 +386,8 @@ pub async fn handle_scp_progress_key<B: Backend + Write>(
                         sftp_session,
                         ssh_connection,
                         channel,
+                        search_mode,
+                        search_query,
                     };
                 }
             }
