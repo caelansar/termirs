@@ -2,10 +2,10 @@
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 
 use crate::{CopyOperation, FileExplorerPane, filesystem::SftpFileSystem};
@@ -142,21 +142,44 @@ fn draw_pane<F: ratatui_explorer::FileSystem>(
 
     if is_active {
         explorer.set_theme(
-            ratatui_explorer::Theme::default()
+            ratatui_explorer::Theme::new()
+                .with_item_style(Style::default().fg(Color::White))
+                .with_dir_style(Style::default().fg(Color::LightBlue))
                 .with_highlight_dir_style(Style::default().fg(Color::LightBlue).bg(Color::Cyan))
                 .with_highlight_item_style(Style::default().fg(Color::White).bg(Color::Cyan)),
         );
     } else {
         // Don't highlight the items and directories
         explorer.set_theme(
-            ratatui_explorer::Theme::default()
+            ratatui_explorer::Theme::new()
+                .with_item_style(Style::default().fg(Color::White))
+                .with_dir_style(Style::default().fg(Color::LightBlue))
                 .with_highlight_dir_style(Style::default().fg(Color::LightBlue))
                 .with_highlight_item_style(Style::default().fg(Color::White)),
         );
     }
 
-    let widget = explorer.widget();
-    f.render_widget(&widget, inner);
+    // Render the file explorer with stateful widget to track scroll position
+    explorer.widget_stateful().render(inner, f.buffer_mut());
+
+    // Calculate scrollbar state
+    let total_items = explorer.files().len();
+    let selected = explorer.selected_idx();
+
+    let mut scrollbar_state = ScrollbarState::new(total_items).position(selected);
+
+    // Render scrollbar on the right edge
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .style(border_style);
+
+    let scrollbar_area = inner.inner(Margin {
+        vertical: 0,
+        horizontal: 0,
+    });
+
+    f.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
 
     // TODO: Show copy marker for files in copy mode
 }
