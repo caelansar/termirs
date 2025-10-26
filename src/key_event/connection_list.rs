@@ -71,6 +71,10 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
                 }
             }
         }
+        KeyCode::Char('p') | KeyCode::Char('P') => {
+            // Open port forwarding manager
+            app.go_to_port_forwarding_list().await;
+        }
         KeyCode::Char('/') => {
             if let AppMode::ConnectionList {
                 search_mode,

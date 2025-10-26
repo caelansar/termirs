@@ -10,6 +10,7 @@ pub mod connected;
 pub mod connection_list;
 pub mod file_explorer;
 pub mod form;
+pub mod port_forwarding;
 pub mod scp;
 
 // Re-export commonly used items for convenience
@@ -17,6 +18,10 @@ pub use connected::handle_connected_key;
 pub use connection_list::handle_connection_list_key;
 pub use file_explorer::handle_file_explorer_key;
 pub use form::{handle_form_edit_key, handle_form_new_key};
+pub use port_forwarding::{
+    handle_port_forward_delete_confirmation_key, handle_port_forwarding_form_connection_select_key,
+    handle_port_forwarding_form_key, handle_port_forwarding_list_key,
+};
 pub use scp::{
     handle_delete_confirmation_key, handle_scp_form_dropdown_key, handle_scp_form_key,
     handle_scp_progress_key,
@@ -69,6 +74,21 @@ pub async fn handle_key_event<B: Backend + Write>(app: &mut App<B>, key: KeyEven
         AppMode::ScpProgress { .. } => handle_scp_progress_key(app, key).await,
         AppMode::DeleteConfirmation { .. } => handle_delete_confirmation_key(app, key).await,
         AppMode::FileExplorer { .. } => handle_file_explorer_key(app, key).await,
+        AppMode::PortForwardingList { .. } => handle_port_forwarding_list_key(app, key).await,
+        AppMode::PortForwardingFormNew {
+            select_connection_mode: true,
+            ..
+        }
+        | AppMode::PortForwardingFormEdit {
+            select_connection_mode: true,
+            ..
+        } => handle_port_forwarding_form_connection_select_key(app, key).await,
+        AppMode::PortForwardingFormNew { .. } | AppMode::PortForwardingFormEdit { .. } => {
+            handle_port_forwarding_form_key(app, key).await
+        }
+        AppMode::PortForwardDeleteConfirmation { .. } => {
+            handle_port_forward_delete_confirmation_key(app, key).await
+        }
     }
 }
 
@@ -101,9 +121,21 @@ pub async fn handle_paste_event<B: Backend + Write>(app: &mut App<B>, data: &str
             let textarea = form.focused_textarea_mut();
             textarea.insert_str(data);
         }
+        AppMode::PortForwardingFormNew { form, .. } => {
+            if let Some(textarea) = form.focused_textarea_mut() {
+                textarea.insert_str(data);
+            }
+        }
+        AppMode::PortForwardingFormEdit { form, .. } => {
+            if let Some(textarea) = form.focused_textarea_mut() {
+                textarea.insert_str(data);
+            }
+        }
         AppMode::ConnectionList { .. }
         | AppMode::ScpProgress { .. }
         | AppMode::DeleteConfirmation { .. }
-        | AppMode::FileExplorer { .. } => {}
+        | AppMode::FileExplorer { .. }
+        | AppMode::PortForwardingList { .. }
+        | AppMode::PortForwardDeleteConfirmation { .. } => {}
     }
 }

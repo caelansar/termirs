@@ -2,6 +2,7 @@ pub mod components;
 pub mod connection;
 pub mod file_explorer;
 pub mod popup;
+pub mod port_forwarding;
 pub mod scp;
 pub mod terminal;
 
@@ -11,6 +12,10 @@ pub use connection::{ConnectionForm, draw_connection_list};
 pub use file_explorer::draw_file_explorer;
 pub use popup::{
     draw_connection_form_popup, draw_delete_confirmation_popup, draw_error_popup, draw_info_popup,
+};
+pub use port_forwarding::{
+    PortForwardingForm, draw_port_forward_delete_confirmation_popup,
+    draw_port_forwarding_form_popup, draw_port_forwarding_list,
 };
 pub use scp::{ScpFocusField, ScpForm, ScpMode, draw_scp_popup, draw_scp_progress_popup};
 pub use terminal::{TerminalState, draw_terminal};

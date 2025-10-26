@@ -32,8 +32,10 @@ use error::{AppError, Result};
 use ui::{
     ConnectionForm, DropdownState, ScpForm, TerminalState, draw_connection_form_popup,
     draw_connection_list, draw_delete_confirmation_popup, draw_dropdown_with_rect,
-    draw_error_popup, draw_file_explorer, draw_info_popup, draw_scp_popup, draw_scp_progress_popup,
-    draw_terminal, rect_with_top_margin,
+    draw_error_popup, draw_file_explorer, draw_info_popup,
+    draw_port_forward_delete_confirmation_popup, draw_port_forwarding_form_popup,
+    draw_port_forwarding_list, draw_scp_popup, draw_scp_progress_popup, draw_terminal,
+    rect_with_top_margin,
 };
 
 impl crate::async_ssh_client::ByteProcessor for TerminalState {
@@ -213,6 +215,32 @@ pub(crate) enum AppMode {
         search_mode: bool,
         search_query: String,
     },
+    PortForwardingList {
+        selected: usize,
+        search_mode: bool,
+        search_input: TextArea<'static>,
+    },
+    PortForwardingFormNew {
+        form: crate::ui::PortForwardingForm,
+        current_selected: usize, // Port forwarding list position
+        select_connection_mode: bool,
+        connection_selected: usize, // Connection list position
+        connection_search_mode: bool,
+        connection_search_input: TextArea<'static>,
+    },
+    PortForwardingFormEdit {
+        form: crate::ui::PortForwardingForm,
+        current_selected: usize, // Port forwarding list position
+        select_connection_mode: bool,
+        connection_selected: usize, // Connection list position
+        connection_search_mode: bool,
+        connection_search_input: TextArea<'static>,
+    },
+    PortForwardDeleteConfirmation {
+        port_forward_name: String,
+        port_forward_id: String,
+        current_selected: usize,
+    },
 }
 
 /// SCP transfer progress state
@@ -280,6 +308,7 @@ pub(crate) struct App<B: Backend + Write> {
     pub(crate) error: Option<AppError>,
     pub(crate) info: Option<String>,
     pub(crate) config: ConfigManager,
+    pub(crate) port_forwarding_runtime: async_ssh_client::PortForwardingRuntime,
     terminal: Terminal<B>,
     needs_redraw: bool, // Track if UI needs redrawing
     event_tx: Option<tokio::sync::mpsc::Sender<AppEvent>>, // Event sender for SSH disconnect
@@ -315,6 +344,7 @@ impl<B: Backend + Write> App<B> {
             error: None,
             info: None,
             config: ConfigManager::new()?,
+            port_forwarding_runtime: async_ssh_client::PortForwardingRuntime::new(),
             terminal,
             needs_redraw: true, // Initial redraw needed
             event_tx: None,     // Will be set later
@@ -444,6 +474,64 @@ impl<B: Backend + Write> App<B> {
         self.needs_redraw = true; // Mode change requires redraw
     }
 
+    pub(crate) async fn go_to_port_forwarding_list(&mut self) {
+        self.go_to_port_forwarding_list_with_selected(0).await;
+    }
+
+    pub(crate) async fn go_to_port_forwarding_list_with_selected(&mut self, selected: usize) {
+        // Sync port forwarding status before showing the list
+        crate::key_event::port_forwarding::sync_port_forwarding_status(self).await;
+
+        self.mode = AppMode::PortForwardingList {
+            selected,
+            search_mode: false,
+            search_input: create_search_textarea(),
+        };
+        self.needs_redraw = true;
+    }
+
+    pub(crate) fn go_to_port_forwarding_form_new(&mut self) {
+        self.mode = AppMode::PortForwardingFormNew {
+            form: crate::ui::PortForwardingForm::new(),
+            current_selected: self.current_selected(),
+            select_connection_mode: false,
+            connection_selected: 0,
+            connection_search_mode: false,
+            connection_search_input: create_search_textarea(),
+        };
+        self.needs_redraw = true;
+    }
+
+    pub(crate) fn go_to_port_forwarding_form_edit(
+        &mut self,
+        form: crate::ui::PortForwardingForm,
+        _original: crate::config::manager::PortForward,
+    ) {
+        self.mode = AppMode::PortForwardingFormEdit {
+            form,
+            current_selected: self.current_selected(),
+            select_connection_mode: false,
+            connection_selected: 0,
+            connection_search_mode: false,
+            connection_search_input: create_search_textarea(),
+        };
+        self.needs_redraw = true;
+    }
+
+    pub(crate) fn go_to_port_forward_delete_confirmation(
+        &mut self,
+        port_forward_name: String,
+        port_forward_id: String,
+        current_selected: usize,
+    ) {
+        self.mode = AppMode::PortForwardDeleteConfirmation {
+            port_forward_name,
+            port_forward_id,
+            current_selected,
+        };
+        self.needs_redraw = true;
+    }
+
     pub(crate) async fn go_to_file_explorer(
         &mut self,
         conn: Connection,
@@ -569,6 +657,21 @@ impl<B: Backend + Write> App<B> {
             }
             AppMode::FileExplorer { return_to, .. } => *return_to,
             AppMode::FormNew { .. } => 0,
+            AppMode::PortForwardingList { selected, .. } => {
+                let len = self.config.port_forwards().len();
+                if len == 0 {
+                    0
+                } else {
+                    (*selected).min(len - 1)
+                }
+            }
+            AppMode::PortForwardingFormNew { .. } => 0,
+            AppMode::PortForwardingFormEdit {
+                current_selected, ..
+            }
+            | AppMode::PortForwardDeleteConfirmation {
+                current_selected, ..
+            } => *current_selected,
         }
     }
 
@@ -811,6 +914,323 @@ impl<B: Backend + Write> App<B> {
                         search_query,
                     );
                 }
+                AppMode::PortForwardingList {
+                    selected,
+                    search_mode,
+                    search_input,
+                } => {
+                    let connections = self.config.connections();
+                    let port_forwards = self.config.port_forwards();
+                    let search_query = &search_input.lines()[0];
+
+                    if *search_mode {
+                        // In search mode: custom layout with table, search input, and footer
+                        let layout = ratatui::layout::Layout::default()
+                            .direction(ratatui::layout::Direction::Vertical)
+                            .constraints([
+                                ratatui::layout::Constraint::Min(1),    // Table area
+                                ratatui::layout::Constraint::Length(3), // Search input area
+                                ratatui::layout::Constraint::Length(1), // Footer area
+                            ])
+                            .split(size);
+
+                        // Render the table in the first area
+                        draw_port_forwarding_list(
+                            layout[0],
+                            port_forwards,
+                            connections,
+                            *selected,
+                            *search_mode,
+                            search_query,
+                            f,
+                        );
+
+                        // Render search input in the second area
+                        search_input.set_block(
+                            ratatui::widgets::Block::default()
+                                .borders(ratatui::widgets::Borders::ALL)
+                                .title("Search")
+                                .style(
+                                    ratatui::style::Style::default()
+                                        .fg(ratatui::style::Color::Cyan),
+                                ),
+                        );
+                        f.render_widget(&*search_input, layout[1]);
+
+                        // Render footer in the third area
+                        let footer = ratatui::layout::Layout::default()
+                            .direction(ratatui::layout::Direction::Horizontal)
+                            .constraints([
+                                ratatui::layout::Constraint::Percentage(50),
+                                ratatui::layout::Constraint::Percentage(50),
+                            ])
+                            .split(layout[2]);
+
+                        let hint_text =
+                            "Enter: Apply Search   Esc: Exit Search   Arrow Keys: Move Cursor";
+                        let left = ratatui::widgets::Paragraph::new(ratatui::text::Line::from(
+                            ratatui::text::Span::styled(
+                                hint_text,
+                                ratatui::style::Style::default()
+                                    .fg(ratatui::style::Color::White)
+                                    .add_modifier(ratatui::style::Modifier::DIM),
+                            ),
+                        ))
+                        .alignment(ratatui::layout::Alignment::Left);
+
+                        let right = ratatui::widgets::Paragraph::new(ratatui::text::Line::from(
+                            ratatui::text::Span::styled(
+                                format!("TermiRs v{}", env!("CARGO_PKG_VERSION")),
+                                ratatui::style::Style::default()
+                                    .fg(ratatui::style::Color::White)
+                                    .add_modifier(ratatui::style::Modifier::DIM),
+                            ),
+                        ))
+                        .alignment(ratatui::layout::Alignment::Right);
+
+                        f.render_widget(left, footer[0]);
+                        f.render_widget(right, footer[1]);
+                    } else {
+                        // Normal mode: let draw_port_forwarding_list handle everything
+                        draw_port_forwarding_list(
+                            size,
+                            port_forwards,
+                            connections,
+                            *selected,
+                            *search_mode,
+                            search_query,
+                            f,
+                        );
+                    }
+                }
+                AppMode::PortForwardingFormNew {
+                    current_selected,
+                    select_connection_mode,
+                    connection_selected,
+                    connection_search_mode,
+                    connection_search_input,
+                    ..
+                } => {
+                    if *select_connection_mode {
+                        // Render connection list for selection
+                        let connections = self.config.connections();
+                        // Always use the search query from input, regardless of search mode
+                        let search_query = connection_search_input.lines()[0].as_str();
+
+                        if *connection_search_mode {
+                            // In search mode: custom layout with table, search input, and footer
+                            let layout = ratatui::layout::Layout::default()
+                                .direction(ratatui::layout::Direction::Vertical)
+                                .constraints([
+                                    ratatui::layout::Constraint::Min(1),    // Table area
+                                    ratatui::layout::Constraint::Length(3), // Search input area
+                                    ratatui::layout::Constraint::Length(1), // Footer area
+                                ])
+                                .split(size);
+
+                            // Render the table in the first area
+                            draw_connection_list(
+                                layout[0],
+                                connections,
+                                *connection_selected,
+                                *connection_search_mode,
+                                search_query,
+                                f,
+                            );
+
+                            // Render search input in the second area
+                            connection_search_input.set_block(
+                                ratatui::widgets::Block::default()
+                                    .borders(ratatui::widgets::Borders::ALL)
+                                    .title("Search")
+                                    .style(
+                                        ratatui::style::Style::default()
+                                            .fg(ratatui::style::Color::Cyan),
+                                    ),
+                            );
+                            f.render_widget(&*connection_search_input, layout[1]);
+
+                            // Render footer in the third area
+                            let footer = ratatui::layout::Layout::default()
+                                .direction(ratatui::layout::Direction::Horizontal)
+                                .constraints([
+                                    ratatui::layout::Constraint::Percentage(80),
+                                    ratatui::layout::Constraint::Percentage(20),
+                                ])
+                                .split(layout[2]);
+
+                            let hint_text =
+                                "Enter: Select   Esc: Cancel Search   K/↑: Up   J/↓: Down";
+                            let left = ratatui::widgets::Paragraph::new(ratatui::text::Line::from(
+                                ratatui::text::Span::styled(
+                                    hint_text,
+                                    ratatui::style::Style::default()
+                                        .fg(ratatui::style::Color::White)
+                                        .add_modifier(ratatui::style::Modifier::DIM),
+                                ),
+                            ))
+                            .alignment(ratatui::layout::Alignment::Left);
+
+                            let right = ratatui::widgets::Paragraph::new(
+                                ratatui::text::Line::from(ratatui::text::Span::styled(
+                                    format!("TermiRs v{}", env!("CARGO_PKG_VERSION")),
+                                    ratatui::style::Style::default()
+                                        .fg(ratatui::style::Color::White)
+                                        .add_modifier(ratatui::style::Modifier::DIM),
+                                )),
+                            )
+                            .alignment(ratatui::layout::Alignment::Right);
+
+                            f.render_widget(left, footer[0]);
+                            f.render_widget(right, footer[1]);
+                        } else {
+                            // Normal mode: just render connection list (still filtered by search query)
+                            draw_connection_list(
+                                size,
+                                connections,
+                                *connection_selected,
+                                *connection_search_mode,
+                                search_query,
+                                f,
+                            );
+                        }
+                    } else {
+                        // Render the port forwarding list background first
+                        let port_forwards = self.config.port_forwards();
+                        let connections = self.config.connections();
+                        draw_port_forwarding_list(
+                            size,
+                            port_forwards,
+                            connections,
+                            *current_selected,
+                            false,
+                            "",
+                            f,
+                        );
+                    }
+                }
+                AppMode::PortForwardingFormEdit {
+                    current_selected,
+                    select_connection_mode,
+                    connection_selected,
+                    connection_search_mode,
+                    connection_search_input,
+                    ..
+                } => {
+                    if *select_connection_mode {
+                        // Render connection list for selection
+                        let connections = self.config.connections();
+                        // Always use the search query from input, regardless of search mode
+                        let search_query = connection_search_input.lines()[0].as_str();
+
+                        if *connection_search_mode {
+                            // In search mode: custom layout with table, search input, and footer
+                            let layout = ratatui::layout::Layout::default()
+                                .direction(ratatui::layout::Direction::Vertical)
+                                .constraints([
+                                    ratatui::layout::Constraint::Min(1),    // Table area
+                                    ratatui::layout::Constraint::Length(3), // Search input area
+                                    ratatui::layout::Constraint::Length(1), // Footer area
+                                ])
+                                .split(size);
+
+                            // Render the table in the first area
+                            draw_connection_list(
+                                layout[0],
+                                connections,
+                                *connection_selected,
+                                *connection_search_mode,
+                                search_query,
+                                f,
+                            );
+
+                            // Render search input in the second area
+                            connection_search_input.set_block(
+                                ratatui::widgets::Block::default()
+                                    .borders(ratatui::widgets::Borders::ALL)
+                                    .title("Search")
+                                    .style(
+                                        ratatui::style::Style::default()
+                                            .fg(ratatui::style::Color::Cyan),
+                                    ),
+                            );
+                            f.render_widget(&*connection_search_input, layout[1]);
+
+                            // Render footer in the third area
+                            let footer = ratatui::layout::Layout::default()
+                                .direction(ratatui::layout::Direction::Horizontal)
+                                .constraints([
+                                    ratatui::layout::Constraint::Percentage(80),
+                                    ratatui::layout::Constraint::Percentage(20),
+                                ])
+                                .split(layout[2]);
+
+                            let hint_text =
+                                "Enter: Select   Esc: Cancel Search   K/↑: Up   J/↓: Down";
+                            let left = ratatui::widgets::Paragraph::new(ratatui::text::Line::from(
+                                ratatui::text::Span::styled(
+                                    hint_text,
+                                    ratatui::style::Style::default()
+                                        .fg(ratatui::style::Color::White)
+                                        .add_modifier(ratatui::style::Modifier::DIM),
+                                ),
+                            ))
+                            .alignment(ratatui::layout::Alignment::Left);
+
+                            let right = ratatui::widgets::Paragraph::new(
+                                ratatui::text::Line::from(ratatui::text::Span::styled(
+                                    format!("TermiRs v{}", env!("CARGO_PKG_VERSION")),
+                                    ratatui::style::Style::default()
+                                        .fg(ratatui::style::Color::White)
+                                        .add_modifier(ratatui::style::Modifier::DIM),
+                                )),
+                            )
+                            .alignment(ratatui::layout::Alignment::Right);
+
+                            f.render_widget(left, footer[0]);
+                            f.render_widget(right, footer[1]);
+                        } else {
+                            // Normal mode: just render connection list (still filtered by search query)
+                            draw_connection_list(
+                                size,
+                                connections,
+                                *connection_selected,
+                                *connection_search_mode,
+                                search_query,
+                                f,
+                            );
+                        }
+                    } else {
+                        // Render the port forwarding list background first
+                        let port_forwards = self.config.port_forwards();
+                        let connections = self.config.connections();
+                        draw_port_forwarding_list(
+                            size,
+                            port_forwards,
+                            connections,
+                            *current_selected,
+                            false,
+                            "",
+                            f,
+                        );
+                    }
+                }
+                AppMode::PortForwardDeleteConfirmation {
+                    current_selected, ..
+                } => {
+                    // Render the port forwarding list background first
+                    let port_forwards = self.config.port_forwards();
+                    let connections = self.config.connections();
+                    draw_port_forwarding_list(
+                        size,
+                        port_forwards,
+                        connections,
+                        *current_selected,
+                        false,
+                        "",
+                        f,
+                    );
+                }
             }
 
             // Overlay SCP popup if in SCP form mode
@@ -820,6 +1240,30 @@ impl<B: Backend + Write> App<B> {
                 // Update dropdown anchor rect if dropdown exists
                 if let Some(dropdown) = dropdown {
                     draw_dropdown_with_rect(dropdown, scp_input_rects.0, f);
+                }
+            }
+
+            // Overlay port forwarding form popup if in port forwarding form mode and not selecting connection
+            if let AppMode::PortForwardingFormNew {
+                form,
+                select_connection_mode,
+                ..
+            } = &mut self.mode
+            {
+                if !*select_connection_mode {
+                    let connections = self.config.connections();
+                    draw_port_forwarding_form_popup(size, form, connections, true, f);
+                }
+            }
+            if let AppMode::PortForwardingFormEdit {
+                form,
+                select_connection_mode,
+                ..
+            } = &mut self.mode
+            {
+                if !*select_connection_mode {
+                    let connections = self.config.connections();
+                    draw_port_forwarding_form_popup(size, form, connections, false, f);
                 }
             }
 
@@ -834,6 +1278,14 @@ impl<B: Backend + Write> App<B> {
             } = &self.mode
             {
                 draw_delete_confirmation_popup(size, connection_name, f);
+            }
+
+            // Overlay port forward delete confirmation popup if in port forward delete confirmation mode
+            if let AppMode::PortForwardDeleteConfirmation {
+                port_forward_name, ..
+            } = &self.mode
+            {
+                draw_port_forward_delete_confirmation_popup(size, port_forward_name, f);
             }
 
             // Overlay connection form popup if in form mode

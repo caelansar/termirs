@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::convert::TryFrom;
 use std::env;
 use std::path::PathBuf;
@@ -8,14 +8,18 @@ use std::time::Duration;
 use bytes::{Bytes, BytesMut};
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::io::AsyncReadExt;
+use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use russh::client::{self, AuthResult, KeyboardInteractiveAuthResponse};
 use russh::keys::{self, PrivateKeyWithHashAlg, ssh_key};
 use russh::{Channel, ChannelMsg, Disconnect, MethodKind};
 use russh_sftp::client::rawsession::RawSftpSession;
 use russh_sftp::protocol::{FileAttributes, OpenFlags, StatusCode};
+use tokio::net::TcpListener;
 
-use crate::config::manager::{AuthMethod, Connection};
+use crate::config::manager::{AuthMethod, Connection, PortForward};
 use crate::error::{AppError, Result};
 
 const STANDARD_KEY_PATHS: &[&str] = &[
@@ -909,6 +913,181 @@ impl SshSession {
             .await
             .map_err(|e| AppError::SshConnectionError(format!("Failed to open channel: {e}")))
     }
+
+    /// Start a port forwarding task and return the handle and cancellation token
+    pub async fn start_port_forwarding_task(
+        local_addr: &str,
+        local_port: u16,
+        connection: &Connection,
+        service_host: &str,
+        service_port: u16,
+    ) -> Result<(JoinHandle<()>, CancellationToken)> {
+        let (session, _) = Self::new_session(connection).await?;
+        let cancel_token = CancellationToken::new();
+        let cancel_token_for_task = cancel_token.clone();
+
+        let local_addr = local_addr.to_string();
+        let service_host = service_host.to_string();
+
+        let handle = tokio::spawn(async move {
+            let local_listener = match TcpListener::bind((local_addr.as_str(), local_port)).await {
+                Ok(listener) => listener,
+                Err(e) => {
+                    eprintln!("Failed to bind to {}:{}: {}", local_addr, local_port, e);
+                    return;
+                }
+            };
+
+            loop {
+                tokio::select! {
+                    _ = cancel_token_for_task.cancelled() => {
+                        break;
+                    }
+                    result = local_listener.accept() => {
+                        match result {
+                            Ok((mut local_socket, _)) => {
+                                let ssh_channel = match session
+                                    .channel_open_direct_tcpip(
+                                        service_host.clone(),
+                                        service_port as u32,
+                                        local_addr.clone(),
+                                        local_port as u32,
+                                    )
+                                    .await
+                                {
+                                    Ok(channel) => channel,
+                                    Err(e) => {
+                                        eprintln!("Failed to open SSH forwarding channel: {}", e);
+                                        continue;
+                                    }
+                                };
+
+                                let mut ssh_stream = ssh_channel.into_stream();
+
+                                // Handle the connection in a separate task
+                                let cancel_for_connection = cancel_token_for_task.clone();
+                                tokio::spawn(async move {
+                                    tokio::select! {
+                                        _ = cancel_for_connection.cancelled() => {
+                                            // Connection cancelled
+                                        }
+                                        result = tokio::io::copy_bidirectional(&mut local_socket, &mut ssh_stream) => {
+                                            if let Err(e) = result {
+                                                eprintln!("Copy error between local socket and SSH stream: {}", e);
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to accept connection: {}", e);
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok((handle, cancel_token))
+    }
+}
+
+/// Runtime management for port forwarding sessions
+pub struct PortForwardingRuntime {
+    active_forwards: Arc<Mutex<HashMap<String, (JoinHandle<()>, CancellationToken)>>>,
+}
+
+impl PortForwardingRuntime {
+    pub fn new() -> Self {
+        Self {
+            active_forwards: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Start a port forwarding session
+    pub async fn start_port_forward(
+        &self,
+        port_forward: &PortForward,
+        connection: &Connection,
+    ) -> Result<()> {
+        let pf_id = port_forward.id.clone();
+
+        // Check if already running
+        if self.is_running(&pf_id).await {
+            return Err(AppError::ValidationError(
+                "Port forward is already running".to_string(),
+            ));
+        }
+
+        // Start the port forwarding task
+        let (handle, cancel_token) = SshSession::start_port_forwarding_task(
+            &port_forward.local_addr,
+            port_forward.local_port,
+            connection,
+            &port_forward.service_host,
+            port_forward.service_port,
+        )
+        .await?;
+
+        // Store the handle and cancellation token
+        let mut active_forwards = self.active_forwards.lock().await;
+        active_forwards.insert(pf_id, (handle, cancel_token));
+
+        Ok(())
+    }
+
+    /// Stop a port forwarding session
+    pub async fn stop_port_forward(&self, port_forward_id: &str) -> Result<()> {
+        let mut active_forwards = self.active_forwards.lock().await;
+
+        if let Some((handle, cancel_token)) = active_forwards.remove(port_forward_id) {
+            // Cancel the task
+            cancel_token.cancel();
+
+            // Wait for the task to complete (with timeout)
+            tokio::select! {
+                _ = handle => {
+                    // Task completed normally
+                }
+                _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                    // Timeout - task might still be running but we've cancelled it
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Check if a port forward is currently running
+    pub async fn is_running(&self, port_forward_id: &str) -> bool {
+        let active_forwards = self.active_forwards.lock().await;
+        active_forwards.contains_key(port_forward_id)
+    }
+
+    /// Stop all port forwarding sessions
+    #[allow(dead_code)]
+    pub async fn stop_all(&self) -> Result<()> {
+        let mut active_forwards = self.active_forwards.lock().await;
+
+        for (_, (handle, cancel_token)) in active_forwards.drain() {
+            cancel_token.cancel();
+
+            // Wait for task completion with timeout
+            tokio::select! {
+                _ = handle => {}
+                _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl Default for PortForwardingRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 async fn cancellable_timeout<F, T>(
@@ -952,7 +1131,8 @@ mod tests {
 
     use russh::server::{self, Auth, Msg, Server as _, Session};
     use russh::{Channel, ChannelId, CryptoVec, MethodKind, MethodSet, Pty};
-    use tokio::net::TcpListener;
+    use tokio::io::AsyncWriteExt as _;
+    use tokio::net::{TcpListener, TcpStream};
 
     const TEST_SERVER_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\n\
 b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\n\
@@ -1208,6 +1388,42 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
             _session: &mut Session,
         ) -> std::result::Result<bool, Self::Error> {
             Ok(true)
+        }
+
+        async fn channel_open_direct_tcpip(
+            &mut self,
+            channel: Channel<Msg>,
+            host_to_connect: &str,
+            port_to_connect: u32,
+            _originator_address: &str,
+            _originator_port: u32,
+            _session: &mut Session,
+        ) -> std::result::Result<bool, Self::Error> {
+            let port = match u16::try_from(port_to_connect) {
+                Ok(port) => port,
+                Err(_) => return Ok(false),
+            };
+
+            match TcpStream::connect((host_to_connect, port)).await {
+                Ok(mut remote_stream) => {
+                    let mut ssh_stream = channel.into_stream();
+
+                    tokio::spawn(async move {
+                        if tokio::io::copy_bidirectional(&mut ssh_stream, &mut remote_stream)
+                            .await
+                            .is_err()
+                        {
+                            // Copy errors just terminate the forwarding session.
+                        }
+
+                        let _ = ssh_stream.shutdown().await;
+                        let _ = remote_stream.shutdown().await;
+                    });
+
+                    Ok(true)
+                }
+                Err(_) => Ok(false),
+            }
         }
 
         async fn pty_request(
@@ -2230,6 +2446,90 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
         // Cleanup
         let _ = tokio::fs::remove_file(&original_file_path).await;
         let _ = tokio::fs::remove_file(&downloaded_file_path).await;
+        server.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_port_forwarding() {
+        let server = EmbeddedSshServer::start("tester", "testerpass")
+            .await
+            .expect("failed to start embedded server");
+        let ssh_port = server.port();
+
+        let http_listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("failed to bind HTTP listener");
+        let http_port = http_listener
+            .local_addr()
+            .expect("failed to read HTTP listener port")
+            .port();
+
+        let http_handle = tokio::spawn(async move {
+            if let Ok((mut socket, _)) = http_listener.accept().await {
+                let mut buffer = [0u8; 1024];
+                let _ = socket.read(&mut buffer).await;
+                let response = b"HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\ncae";
+                let _ = socket.write_all(response).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        let conn = Connection::new(
+            "127.0.0.1".to_string(),
+            ssh_port,
+            "tester".to_string(),
+            AuthMethod::Password("testerpass".to_string()),
+        );
+
+        let local_listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("failed to reserve local port");
+        let local_port = local_listener
+            .local_addr()
+            .expect("failed to read reserved local port")
+            .port();
+        drop(local_listener);
+
+        let (handle, cancel_token) = SshSession::start_port_forwarding_task(
+            "127.0.0.1",
+            local_port,
+            &conn,
+            "127.0.0.1",
+            http_port,
+        )
+        .await
+        .expect("failed to start port forwarding");
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let mut client_socket = TcpStream::connect(("127.0.0.1", local_port))
+            .await
+            .expect("failed to connect to forwarded port");
+        client_socket
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("failed to write HTTP request");
+
+        let mut response = Vec::new();
+        client_socket
+            .read_to_end(&mut response)
+            .await
+            .expect("failed to read HTTP response");
+
+        // Clean up
+        cancel_token.cancel();
+        let _ = handle.await;
+        let response_str = String::from_utf8(response).expect("response not valid UTF-8");
+        assert!(
+            response_str.contains("HTTP/1.1 200 OK"),
+            "unexpected response: {response_str}"
+        );
+        assert!(
+            response_str.ends_with("cae"),
+            "unexpected body in response: {response_str}"
+        );
+
+        http_handle.await.expect("http server task failed");
         server.shutdown().await.unwrap();
     }
 }

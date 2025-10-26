@@ -106,6 +106,109 @@ pub struct Connection {
     pub public_key: Option<String>,
 }
 
+/// Status of a port forwarding session
+#[derive(Clone, Debug, PartialEq, Default, Hash)]
+pub enum PortForwardStatus {
+    #[default]
+    Stopped,
+    Running,
+    Failed(String),
+}
+
+/// Represents a port forwarding configuration
+#[derive(Serialize, Deserialize, Clone, Debug, Hash)]
+pub struct PortForward {
+    pub id: String,
+    pub connection_id: String,
+    pub local_addr: String,
+    pub local_port: u16,
+    pub service_host: String,
+    pub service_port: u16,
+    pub display_name: Option<String>,
+    pub created_at: DateTime<Utc>,
+    #[serde(skip)] // Runtime status, not persisted
+    pub status: PortForwardStatus,
+}
+
+impl PortForward {
+    /// Creates a new port forward with the given parameters
+    pub fn new(
+        connection_id: String,
+        local_addr: String,
+        local_port: u16,
+        service_host: String,
+        service_port: u16,
+        display_name: Option<String>,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            connection_id,
+            local_addr,
+            local_port,
+            service_host,
+            service_port,
+            display_name,
+            created_at: Utc::now(),
+            status: PortForwardStatus::Stopped,
+        }
+    }
+
+    /// Validates the port forward parameters
+    pub fn validate(&self) -> Result<()> {
+        if self.local_addr.trim().is_empty() {
+            return Err(AppError::ValidationError(
+                "Local address cannot be empty".to_string(),
+            ));
+        }
+
+        if self.local_port == 0 {
+            return Err(AppError::ValidationError(
+                "Local port must be greater than 0".to_string(),
+            ));
+        }
+
+        if self.service_host.trim().is_empty() {
+            return Err(AppError::ValidationError(
+                "Service host cannot be empty".to_string(),
+            ));
+        }
+
+        if self.service_port == 0 {
+            return Err(AppError::ValidationError(
+                "Service port must be greater than 0".to_string(),
+            ));
+        }
+
+        if self.connection_id.trim().is_empty() {
+            return Err(AppError::ValidationError(
+                "Connection ID cannot be empty".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Gets the display name or generates a default one
+    pub fn get_display_name(&self) -> String {
+        self.display_name.clone().unwrap_or_else(|| {
+            format!(
+                "{}:{} -> {}:{}",
+                self.local_addr, self.local_port, self.service_host, self.service_port
+            )
+        })
+    }
+
+    /// Gets the local address and port as a string
+    pub fn local_address(&self) -> String {
+        format!("{}:{}", self.local_addr, self.local_port)
+    }
+
+    /// Gets the service address and port as a string
+    pub fn service_address(&self) -> String {
+        format!("{}:{}", self.service_host, self.service_port)
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum AuthMethod {
     #[serde(rename = "password")]
@@ -197,6 +300,8 @@ impl Connection {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Config {
     pub connections: Vec<Connection>,
+    #[serde(default)]
+    pub port_forwards: Vec<PortForward>,
     pub settings: AppSettings,
 }
 /// Configuration manager for handling application settings and connection storage
@@ -291,6 +396,11 @@ impl ConfigManager {
         self.config.settings.terminal_scrollback_lines
     }
 
+    /// Find a connection by ID
+    pub fn find_connection(&self, id: &str) -> Option<&Connection> {
+        self.config.connections.iter().find(|c| c.id == id)
+    }
+
     /// Add a new connection and persist it
     pub fn add_connection(&mut self, connection: Connection) -> Result<()> {
         // Validate the connection before adding
@@ -350,6 +460,74 @@ impl ConfigManager {
             self.save()?;
         }
         Ok(())
+    }
+
+    /// Return immutable slice of port forwards
+    pub fn port_forwards(&self) -> &[PortForward] {
+        &self.config.port_forwards
+    }
+
+    /// Return mutable slice of port forwards
+    pub fn port_forwards_mut(&mut self) -> &mut Vec<PortForward> {
+        &mut self.config.port_forwards
+    }
+
+    /// Add a new port forward and persist it
+    pub fn add_port_forward(&mut self, port_forward: PortForward) -> Result<()> {
+        // Validate the port forward before adding
+        port_forward.validate()?;
+
+        // Check for duplicates based on connection_id, local_addr, local_port, service_host, service_port
+        if self.config.port_forwards.iter().any(|pf| {
+            pf.connection_id == port_forward.connection_id
+                && pf.local_addr == port_forward.local_addr
+                && pf.local_port == port_forward.local_port
+                && pf.service_host == port_forward.service_host
+                && pf.service_port == port_forward.service_port
+        }) {
+            return Err(AppError::ConfigError(
+                "Port forward already exists with the same configuration".to_string(),
+            ));
+        }
+
+        self.config.port_forwards.push(port_forward);
+        self.save()
+    }
+
+    /// Update an existing port forward
+    pub fn update_port_forward(&mut self, port_forward: PortForward) -> Result<()> {
+        // Validate the port forward before updating
+        port_forward.validate()?;
+
+        // Find and update the port forward
+        if let Some(existing_pf) = self
+            .config
+            .port_forwards
+            .iter_mut()
+            .find(|pf| pf.id == port_forward.id)
+        {
+            *existing_pf = port_forward;
+            Ok(())
+        } else {
+            Err(AppError::ConfigError("Port forward not found".to_string()))
+        }
+    }
+
+    /// Remove a port forward by ID
+    pub fn remove_port_forward(&mut self, id: &str) -> Result<()> {
+        let initial_len = self.config.port_forwards.len();
+        self.config.port_forwards.retain(|pf| pf.id != id);
+
+        if self.config.port_forwards.len() == initial_len {
+            Err(AppError::ConfigError("Port forward not found".to_string()))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Find a port forward by ID (mutable)
+    pub fn find_port_forward_mut(&mut self, id: &str) -> Option<&mut PortForward> {
+        self.config.port_forwards.iter_mut().find(|pf| pf.id == id)
     }
 
     fn normalize_settings(config: &mut Config) {
@@ -420,6 +598,7 @@ mod tests {
         );
         let config = Config {
             connections: vec![conn, conn1],
+            port_forwards: vec![],
             settings: AppSettings::default(),
         };
         let serialized = toml::to_string(&config).unwrap();
