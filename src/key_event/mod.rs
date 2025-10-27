@@ -1,6 +1,7 @@
 use std::io::Write;
+use std::time::Duration;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::prelude::Backend;
 
 use crate::{App, AppMode};
@@ -26,6 +27,9 @@ pub use scp::{
     handle_delete_confirmation_key, handle_scp_form_dropdown_key, handle_scp_form_key,
     handle_scp_progress_key,
 };
+
+const TERMINAL_MOUSE_SCROLL_STEP: i32 = 5;
+const SELECTION_SUSPEND_MS: u64 = 1500;
 
 /// Result of handling a key or paste event
 pub enum KeyFlow {
@@ -137,5 +141,61 @@ pub async fn handle_paste_event<B: Backend + Write>(app: &mut App<B>, data: &str
         | AppMode::FileExplorer { .. }
         | AppMode::PortForwardingList { .. }
         | AppMode::PortForwardDeleteConfirmation { .. } => {}
+    }
+}
+
+pub async fn handle_mouse_event<B: Backend + Write>(app: &mut App<B>, event: MouseEvent) {
+    match &mut app.mode {
+        AppMode::Connected { client, state, .. } => match event.kind {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let delta = match event.kind {
+                    MouseEventKind::ScrollUp => TERMINAL_MOUSE_SCROLL_STEP,
+                    MouseEventKind::ScrollDown => -TERMINAL_MOUSE_SCROLL_STEP,
+                    _ => 0,
+                };
+
+                if delta == 0 {
+                    return;
+                }
+
+                let (in_alt, app_cursor) = {
+                    let guard = state.lock().await;
+                    let screen = guard.parser.screen();
+                    (screen.alternate_screen(), screen.application_cursor())
+                };
+
+                let interactive = in_alt || app_cursor;
+
+                if interactive {
+                    let seq = if delta > 0 {
+                        if app_cursor { b"\x1bOA" } else { b"\x1b[A" }
+                    } else if app_cursor {
+                        b"\x1bOB"
+                    } else {
+                        b"\x1b[B"
+                    };
+
+                    let repeat = delta.abs() as usize;
+                    for _ in 0..repeat {
+                        if let Err(e) = client.write_all(seq).await {
+                            app.error = Some(e);
+                            break;
+                        }
+                    }
+                } else {
+                    let mut guard = state.lock().await;
+                    guard.scroll_by(delta);
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left) => {
+                if let Err(e) =
+                    app.suspend_mouse_capture(Duration::from_millis(SELECTION_SUSPEND_MS))
+                {
+                    app.error = Some(e);
+                }
+            }
+            _ => {}
+        },
+        _ => {}
     }
 }

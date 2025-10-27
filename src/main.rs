@@ -7,12 +7,13 @@ mod ui;
 
 use std::io::Write;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 use crossterm::cursor::Show;
 use crossterm::event::{
-    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, Event,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -312,6 +313,8 @@ pub(crate) struct App<B: Backend + Write> {
     terminal: Terminal<B>,
     needs_redraw: bool, // Track if UI needs redrawing
     event_tx: Option<tokio::sync::mpsc::Sender<AppEvent>>, // Event sender for SSH disconnect
+    mouse_capture_enabled: bool,
+    mouse_capture_suspended_until: Option<Instant>,
 }
 
 impl<B: Backend + Write> Drop for App<B> {
@@ -320,6 +323,7 @@ impl<B: Backend + Write> Drop for App<B> {
         execute!(
             self.terminal.backend_mut(),
             DisableBracketedPaste,
+            DisableMouseCapture,
             LeaveAlternateScreen,
         )
         .ok();
@@ -348,6 +352,8 @@ impl<B: Backend + Write> App<B> {
             terminal,
             needs_redraw: true, // Initial redraw needed
             event_tx: None,     // Will be set later
+            mouse_capture_enabled: false,
+            mouse_capture_suspended_until: None,
         })
     }
 
@@ -360,11 +366,46 @@ impl<B: Backend + Write> App<B> {
             DisableMouseCapture
         )?;
 
+        self.mouse_capture_enabled = false;
+        self.mouse_capture_suspended_until = None;
+
         Ok(())
     }
 
     pub(crate) fn set_event_sender(&mut self, sender: tokio::sync::mpsc::Sender<AppEvent>) {
         self.event_tx = Some(sender);
+    }
+
+    fn set_mouse_capture(&mut self, enable: bool) -> Result<()> {
+        if enable {
+            if !self.mouse_capture_enabled {
+                execute!(self.terminal.backend_mut(), EnableMouseCapture)?;
+                self.mouse_capture_enabled = true;
+            }
+        } else if self.mouse_capture_enabled {
+            execute!(self.terminal.backend_mut(), DisableMouseCapture)?;
+            self.mouse_capture_enabled = false;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn suspend_mouse_capture(&mut self, duration: Duration) -> Result<()> {
+        self.set_mouse_capture(false)?;
+        self.mouse_capture_suspended_until = Some(Instant::now() + duration);
+        Ok(())
+    }
+
+    fn update_mouse_capture_mode(&mut self) -> Result<()> {
+        if let Some(deadline) = self.mouse_capture_suspended_until {
+            if Instant::now() >= deadline {
+                self.mouse_capture_suspended_until = None;
+            }
+        }
+
+        let should_enable = matches!(self.mode, AppMode::Connected { .. })
+            && self.mouse_capture_suspended_until.is_none();
+        self.set_mouse_capture(should_enable)?;
+        Ok(())
     }
 
     pub(crate) fn go_to_connected(
@@ -1341,6 +1382,8 @@ impl<B: Backend + Write> App<B> {
 
     async fn run(&mut self, rx: &mut mpsc::Receiver<AppEvent>) -> Result<()> {
         loop {
+            self.update_mouse_capture_mode()?;
+
             // Check terminal size changes and update SSH session if needed
             let mut terminal_size_changed = false;
             let mut has_terminal_updates = false;
@@ -1604,6 +1647,9 @@ impl<B: Backend + Write> App<B> {
                                     return Ok(());
                                 }
                             }
+                        }
+                        Event::Mouse(mouse) => {
+                            crate::key_event::handle_mouse_event(self, mouse).await;
                         }
                         Event::Paste(data) => {
                             crate::key_event::handle_paste_event(self, &data).await;
