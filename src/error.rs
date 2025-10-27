@@ -35,6 +35,9 @@ pub enum AppError {
 
     #[error("SSH public key validation error: {0}")]
     SshPublicKeyValidationError(String),
+
+    #[error("Port forwarding error: {0}")]
+    PortForwardingError(String),
 }
 
 /// Application result type alias

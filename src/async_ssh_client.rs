@@ -929,15 +929,16 @@ impl SshSession {
         let local_addr = local_addr.to_string();
         let service_host = service_host.to_string();
 
-        let handle = tokio::spawn(async move {
-            let local_listener = match TcpListener::bind((local_addr.as_str(), local_port)).await {
-                Ok(listener) => listener,
-                Err(e) => {
-                    eprintln!("Failed to bind to {}:{}: {}", local_addr, local_port, e);
-                    return;
-                }
-            };
+        let local_listener = match TcpListener::bind((local_addr.as_str(), local_port)).await {
+            Ok(listener) => listener,
+            Err(e) => {
+                return Err(AppError::PortForwardingError(format!(
+                    "Failed to bind to {local_addr}:{local_port}: {e}"
+                )));
+            }
+        };
 
+        let handle = tokio::spawn(async move {
             loop {
                 tokio::select! {
                     _ = cancel_token_for_task.cancelled() => {

@@ -235,8 +235,6 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
                     Ok(_) => {
                         // After creating a new port forward, go to the end of the list
                         let new_index = app.config.port_forwards().len().saturating_sub(1);
-                        app.go_to_port_forwarding_list_with_selected(new_index)
-                            .await;
                         if let Err(e) = app
                             .port_forwarding_runtime
                             .start_port_forward(
@@ -247,12 +245,10 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
                             )
                             .await
                         {
-                            // TODO: dedicated error for port forward runtime
-                            app.error = Some(AppError::ConfigError(format!(
-                                "Failed to start port forward: {}",
-                                e
-                            )));
+                            app.error = Some(e);
                         }
+                        app.go_to_port_forwarding_list_with_selected(new_index)
+                            .await;
                     }
                     Err(e) => {
                         app.error = Some(e);

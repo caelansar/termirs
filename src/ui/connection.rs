@@ -225,6 +225,7 @@ pub fn draw_connection_list(
     search_mode: bool,
     search_query: &str,
     frame: &mut ratatui::Frame<'_>,
+    choose_connection_mode: bool,
 ) {
     let mut items: Vec<ConnectionListItem> = conns
         .iter()
@@ -321,6 +322,12 @@ pub fn draw_connection_list(
         })
         .collect();
 
+    let title = if choose_connection_mode {
+        "Choose Connection"
+    } else {
+        "Connection List"
+    };
+
     // Create the table
     let table = Table::new(
         rows,
@@ -337,7 +344,7 @@ pub fn draw_connection_list(
     )
     .header(header)
     .block(Block::default().borders(Borders::ALL).title(format!(
-        "Connection List ({}/{})",
+        "{title} ({}/{})",
         if !items.is_empty() { sel + 1 } else { 0 },
         items.len()
     )))
@@ -385,7 +392,11 @@ pub fn draw_connection_list(
             .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])
             .split(footer_area);
 
-        let hint_text = "Enter: Connect   K/↑: Up   J/↓: Down   N: New   S: SCP   I: File Explorer   P: Port Forward   D: Delete   E: Edit   /: Search";
+        let hint_text = if choose_connection_mode {
+            "Enter: Select   K/↑: Up   J/↓: Down   /: Search"
+        } else {
+            "Enter: Connect   K/↑: Up   J/↓: Down   N: New   S: SCP   I: File Explorer   P: Port Forward   D: Delete   E: Edit   /: Search"
+        };
 
         let left = Paragraph::new(Line::from(Span::styled(
             hint_text,

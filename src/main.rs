@@ -730,6 +730,7 @@ impl<B: Backend + Write> App<B> {
                             *search_mode,
                             search_query,
                             f,
+                            false,
                         );
 
                         // Render search input in the second area
@@ -779,7 +780,15 @@ impl<B: Backend + Write> App<B> {
                         f.render_widget(right, footer[1]);
                     } else {
                         // Normal mode: let draw_connection_list handle everything
-                        draw_connection_list(size, conns, *selected, *search_mode, search_query, f);
+                        draw_connection_list(
+                            size,
+                            conns,
+                            *selected,
+                            *search_mode,
+                            search_query,
+                            f,
+                            false,
+                        );
                     }
                 }
                 AppMode::FormNew {
@@ -787,14 +796,14 @@ impl<B: Backend + Write> App<B> {
                 } => {
                     // Render the connection list background first
                     let conns = self.config.connections();
-                    draw_connection_list(size, conns, *current_selected, false, "", f);
+                    draw_connection_list(size, conns, *current_selected, false, "", f, false);
                 }
                 AppMode::FormEdit {
                     current_selected, ..
                 } => {
                     // Render the connection list background first
                     let conns = self.config.connections();
-                    draw_connection_list(size, conns, *current_selected, false, "", f);
+                    draw_connection_list(size, conns, *current_selected, false, "", f, false);
                 }
                 AppMode::Connected { name, state, .. } => {
                     let inner = rect_with_top_margin(size, 1);
@@ -810,7 +819,15 @@ impl<B: Backend + Write> App<B> {
                     match return_mode {
                         ScpReturnMode::ConnectionList { current_selected } => {
                             let conns = self.config.connections();
-                            draw_connection_list(size, conns, *current_selected, false, "", f);
+                            draw_connection_list(
+                                size,
+                                conns,
+                                *current_selected,
+                                false,
+                                "",
+                                f,
+                                false,
+                            );
                         }
                         ScpReturnMode::Connected { name, state, .. } => {
                             let inner = rect_with_top_margin(size, 1);
@@ -850,7 +867,15 @@ impl<B: Backend + Write> App<B> {
                     match return_mode {
                         ScpReturnMode::ConnectionList { current_selected } => {
                             let conns = self.config.connections();
-                            draw_connection_list(size, conns, *current_selected, false, "", f);
+                            draw_connection_list(
+                                size,
+                                conns,
+                                *current_selected,
+                                false,
+                                "",
+                                f,
+                                false,
+                            );
                         }
                         ScpReturnMode::Connected { name, state, .. } => {
                             let inner = rect_with_top_margin(size, 1);
@@ -890,7 +915,7 @@ impl<B: Backend + Write> App<B> {
                 } => {
                     // Render the connection list background first
                     let conns = self.config.connections();
-                    draw_connection_list(size, conns, *current_selected, false, "", f);
+                    draw_connection_list(size, conns, *current_selected, false, "", f, false);
                 }
                 AppMode::FileExplorer {
                     connection_name,
@@ -1036,6 +1061,7 @@ impl<B: Backend + Write> App<B> {
                                 *connection_search_mode,
                                 search_query,
                                 f,
+                                true,
                             );
 
                             // Render search input in the second area
@@ -1092,6 +1118,7 @@ impl<B: Backend + Write> App<B> {
                                 *connection_search_mode,
                                 search_query,
                                 f,
+                                true,
                             );
                         }
                     } else {
@@ -1142,6 +1169,7 @@ impl<B: Backend + Write> App<B> {
                                 *connection_search_mode,
                                 search_query,
                                 f,
+                                true,
                             );
 
                             // Render search input in the second area
@@ -1198,6 +1226,7 @@ impl<B: Backend + Write> App<B> {
                                 *connection_search_mode,
                                 search_query,
                                 f,
+                                true,
                             );
                         }
                     } else {
