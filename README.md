@@ -12,6 +12,7 @@ A modern, async SSH terminal client built with Rust and [Ratatui](https://ratatu
 - **SSH Config Import**: Import connection details directly from your `~/.ssh/config` file with `Ctrl+L`
 - **Secure Configuration**: Encrypted password storage using AES-256-GCM encryption
 - **Connection Management**: Save, edit, and organize SSH connections with a clean TUI interface
+- **Port Forwarding**: Create and manage local and remote port forwards with automatic status tracking
 - **File Transfer**: SFTP support for secure file uploads with progress tracking
 - **File Explorer**: Dual-pane SFTP browser with copy/paste transfers
 - **Terminal Emulation**: Full VT100 terminal emulation with color support and scrollback
@@ -71,6 +72,7 @@ cargo build --release --locked
 - `e`: Edit selected connection
 - `d`: Delete selected connection
 - `s`: Start SFTP file transfer
+- `p`: Open port forwarding management
 - `/`: Search connections
 - `q`: Quit application
 
@@ -98,6 +100,15 @@ cargo build --release --locked
 - `v`: Paste into the destination pane to start an async transfer
 - `r`: Refresh the current pane listing
 - `Esc`: Cancel file explorer and return to connection list
+
+#### Port Forwarding Management
+- `↑/↓` or `j/k`: Navigate port forwarding rules
+- `n`: Create new port forwarding rule
+- `e`: Edit selected port forwarding rule
+- `d`: Delete selected port forwarding rule
+- `Enter`: Start/stop selected port forwarding rule
+- `/`: Search port forwarding rules
+- `Esc`: Return to connection list
 
 ### Authentication Methods
 
@@ -137,6 +148,7 @@ Automatically handled when the server requires interactive authentication.
 
 TermiRs stores configuration in `~/.config/termirs/config.toml`. The file includes:
 - Saved SSH connections (with encrypted passwords)
+- Port forwarding rules and their associated connections
 - Server public keys for host verification
 - Application settings
 
@@ -157,6 +169,16 @@ public_key = "ssh-rsa AAAAB3NzaC1yc2E..."
 
 [connections.auth_method]
 password = "encrypted-password-data"
+
+[[port_forwards]]
+id = "port-forward-uuid"
+connection_id = "uuid-string"
+display_name = "Local Web Server"
+local_addr = "127.0.0.1"
+local_port = 8080
+service_host = "localhost"
+service_port = 3000
+created_at = "2023-01-01T00:00:00Z"
 ```
 
 ## Architecture
@@ -176,6 +198,7 @@ TermiRs is built with a fully asynchronous architecture:
 
 1. **Event Loop**: The main loop handles UI rendering and event processing
 2. **SSH Operations**: All SSH operations are non-blocking and use async/await
-3. **File Transfers**: SFTP transfers run in background tasks with progress updates
-4. **Connection Management**: Connection establishment and teardown are async
-5. **Input Handling**: Keyboard and terminal events are processed asynchronously
+3. **Port Forwarding**: Port forwards run as independent async tasks with automatic lifecycle management
+4. **File Transfers**: SFTP transfers run in background tasks with progress updates
+5. **Connection Management**: Connection establishment and teardown are async
+6. **Input Handling**: Keyboard and terminal events are processed asynchronously
