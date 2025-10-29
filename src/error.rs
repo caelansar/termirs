@@ -38,6 +38,9 @@ pub enum AppError {
 
     #[error("Port forwarding error: {0}")]
     PortForwardingError(String),
+
+    #[error("Clipboard error: {0}")]
+    ClipboardError(String),
 }
 
 /// Application result type alias

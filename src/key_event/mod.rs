@@ -1,10 +1,9 @@
 use std::io::Write;
-use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::prelude::Backend;
 
-use crate::{App, AppMode};
+use crate::{App, AppMode, make_selection_endpoint};
 
 pub mod autocomplete;
 pub mod connected;
@@ -29,7 +28,6 @@ pub use scp::{
 };
 
 const TERMINAL_MOUSE_SCROLL_STEP: i32 = 5;
-const SELECTION_SUSPEND_MS: u64 = 1500;
 
 /// Result of handling a key or paste event
 pub enum KeyFlow {
@@ -145,57 +143,121 @@ pub async fn handle_paste_event<B: Backend + Write>(app: &mut App<B>, data: &str
 }
 
 pub async fn handle_mouse_event<B: Backend + Write>(app: &mut App<B>, event: MouseEvent) {
-    match &mut app.mode {
-        AppMode::Connected { client, state, .. } => match event.kind {
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                let delta = match event.kind {
-                    MouseEventKind::ScrollUp => TERMINAL_MOUSE_SCROLL_STEP,
-                    MouseEventKind::ScrollDown => -TERMINAL_MOUSE_SCROLL_STEP,
-                    _ => 0,
-                };
+    let (client, state) = match &app.mode {
+        AppMode::Connected { client, state, .. } => (client.clone(), state.clone()),
+        _ => return,
+    };
 
-                if delta == 0 {
-                    return;
-                }
-
-                let (in_alt, app_cursor) = {
+    match event.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            if let Some((point, _direction)) = app.clamp_point_to_viewport(event.column, event.row)
+            {
+                let endpoint = {
                     let guard = state.lock().await;
-                    let screen = guard.parser.screen();
-                    (screen.alternate_screen(), screen.application_cursor())
+                    make_selection_endpoint(&guard, point.row, point.col)
+                };
+                if let Some(endpoint) = endpoint {
+                    app.start_selection(endpoint);
+                    app.stop_selection_auto_scroll();
+                } else {
+                    app.clear_selection();
+                }
+            } else {
+                app.clear_selection();
+            }
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            if !app.is_selecting() {
+                return;
+            }
+            if let Some((point, direction)) = app.clamp_point_to_viewport(event.column, event.row) {
+                let endpoint = {
+                    let guard = state.lock().await;
+                    make_selection_endpoint(&guard, point.row, point.col)
+                };
+                if let Some(endpoint) = endpoint {
+                    app.update_selection(endpoint);
+                    if let Some(dir) = direction {
+                        app.begin_selection_auto_scroll(dir, point.row, point.col);
+                    } else {
+                        app.stop_selection_auto_scroll();
+                    }
+                }
+            }
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            if !app.is_selecting() {
+                app.stop_selection_auto_scroll();
+                return;
+            }
+            app.stop_selection_auto_scroll();
+            if let Some((point, _)) = app.clamp_point_to_viewport(event.column, event.row) {
+                let endpoint = {
+                    let guard = state.lock().await;
+                    make_selection_endpoint(&guard, point.row, point.col)
+                };
+                if let Some(endpoint) = endpoint {
+                    app.update_selection(endpoint);
+                }
+            }
+            app.finish_selection();
+            let text = {
+                let guard = state.lock().await;
+                app.selection_text(&guard)
+            };
+            if let Some(text) = text {
+                app.copy_text_to_clipboard(text);
+            } else {
+                app.clear_selection();
+            }
+        }
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+            let delta = match event.kind {
+                MouseEventKind::ScrollUp => TERMINAL_MOUSE_SCROLL_STEP,
+                MouseEventKind::ScrollDown => -TERMINAL_MOUSE_SCROLL_STEP,
+                _ => 0,
+            };
+
+            if delta == 0 {
+                return;
+            }
+
+            if app.is_selecting() {
+                let mut guard = state.lock().await;
+                guard.scroll_by(delta);
+                app.mark_redraw();
+                return;
+            }
+
+            let (in_alt, app_cursor) = {
+                let guard = state.lock().await;
+                let screen = guard.parser.screen();
+                (screen.alternate_screen(), screen.application_cursor())
+            };
+
+            let interactive = in_alt || app_cursor;
+
+            if interactive {
+                let seq = if delta > 0 {
+                    if app_cursor { b"\x1bOA" } else { b"\x1b[A" }
+                } else if app_cursor {
+                    b"\x1bOB"
+                } else {
+                    b"\x1b[B"
                 };
 
-                let interactive = in_alt || app_cursor;
-
-                if interactive {
-                    let seq = if delta > 0 {
-                        if app_cursor { b"\x1bOA" } else { b"\x1b[A" }
-                    } else if app_cursor {
-                        b"\x1bOB"
-                    } else {
-                        b"\x1b[B"
-                    };
-
-                    let repeat = delta.abs() as usize;
-                    for _ in 0..repeat {
-                        if let Err(e) = client.write_all(seq).await {
-                            app.error = Some(e);
-                            break;
-                        }
+                let repeat = delta.abs() as usize;
+                for _ in 0..repeat {
+                    if let Err(e) = client.write_all(seq).await {
+                        app.error = Some(e);
+                        break;
                     }
-                } else {
-                    let mut guard = state.lock().await;
-                    guard.scroll_by(delta);
                 }
+            } else {
+                let mut guard = state.lock().await;
+                guard.scroll_by(delta);
             }
-            MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left) => {
-                if let Err(e) =
-                    app.suspend_mouse_capture(Duration::from_millis(SELECTION_SUSPEND_MS))
-                {
-                    app.error = Some(e);
-                }
-            }
-            _ => {}
-        },
+        }
         _ => {}
     }
 }

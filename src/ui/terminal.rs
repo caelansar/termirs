@@ -126,11 +126,20 @@ fn map_color(c: VtColor) -> Color {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct TerminalSelection {
+    pub start_row: u16,
+    pub start_col: u16,
+    pub end_row: u16,
+    pub end_col: u16,
+}
+
 pub fn draw_terminal(
     area: Rect,
     state: &mut TerminalState,
     name: &str,
     frame: &mut ratatui::Frame<'_>,
+    selection: Option<TerminalSelection>,
 ) {
     // Render the block separately
     let term_block = Block::default()
@@ -152,6 +161,10 @@ pub fn draw_terminal(
     // Render terminal rows using a lightweight cached widget
     let widget = CachedTerminalWidget { lines };
     frame.render_widget(widget.bg(Color::Red), inner);
+
+    if let Some(selection) = selection {
+        highlight_selection(frame.buffer_mut(), inner, selection);
+    }
 
     if !hide_cursor {
         // Use inner area coordinates (already accounts for borders)
@@ -194,6 +207,50 @@ impl<'a> Widget for CachedTerminalWidgetWithBg<'a> {
         buf.set_style(area, RatStyle::default().bg(self.background));
         self.inner.render(area, buf);
     }
+}
+
+fn highlight_selection(buf: &mut Buffer, area: Rect, selection: TerminalSelection) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let start_row = selection.start_row.min(area.height.saturating_sub(1));
+    let end_row = selection.end_row.min(area.height.saturating_sub(1));
+
+    for row in start_row..=end_row {
+        let (col_start, col_end) = selection_bounds_for_row(selection, row, area.width);
+        if col_start >= col_end {
+            continue;
+        }
+        let y = area.y + row;
+        let x_start = area.x + col_start;
+        let x_end = area.x + col_end;
+        for x in x_start..x_end {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_bg(Color::DarkGray);
+            }
+        }
+    }
+}
+
+fn selection_bounds_for_row(selection: TerminalSelection, row: u16, width: u16) -> (u16, u16) {
+    let mut start_col = 0;
+    let mut end_col = width;
+
+    if row == selection.start_row {
+        start_col = selection.start_col.min(width);
+    }
+    if row == selection.end_row {
+        end_col = selection.end_col.min(width);
+    }
+
+    // Handle selection entirely within one row
+    if selection.start_row == selection.end_row {
+        start_col = selection.start_col.min(width);
+        end_col = selection.end_col.min(width);
+    }
+
+    (start_col, end_col)
 }
 
 fn compute_row_hash(screen: &vt100::Screen, row: u16, width: u16) -> u64 {

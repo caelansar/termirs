@@ -18,7 +18,7 @@ pub use port_forwarding::{
     draw_port_forwarding_form_popup, draw_port_forwarding_list,
 };
 pub use scp::{ScpFocusField, ScpForm, ScpMode, draw_scp_popup, draw_scp_progress_popup};
-pub use terminal::{TerminalState, draw_terminal};
+pub use terminal::{TerminalSelection, TerminalState, draw_terminal};
 
 /// Helper function to create a rect with only top margin
 ///

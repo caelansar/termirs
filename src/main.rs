@@ -7,9 +7,10 @@ mod ui;
 
 use std::io::Write;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::Mutex;
 
+use arboard::Clipboard;
 use crossterm::cursor::Show;
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -22,6 +23,7 @@ use crossterm::terminal::{
 use futures::StreamExt;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
 use ratatui::prelude::Backend;
 use tokio::{select, sync::mpsc, time};
 use tui_textarea::TextArea;
@@ -31,9 +33,9 @@ pub(crate) use async_ssh_client::expand_tilde;
 use config::manager::{ConfigManager, Connection};
 use error::{AppError, Result};
 use ui::{
-    ConnectionForm, DropdownState, ScpForm, TerminalState, draw_connection_form_popup,
-    draw_connection_list, draw_delete_confirmation_popup, draw_dropdown_with_rect,
-    draw_error_popup, draw_file_explorer, draw_info_popup,
+    ConnectionForm, DropdownState, ScpForm, TerminalSelection, TerminalState,
+    draw_connection_form_popup, draw_connection_list, draw_delete_confirmation_popup,
+    draw_dropdown_with_rect, draw_error_popup, draw_file_explorer, draw_info_popup,
     draw_port_forward_delete_confirmation_popup, draw_port_forwarding_form_popup,
     draw_port_forwarding_list, draw_scp_popup, draw_scp_progress_popup, draw_terminal,
     rect_with_top_margin,
@@ -64,6 +66,31 @@ enum AppEvent {
     Input(Event),
     Tick,
     Disconnect,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TerminalPoint {
+    row: u16,
+    col: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SelectionEndpoint {
+    rev_row: i64,
+    col: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SelectionScrollDirection {
+    Up,
+    Down,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SelectionAutoScroll {
+    direction: SelectionScrollDirection,
+    view_row: u16,
+    view_col: u16,
 }
 
 /// Enum to track where to return after SCP operations
@@ -314,7 +341,11 @@ pub(crate) struct App<B: Backend + Write> {
     needs_redraw: bool, // Track if UI needs redrawing
     event_tx: Option<tokio::sync::mpsc::Sender<AppEvent>>, // Event sender for SSH disconnect
     mouse_capture_enabled: bool,
-    mouse_capture_suspended_until: Option<Instant>,
+    terminal_viewport: Rect,
+    selection_anchor: Option<SelectionEndpoint>,
+    selection_tail: Option<SelectionEndpoint>,
+    selection_dragging: bool,
+    selection_auto_scroll: Option<SelectionAutoScroll>,
 }
 
 impl<B: Backend + Write> Drop for App<B> {
@@ -353,7 +384,11 @@ impl<B: Backend + Write> App<B> {
             needs_redraw: true, // Initial redraw needed
             event_tx: None,     // Will be set later
             mouse_capture_enabled: false,
-            mouse_capture_suspended_until: None,
+            terminal_viewport: Rect::default(),
+            selection_anchor: None,
+            selection_tail: None,
+            selection_dragging: false,
+            selection_auto_scroll: None,
         })
     }
 
@@ -367,7 +402,11 @@ impl<B: Backend + Write> App<B> {
         )?;
 
         self.mouse_capture_enabled = false;
-        self.mouse_capture_suspended_until = None;
+        self.terminal_viewport = Rect::default();
+        self.selection_anchor = None;
+        self.selection_tail = None;
+        self.selection_dragging = false;
+        self.selection_auto_scroll = None;
 
         Ok(())
     }
@@ -389,23 +428,148 @@ impl<B: Backend + Write> App<B> {
         Ok(())
     }
 
-    pub(crate) fn suspend_mouse_capture(&mut self, duration: Duration) -> Result<()> {
-        self.set_mouse_capture(false)?;
-        self.mouse_capture_suspended_until = Some(Instant::now() + duration);
+    fn update_mouse_capture_mode(&mut self) -> Result<()> {
+        let should_enable = matches!(self.mode, AppMode::Connected { .. });
+        self.set_mouse_capture(should_enable)?;
         Ok(())
     }
 
-    fn update_mouse_capture_mode(&mut self) -> Result<()> {
-        if let Some(deadline) = self.mouse_capture_suspended_until {
-            if Instant::now() >= deadline {
-                self.mouse_capture_suspended_until = None;
+    pub(crate) fn clear_selection(&mut self) {
+        if self.selection_anchor.is_some()
+            || self.selection_tail.is_some()
+            || self.selection_dragging
+        {
+            self.selection_anchor = None;
+            self.selection_tail = None;
+            self.selection_dragging = false;
+            self.selection_auto_scroll = None;
+            self.mark_redraw();
+        }
+    }
+
+    pub(crate) fn is_selecting(&self) -> bool {
+        self.selection_dragging
+    }
+
+    pub(crate) fn start_selection(&mut self, point: SelectionEndpoint) {
+        self.selection_anchor = Some(point);
+        self.selection_tail = Some(point);
+        self.selection_dragging = true;
+        self.mark_redraw();
+    }
+
+    pub(crate) fn update_selection(&mut self, point: SelectionEndpoint) {
+        if self.selection_anchor.is_some() {
+            self.selection_tail = Some(point);
+            self.mark_redraw();
+        }
+    }
+
+    pub(crate) fn finish_selection(&mut self) {
+        if self.selection_anchor.is_some() && self.selection_tail.is_some() {
+            self.selection_dragging = false;
+            self.mark_redraw();
+        }
+    }
+
+    pub(crate) fn selection_endpoints(&self) -> Option<(SelectionEndpoint, SelectionEndpoint)> {
+        let anchor = self.selection_anchor?;
+        let tail = self.selection_tail?;
+        if anchor == tail {
+            None
+        } else {
+            Some((anchor, tail))
+        }
+    }
+
+    pub(crate) fn selection_text(&self, state: &TerminalState) -> Option<String> {
+        let (anchor, tail) = self.selection_endpoints()?;
+        collect_selection_text(state.parser.screen(), anchor, tail)
+    }
+
+    pub(crate) fn begin_selection_auto_scroll(
+        &mut self,
+        direction: SelectionScrollDirection,
+        view_row: u16,
+        view_col: u16,
+    ) {
+        self.selection_auto_scroll = Some(SelectionAutoScroll {
+            direction,
+            view_row,
+            view_col,
+        });
+    }
+
+    pub(crate) fn stop_selection_auto_scroll(&mut self) {
+        if self.selection_auto_scroll.is_some() {
+            self.selection_auto_scroll = None;
+        }
+    }
+
+    pub(crate) fn copy_text_to_clipboard(&mut self, text: String) {
+        if text.is_empty() {
+            return;
+        }
+        match Clipboard::new() {
+            Ok(mut clipboard) => {
+                if let Err(err) = clipboard.set_text(text) {
+                    self.set_error(AppError::ClipboardError(err.to_string()));
+                }
+            }
+            Err(err) => {
+                self.set_error(AppError::ClipboardError(err.to_string()));
             }
         }
+    }
 
-        let should_enable = matches!(self.mode, AppMode::Connected { .. })
-            && self.mouse_capture_suspended_until.is_none();
-        self.set_mouse_capture(should_enable)?;
-        Ok(())
+    pub(crate) fn viewport_cell_at(&self, column: u16, row: u16) -> Option<TerminalPoint> {
+        let viewport = self.terminal_viewport;
+        if viewport.width == 0 || viewport.height == 0 {
+            return None;
+        }
+        if column < viewport.x
+            || row < viewport.y
+            || column >= viewport.x + viewport.width
+            || row >= viewport.y + viewport.height
+        {
+            return None;
+        }
+        Some(TerminalPoint {
+            row: row - viewport.y,
+            col: column - viewport.x,
+        })
+    }
+
+    pub(crate) fn clamp_point_to_viewport(
+        &self,
+        column: u16,
+        row: u16,
+    ) -> Option<(TerminalPoint, Option<SelectionScrollDirection>)> {
+        let viewport = self.terminal_viewport;
+        if viewport.width == 0 || viewport.height == 0 {
+            return None;
+        }
+        let mut clamped_col = column;
+        if clamped_col < viewport.x {
+            clamped_col = viewport.x;
+        } else if clamped_col >= viewport.x + viewport.width {
+            clamped_col = viewport.x + viewport.width - 1;
+        }
+
+        let top = viewport.y;
+        let bottom = viewport.y + viewport.height - 1;
+        let mut clamped_row = row;
+        let mut direction = None;
+        if clamped_row <= top {
+            clamped_row = top;
+            direction = Some(SelectionScrollDirection::Up);
+        } else if clamped_row >= bottom {
+            clamped_row = bottom;
+            direction = Some(SelectionScrollDirection::Down);
+        }
+
+        self.viewport_cell_at(clamped_col, clamped_row)
+            .map(|point| (point, direction))
     }
 
     pub(crate) fn go_to_connected(
@@ -423,10 +587,12 @@ impl<B: Backend + Write> App<B> {
             current_selected,
             cancel_token,
         };
+        self.clear_selection();
         self.needs_redraw = true; // Mode change requires redraw
     }
 
     pub(crate) fn go_to_form_new(&mut self) {
+        self.clear_selection();
         self.mode = AppMode::FormNew {
             auto_auth: false,
             form: ConnectionForm::new(),
@@ -436,6 +602,7 @@ impl<B: Backend + Write> App<B> {
     }
 
     pub(crate) fn go_to_form_edit(&mut self, form: ConnectionForm, original: Connection) {
+        self.clear_selection();
         self.mode = AppMode::FormEdit {
             form,
             original,
@@ -445,6 +612,7 @@ impl<B: Backend + Write> App<B> {
     }
 
     pub(crate) fn go_to_connection_list_with_selected(&mut self, selected: usize) {
+        self.clear_selection();
         self.mode = AppMode::ConnectionList {
             selected,
             search_mode: false,
@@ -454,6 +622,7 @@ impl<B: Backend + Write> App<B> {
     }
 
     pub(crate) fn go_to_scp_form(&mut self, current_selected: usize) {
+        self.clear_selection();
         self.mode = AppMode::ScpForm {
             form: ScpForm::new(),
             dropdown: None,
@@ -484,6 +653,7 @@ impl<B: Backend + Write> App<B> {
                 cancel_token,
             },
         };
+        self.clear_selection();
         self.needs_redraw = true; // Mode change requires redraw
     }
 
@@ -741,6 +911,10 @@ impl<B: Backend + Write> App<B> {
     }
 
     fn draw(&mut self) -> Result<()> {
+        let selection_anchor = self.selection_anchor;
+        let selection_tail = self.selection_tail;
+        let mut new_viewport = Rect::default();
+
         self.terminal.draw(|f| {
             let size = f.area();
             match &mut self.mode {
@@ -848,11 +1022,18 @@ impl<B: Backend + Write> App<B> {
                 }
                 AppMode::Connected { name, state, .. } => {
                     let inner = rect_with_top_margin(size, 1);
+                    new_viewport = inner;
                     if let Ok(mut guard) = state.try_lock() {
                         if guard.parser.screen().size() != (inner.height, inner.width) {
                             guard.resize(inner.height, inner.width);
                         }
-                        draw_terminal(size, &mut guard, name, f);
+                        let selection = compute_selection_for_view(
+                            selection_anchor,
+                            selection_tail,
+                            &guard,
+                            inner.width,
+                        );
+                        draw_terminal(size, &mut guard, name, f, selection);
                     }
                 }
                 AppMode::ScpForm { return_mode, .. } => {
@@ -872,11 +1053,18 @@ impl<B: Backend + Write> App<B> {
                         }
                         ScpReturnMode::Connected { name, state, .. } => {
                             let inner = rect_with_top_margin(size, 1);
+                            new_viewport = inner;
                             if let Ok(mut guard) = state.try_lock() {
                                 if guard.parser.screen().size() != (inner.height, inner.width) {
                                     guard.resize(inner.height, inner.width);
                                 }
-                                draw_terminal(size, &mut guard, name, f);
+                                let selection = compute_selection_for_view(
+                                    selection_anchor,
+                                    selection_tail,
+                                    &guard,
+                                    inner.width,
+                                );
+                                draw_terminal(size, &mut guard, name, f, selection);
                             }
                         }
                         ScpReturnMode::FileExplorer {
@@ -920,11 +1108,18 @@ impl<B: Backend + Write> App<B> {
                         }
                         ScpReturnMode::Connected { name, state, .. } => {
                             let inner = rect_with_top_margin(size, 1);
+                            new_viewport = inner;
                             if let Ok(mut guard) = state.try_lock() {
                                 if guard.parser.screen().size() != (inner.height, inner.width) {
                                     guard.resize(inner.height, inner.width);
                                 }
-                                draw_terminal(size, &mut guard, name, f);
+                                let selection = compute_selection_for_view(
+                                    selection_anchor,
+                                    selection_tail,
+                                    &guard,
+                                    inner.width,
+                                );
+                                draw_terminal(size, &mut guard, name, f, selection);
                             }
                         }
                         ScpReturnMode::FileExplorer {
@@ -1377,6 +1572,8 @@ impl<B: Backend + Write> App<B> {
             }
         })?;
 
+        self.terminal_viewport = new_viewport;
+
         Ok(())
     }
 
@@ -1420,6 +1617,37 @@ impl<B: Backend + Write> App<B> {
 
             match ev {
                 AppEvent::Tick => {
+                    if self.selection_dragging {
+                        if let Some(auto) = self.selection_auto_scroll {
+                            let state_arc = if let AppMode::Connected { state, .. } = &self.mode {
+                                Some(state.clone())
+                            } else {
+                                None
+                            };
+                            if let Some(state_arc) = state_arc {
+                                let mut guard = state_arc.lock().await;
+                                let delta = match auto.direction {
+                                    SelectionScrollDirection::Up => 1,
+                                    SelectionScrollDirection::Down => -1,
+                                };
+                                guard.scroll_by(delta);
+                                let (height, width) = guard.parser.screen().size();
+                                let endpoint = if height > 0 && width > 0 {
+                                    let target_row = auto.view_row.min(height.saturating_sub(1));
+                                    let target_col = auto.view_col.min(width.saturating_sub(1));
+                                    make_selection_endpoint(&guard, target_row, target_col)
+                                } else {
+                                    None
+                                };
+                                self.mark_redraw();
+                                drop(guard);
+                                if let Some(endpoint) = endpoint {
+                                    self.update_selection(endpoint);
+                                }
+                            }
+                        }
+                    }
+
                     // Update spinner animation for SCP progress and handle results
                     if let AppMode::ScpProgress {
                         progress,
@@ -1679,6 +1907,178 @@ impl<B: Backend + Write> App<B> {
         }
         Ok(())
     }
+}
+
+fn order_selection_endpoints(
+    anchor: SelectionEndpoint,
+    tail: SelectionEndpoint,
+) -> (SelectionEndpoint, SelectionEndpoint) {
+    if anchor.rev_row > tail.rev_row {
+        (anchor, tail)
+    } else if anchor.rev_row < tail.rev_row {
+        (tail, anchor)
+    } else if anchor.col <= tail.col {
+        (anchor, tail)
+    } else {
+        (tail, anchor)
+    }
+}
+
+fn compute_rev_from_view(height: u16, scrollback: usize, view_row: u16) -> i64 {
+    if height == 0 {
+        return 0;
+    }
+    let clamped_row = view_row.min(height.saturating_sub(1));
+    i64::from(height - 1 - clamped_row) + scrollback as i64
+}
+
+fn rev_to_view_row(state: &TerminalState, rev_row: i64) -> Option<u16> {
+    let (height, _) = state.parser.screen().size();
+    if height == 0 {
+        return None;
+    }
+    let scrollback = state.parser.screen().scrollback() as i64;
+    let row = (height as i64 - 1) - (rev_row - scrollback);
+    if row < 0 || row >= height as i64 {
+        None
+    } else {
+        Some(row as u16)
+    }
+}
+
+fn visible_rev_bounds(state: &TerminalState) -> Option<(i64, i64)> {
+    let (height, _) = state.parser.screen().size();
+    if height == 0 {
+        return None;
+    }
+    let scrollback = state.parser.screen().scrollback() as i64;
+    let min_rev = scrollback;
+    let max_rev = scrollback + height as i64 - 1;
+    Some((min_rev, max_rev))
+}
+
+fn compute_selection_for_view(
+    anchor: Option<SelectionEndpoint>,
+    tail: Option<SelectionEndpoint>,
+    state: &TerminalState,
+    width: u16,
+) -> Option<TerminalSelection> {
+    let (anchor, tail) = match (anchor, tail) {
+        (Some(a), Some(b)) if a != b => (a, b),
+        _ => return None,
+    };
+    if width == 0 {
+        return None;
+    }
+    let (top, bottom) = order_selection_endpoints(anchor, tail);
+    let (visible_min, visible_max) = visible_rev_bounds(state)?;
+    let clamped_top = top.rev_row.clamp(visible_min, visible_max);
+    let clamped_bottom = bottom.rev_row.clamp(visible_min, visible_max);
+    if clamped_top < clamped_bottom {
+        return None;
+    }
+    let start_row = rev_to_view_row(state, clamped_top)?;
+    let end_row = rev_to_view_row(state, clamped_bottom)?;
+
+    let start_col = if top.rev_row == clamped_top {
+        top.col.min(width.saturating_sub(1))
+    } else {
+        0
+    };
+    let end_col = if bottom.rev_row == clamped_bottom {
+        bottom.col.saturating_add(1).min(width)
+    } else {
+        width
+    };
+
+    if start_row == end_row {
+        if start_col >= end_col {
+            return None;
+        }
+    }
+
+    Some(TerminalSelection {
+        start_row,
+        start_col,
+        end_row,
+        end_col,
+    })
+}
+
+pub(crate) fn make_selection_endpoint(
+    state: &TerminalState,
+    view_row: u16,
+    view_col: u16,
+) -> Option<SelectionEndpoint> {
+    let (height, width) = state.parser.screen().size();
+    if height == 0 || width == 0 {
+        return None;
+    }
+    let clamped_col = view_col.min(width.saturating_sub(1));
+    let rev_row = compute_rev_from_view(height, state.parser.screen().scrollback(), view_row);
+    Some(SelectionEndpoint {
+        rev_row,
+        col: clamped_col,
+    })
+}
+
+fn collect_selection_text(
+    screen: &vt100::Screen,
+    anchor: SelectionEndpoint,
+    tail: SelectionEndpoint,
+) -> Option<String> {
+    let (height, width) = screen.size();
+    if height == 0 || width == 0 {
+        return None;
+    }
+
+    let (top, bottom) = order_selection_endpoints(anchor, tail);
+    let mut screen_clone = screen.clone();
+    let mut current_rev = top.rev_row;
+    let mut result = String::new();
+
+    while current_rev >= bottom.rev_row {
+        if current_rev < 0 {
+            break;
+        }
+        screen_clone.set_scrollback(current_rev as usize);
+        let row_index = height - 1;
+
+        let mut start_col = if current_rev == top.rev_row {
+            top.col
+        } else {
+            0
+        };
+        let mut end_col = if current_rev == bottom.rev_row {
+            bottom.col.saturating_add(1)
+        } else {
+            width
+        };
+
+        start_col = start_col.min(width);
+        end_col = end_col.min(width);
+
+        if end_col > start_col {
+            let slice_width = end_col - start_col;
+            let segment = screen_clone
+                .rows(start_col, slice_width)
+                .nth(row_index as usize)
+                .unwrap_or_default();
+            result.push_str(&segment);
+        }
+
+        if current_rev == bottom.rev_row {
+            break;
+        }
+
+        if !screen_clone.row_wrapped(row_index) {
+            result.push('\n');
+        }
+
+        current_rev -= 1;
+    }
+
+    Some(result)
 }
 
 fn init_panic_hook() {
