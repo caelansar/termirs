@@ -37,8 +37,8 @@ use ui::{
     draw_connection_form_popup, draw_connection_list, draw_delete_confirmation_popup,
     draw_dropdown_with_rect, draw_error_popup, draw_file_explorer, draw_info_popup,
     draw_port_forward_delete_confirmation_popup, draw_port_forwarding_form_popup,
-    draw_port_forwarding_list, draw_scp_popup, draw_scp_progress_popup, draw_terminal,
-    rect_with_top_margin,
+    draw_port_forwarding_list, draw_scp_popup, draw_scp_progress_popup, draw_search_overlay,
+    draw_terminal, rect_with_top_margin,
 };
 
 impl crate::async_ssh_client::ByteProcessor for TerminalState {
@@ -924,75 +924,31 @@ impl<B: Backend + Write> App<B> {
                     search_input,
                 } => {
                     let conns = self.config.connections();
-                    let search_query = &search_input.lines()[0];
+                    let search_query = search_input.lines()[0].to_string();
+                    let search_query_ref = search_query.as_str();
 
                     if *search_mode {
-                        // In search mode: custom layout with table, search input, and footer
-                        let layout = ratatui::layout::Layout::default()
-                            .direction(ratatui::layout::Direction::Vertical)
-                            .constraints([
-                                ratatui::layout::Constraint::Min(1),    // Table area
-                                ratatui::layout::Constraint::Length(3), // Search input area
-                                ratatui::layout::Constraint::Length(1), // Footer area
-                            ])
-                            .split(size);
-
-                        // Render the table in the first area
-                        draw_connection_list(
-                            layout[0],
-                            conns,
-                            *selected,
-                            *search_mode,
-                            search_query,
+                        draw_search_overlay(
                             f,
-                            false,
-                        );
-
-                        // Render search input in the second area
-                        search_input.set_block(
-                            ratatui::widgets::Block::default()
-                                .borders(ratatui::widgets::Borders::ALL)
-                                .title("Search")
-                                .style(
-                                    ratatui::style::Style::default()
-                                        .fg(ratatui::style::Color::Cyan),
-                                ),
-                        );
-                        f.render_widget(&*search_input, layout[1]);
-
-                        // Render footer in the third area
-                        let footer = ratatui::layout::Layout::default()
-                            .direction(ratatui::layout::Direction::Horizontal)
-                            .constraints([
+                            size,
+                            search_input,
+                            "Enter: Apply Search   Esc: Exit Search   Arrow Keys: Move Cursor",
+                            [
                                 ratatui::layout::Constraint::Percentage(50),
                                 ratatui::layout::Constraint::Percentage(50),
-                            ])
-                            .split(layout[2]);
-
-                        let hint_text =
-                            "Enter: Apply Search   Esc: Exit Search   Arrow Keys: Move Cursor";
-                        let left = ratatui::widgets::Paragraph::new(ratatui::text::Line::from(
-                            ratatui::text::Span::styled(
-                                hint_text,
-                                ratatui::style::Style::default()
-                                    .fg(ratatui::style::Color::White)
-                                    .add_modifier(ratatui::style::Modifier::DIM),
-                            ),
-                        ))
-                        .alignment(ratatui::layout::Alignment::Left);
-
-                        let right = ratatui::widgets::Paragraph::new(ratatui::text::Line::from(
-                            ratatui::text::Span::styled(
-                                format!("TermiRs v{}", env!("CARGO_PKG_VERSION")),
-                                ratatui::style::Style::default()
-                                    .fg(ratatui::style::Color::White)
-                                    .add_modifier(ratatui::style::Modifier::DIM),
-                            ),
-                        ))
-                        .alignment(ratatui::layout::Alignment::Right);
-
-                        f.render_widget(left, footer[0]);
-                        f.render_widget(right, footer[1]);
+                            ],
+                            |area, frame| {
+                                draw_connection_list(
+                                    area,
+                                    conns,
+                                    *selected,
+                                    *search_mode,
+                                    search_query_ref,
+                                    frame,
+                                    false,
+                                );
+                            },
+                        );
                     } else {
                         // Normal mode: let draw_connection_list handle everything
                         draw_connection_list(
@@ -1000,7 +956,7 @@ impl<B: Backend + Write> App<B> {
                             conns,
                             *selected,
                             *search_mode,
-                            search_query,
+                            search_query_ref,
                             f,
                             false,
                         );
@@ -1182,75 +1138,31 @@ impl<B: Backend + Write> App<B> {
                 } => {
                     let connections = self.config.connections();
                     let port_forwards = self.config.port_forwards();
-                    let search_query = &search_input.lines()[0];
+                    let search_query = search_input.lines()[0].to_string();
+                    let search_query_ref = search_query.as_str();
 
                     if *search_mode {
-                        // In search mode: custom layout with table, search input, and footer
-                        let layout = ratatui::layout::Layout::default()
-                            .direction(ratatui::layout::Direction::Vertical)
-                            .constraints([
-                                ratatui::layout::Constraint::Min(1),    // Table area
-                                ratatui::layout::Constraint::Length(3), // Search input area
-                                ratatui::layout::Constraint::Length(1), // Footer area
-                            ])
-                            .split(size);
-
-                        // Render the table in the first area
-                        draw_port_forwarding_list(
-                            layout[0],
-                            port_forwards,
-                            connections,
-                            *selected,
-                            *search_mode,
-                            search_query,
+                        draw_search_overlay(
                             f,
-                        );
-
-                        // Render search input in the second area
-                        search_input.set_block(
-                            ratatui::widgets::Block::default()
-                                .borders(ratatui::widgets::Borders::ALL)
-                                .title("Search")
-                                .style(
-                                    ratatui::style::Style::default()
-                                        .fg(ratatui::style::Color::Cyan),
-                                ),
-                        );
-                        f.render_widget(&*search_input, layout[1]);
-
-                        // Render footer in the third area
-                        let footer = ratatui::layout::Layout::default()
-                            .direction(ratatui::layout::Direction::Horizontal)
-                            .constraints([
+                            size,
+                            search_input,
+                            "Enter: Apply Search   Esc: Exit Search   Arrow Keys: Move Cursor",
+                            [
                                 ratatui::layout::Constraint::Percentage(50),
                                 ratatui::layout::Constraint::Percentage(50),
-                            ])
-                            .split(layout[2]);
-
-                        let hint_text =
-                            "Enter: Apply Search   Esc: Exit Search   Arrow Keys: Move Cursor";
-                        let left = ratatui::widgets::Paragraph::new(ratatui::text::Line::from(
-                            ratatui::text::Span::styled(
-                                hint_text,
-                                ratatui::style::Style::default()
-                                    .fg(ratatui::style::Color::White)
-                                    .add_modifier(ratatui::style::Modifier::DIM),
-                            ),
-                        ))
-                        .alignment(ratatui::layout::Alignment::Left);
-
-                        let right = ratatui::widgets::Paragraph::new(ratatui::text::Line::from(
-                            ratatui::text::Span::styled(
-                                format!("TermiRs v{}", env!("CARGO_PKG_VERSION")),
-                                ratatui::style::Style::default()
-                                    .fg(ratatui::style::Color::White)
-                                    .add_modifier(ratatui::style::Modifier::DIM),
-                            ),
-                        ))
-                        .alignment(ratatui::layout::Alignment::Right);
-
-                        f.render_widget(left, footer[0]);
-                        f.render_widget(right, footer[1]);
+                            ],
+                            |area, frame| {
+                                draw_port_forwarding_list(
+                                    area,
+                                    port_forwards,
+                                    connections,
+                                    *selected,
+                                    *search_mode,
+                                    search_query_ref,
+                                    frame,
+                                );
+                            },
+                        );
                     } else {
                         // Normal mode: let draw_port_forwarding_list handle everything
                         draw_port_forwarding_list(
@@ -1259,7 +1171,7 @@ impl<B: Backend + Write> App<B> {
                             connections,
                             *selected,
                             *search_mode,
-                            search_query,
+                            search_query_ref,
                             f,
                         );
                     }
@@ -1276,75 +1188,31 @@ impl<B: Backend + Write> App<B> {
                         // Render connection list for selection
                         let connections = self.config.connections();
                         // Always use the search query from input, regardless of search mode
-                        let search_query = connection_search_input.lines()[0].as_str();
+                        let search_query = connection_search_input.lines()[0].to_string();
+                        let search_query_ref = search_query.as_str();
 
                         if *connection_search_mode {
-                            // In search mode: custom layout with table, search input, and footer
-                            let layout = ratatui::layout::Layout::default()
-                                .direction(ratatui::layout::Direction::Vertical)
-                                .constraints([
-                                    ratatui::layout::Constraint::Min(1),    // Table area
-                                    ratatui::layout::Constraint::Length(3), // Search input area
-                                    ratatui::layout::Constraint::Length(1), // Footer area
-                                ])
-                                .split(size);
-
-                            // Render the table in the first area
-                            draw_connection_list(
-                                layout[0],
-                                connections,
-                                *connection_selected,
-                                *connection_search_mode,
-                                search_query,
+                            draw_search_overlay(
                                 f,
-                                true,
-                            );
-
-                            // Render search input in the second area
-                            connection_search_input.set_block(
-                                ratatui::widgets::Block::default()
-                                    .borders(ratatui::widgets::Borders::ALL)
-                                    .title("Search")
-                                    .style(
-                                        ratatui::style::Style::default()
-                                            .fg(ratatui::style::Color::Cyan),
-                                    ),
-                            );
-                            f.render_widget(&*connection_search_input, layout[1]);
-
-                            // Render footer in the third area
-                            let footer = ratatui::layout::Layout::default()
-                                .direction(ratatui::layout::Direction::Horizontal)
-                                .constraints([
+                                size,
+                                connection_search_input,
+                                "Enter: Select   Esc: Cancel Search   K/↑: Up   J/↓: Down",
+                                [
                                     ratatui::layout::Constraint::Percentage(80),
                                     ratatui::layout::Constraint::Percentage(20),
-                                ])
-                                .split(layout[2]);
-
-                            let hint_text =
-                                "Enter: Select   Esc: Cancel Search   K/↑: Up   J/↓: Down";
-                            let left = ratatui::widgets::Paragraph::new(ratatui::text::Line::from(
-                                ratatui::text::Span::styled(
-                                    hint_text,
-                                    ratatui::style::Style::default()
-                                        .fg(ratatui::style::Color::White)
-                                        .add_modifier(ratatui::style::Modifier::DIM),
-                                ),
-                            ))
-                            .alignment(ratatui::layout::Alignment::Left);
-
-                            let right = ratatui::widgets::Paragraph::new(
-                                ratatui::text::Line::from(ratatui::text::Span::styled(
-                                    format!("TermiRs v{}", env!("CARGO_PKG_VERSION")),
-                                    ratatui::style::Style::default()
-                                        .fg(ratatui::style::Color::White)
-                                        .add_modifier(ratatui::style::Modifier::DIM),
-                                )),
-                            )
-                            .alignment(ratatui::layout::Alignment::Right);
-
-                            f.render_widget(left, footer[0]);
-                            f.render_widget(right, footer[1]);
+                                ],
+                                |area, frame| {
+                                    draw_connection_list(
+                                        area,
+                                        connections,
+                                        *connection_selected,
+                                        *connection_search_mode,
+                                        search_query_ref,
+                                        frame,
+                                        true,
+                                    );
+                                },
+                            );
                         } else {
                             // Normal mode: just render connection list (still filtered by search query)
                             draw_connection_list(
@@ -1352,7 +1220,7 @@ impl<B: Backend + Write> App<B> {
                                 connections,
                                 *connection_selected,
                                 *connection_search_mode,
-                                search_query,
+                                search_query_ref,
                                 f,
                                 true,
                             );
@@ -1384,75 +1252,31 @@ impl<B: Backend + Write> App<B> {
                         // Render connection list for selection
                         let connections = self.config.connections();
                         // Always use the search query from input, regardless of search mode
-                        let search_query = connection_search_input.lines()[0].as_str();
+                        let search_query = connection_search_input.lines()[0].to_string();
+                        let search_query_ref = search_query.as_str();
 
                         if *connection_search_mode {
-                            // In search mode: custom layout with table, search input, and footer
-                            let layout = ratatui::layout::Layout::default()
-                                .direction(ratatui::layout::Direction::Vertical)
-                                .constraints([
-                                    ratatui::layout::Constraint::Min(1),    // Table area
-                                    ratatui::layout::Constraint::Length(3), // Search input area
-                                    ratatui::layout::Constraint::Length(1), // Footer area
-                                ])
-                                .split(size);
-
-                            // Render the table in the first area
-                            draw_connection_list(
-                                layout[0],
-                                connections,
-                                *connection_selected,
-                                *connection_search_mode,
-                                search_query,
+                            draw_search_overlay(
                                 f,
-                                true,
-                            );
-
-                            // Render search input in the second area
-                            connection_search_input.set_block(
-                                ratatui::widgets::Block::default()
-                                    .borders(ratatui::widgets::Borders::ALL)
-                                    .title("Search")
-                                    .style(
-                                        ratatui::style::Style::default()
-                                            .fg(ratatui::style::Color::Cyan),
-                                    ),
-                            );
-                            f.render_widget(&*connection_search_input, layout[1]);
-
-                            // Render footer in the third area
-                            let footer = ratatui::layout::Layout::default()
-                                .direction(ratatui::layout::Direction::Horizontal)
-                                .constraints([
+                                size,
+                                connection_search_input,
+                                "Enter: Select   Esc: Cancel Search   K/↑: Up   J/↓: Down",
+                                [
                                     ratatui::layout::Constraint::Percentage(80),
                                     ratatui::layout::Constraint::Percentage(20),
-                                ])
-                                .split(layout[2]);
-
-                            let hint_text =
-                                "Enter: Select   Esc: Cancel Search   K/↑: Up   J/↓: Down";
-                            let left = ratatui::widgets::Paragraph::new(ratatui::text::Line::from(
-                                ratatui::text::Span::styled(
-                                    hint_text,
-                                    ratatui::style::Style::default()
-                                        .fg(ratatui::style::Color::White)
-                                        .add_modifier(ratatui::style::Modifier::DIM),
-                                ),
-                            ))
-                            .alignment(ratatui::layout::Alignment::Left);
-
-                            let right = ratatui::widgets::Paragraph::new(
-                                ratatui::text::Line::from(ratatui::text::Span::styled(
-                                    format!("TermiRs v{}", env!("CARGO_PKG_VERSION")),
-                                    ratatui::style::Style::default()
-                                        .fg(ratatui::style::Color::White)
-                                        .add_modifier(ratatui::style::Modifier::DIM),
-                                )),
-                            )
-                            .alignment(ratatui::layout::Alignment::Right);
-
-                            f.render_widget(left, footer[0]);
-                            f.render_widget(right, footer[1]);
+                                ],
+                                |area, frame| {
+                                    draw_connection_list(
+                                        area,
+                                        connections,
+                                        *connection_selected,
+                                        *connection_search_mode,
+                                        search_query_ref,
+                                        frame,
+                                        true,
+                                    );
+                                },
+                            );
                         } else {
                             // Normal mode: just render connection list (still filtered by search query)
                             draw_connection_list(
@@ -1460,7 +1284,7 @@ impl<B: Backend + Write> App<B> {
                                 connections,
                                 *connection_selected,
                                 *connection_search_mode,
-                                search_query,
+                                search_query_ref,
                                 f,
                                 true,
                             );

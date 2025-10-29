@@ -103,6 +103,8 @@ fn encode_key_event_to_ansi(app_cursor: bool, key: &KeyEvent) -> Option<Vec<u8>>
 }
 
 pub async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> KeyFlow {
+    app.clear_selection();
+
     if let AppMode::Connected {
         name: _,
         client,

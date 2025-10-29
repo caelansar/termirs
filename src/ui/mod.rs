@@ -4,6 +4,7 @@ pub mod file_explorer;
 pub mod popup;
 pub mod port_forwarding;
 pub mod scp;
+pub mod search;
 pub mod terminal;
 
 // Re-export commonly used items for convenience
@@ -18,6 +19,7 @@ pub use port_forwarding::{
     draw_port_forwarding_form_popup, draw_port_forwarding_list,
 };
 pub use scp::{ScpFocusField, ScpForm, ScpMode, draw_scp_popup, draw_scp_progress_popup};
+pub use search::draw_search_overlay;
 pub use terminal::{TerminalSelection, TerminalState, draw_terminal};
 
 /// Helper function to create a rect with only top margin
