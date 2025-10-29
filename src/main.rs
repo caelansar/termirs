@@ -7,7 +7,7 @@ mod ui;
 
 use std::io::Write;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 use arboard::Clipboard;
@@ -91,6 +91,20 @@ struct SelectionAutoScroll {
     direction: SelectionScrollDirection,
     view_row: u16,
     view_col: u16,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LastMouseClick {
+    point: TerminalPoint,
+    time: Instant,
+    count: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MouseClickClass {
+    Single,
+    Double,
+    Triple,
 }
 
 /// Enum to track where to return after SCP operations
@@ -346,6 +360,8 @@ pub(crate) struct App<B: Backend + Write> {
     selection_tail: Option<SelectionEndpoint>,
     selection_dragging: bool,
     selection_auto_scroll: Option<SelectionAutoScroll>,
+    last_click: Option<LastMouseClick>,
+    selection_force_nonempty: bool,
 }
 
 impl<B: Backend + Write> Drop for App<B> {
@@ -389,6 +405,8 @@ impl<B: Backend + Write> App<B> {
             selection_tail: None,
             selection_dragging: false,
             selection_auto_scroll: None,
+            last_click: None,
+            selection_force_nonempty: false,
         })
     }
 
@@ -407,6 +425,8 @@ impl<B: Backend + Write> App<B> {
         self.selection_tail = None;
         self.selection_dragging = false;
         self.selection_auto_scroll = None;
+        self.last_click = None;
+        self.selection_force_nonempty = false;
 
         Ok(())
     }
@@ -443,6 +463,7 @@ impl<B: Backend + Write> App<B> {
             self.selection_tail = None;
             self.selection_dragging = false;
             self.selection_auto_scroll = None;
+            self.selection_force_nonempty = false;
             self.mark_redraw();
         }
     }
@@ -455,6 +476,7 @@ impl<B: Backend + Write> App<B> {
         self.selection_anchor = Some(point);
         self.selection_tail = Some(point);
         self.selection_dragging = true;
+        self.selection_force_nonempty = false;
         self.mark_redraw();
     }
 
@@ -475,7 +497,7 @@ impl<B: Backend + Write> App<B> {
     pub(crate) fn selection_endpoints(&self) -> Option<(SelectionEndpoint, SelectionEndpoint)> {
         let anchor = self.selection_anchor?;
         let tail = self.selection_tail?;
-        if anchor == tail {
+        if anchor == tail && !self.selection_force_nonempty {
             None
         } else {
             Some((anchor, tail))
@@ -504,6 +526,59 @@ impl<B: Backend + Write> App<B> {
         if self.selection_auto_scroll.is_some() {
             self.selection_auto_scroll = None;
         }
+    }
+
+    pub(crate) fn register_left_click(&mut self, point: TerminalPoint) -> MouseClickClass {
+        const DOUBLE_CLICK_MAX_INTERVAL: Duration = Duration::from_millis(350);
+        let now = Instant::now();
+        let mut click_class = MouseClickClass::Single;
+        let mut click_count = 1;
+
+        if let Some(last) = self.last_click {
+            let within_window = now.duration_since(last.time) <= DOUBLE_CLICK_MAX_INTERVAL;
+            if within_window && last.point == point {
+                let next_count = last.count.saturating_add(1);
+                match next_count {
+                    2 => {
+                        click_class = MouseClickClass::Double;
+                        click_count = 2;
+                    }
+                    3 => {
+                        click_class = MouseClickClass::Triple;
+                        click_count = 3;
+                    }
+                    _ => {
+                        click_class = MouseClickClass::Single;
+                        click_count = 1;
+                    }
+                }
+            }
+        }
+
+        self.last_click = Some(LastMouseClick {
+            point,
+            time: now,
+            count: click_count,
+        });
+
+        if matches!(click_class, MouseClickClass::Triple) {
+            // Reset sequence after triple click so future clicks start fresh.
+            self.last_click = Some(LastMouseClick {
+                point,
+                time: now,
+                count: 0,
+            });
+        }
+
+        click_class
+    }
+
+    pub(crate) fn clear_click_tracking(&mut self) {
+        self.last_click = None;
+    }
+
+    pub(crate) fn force_selection_nonempty(&mut self) {
+        self.selection_force_nonempty = true;
     }
 
     pub(crate) fn copy_text_to_clipboard(&mut self, text: String) {
@@ -913,6 +988,7 @@ impl<B: Backend + Write> App<B> {
     fn draw(&mut self) -> Result<()> {
         let selection_anchor = self.selection_anchor;
         let selection_tail = self.selection_tail;
+        let selection_forced = self.selection_force_nonempty;
         let mut new_viewport = Rect::default();
 
         self.terminal.draw(|f| {
@@ -988,6 +1064,7 @@ impl<B: Backend + Write> App<B> {
                             selection_tail,
                             &guard,
                             inner.width,
+                            selection_forced,
                         );
                         draw_terminal(size, &mut guard, name, f, selection);
                     }
@@ -1019,6 +1096,7 @@ impl<B: Backend + Write> App<B> {
                                     selection_tail,
                                     &guard,
                                     inner.width,
+                                    selection_forced,
                                 );
                                 draw_terminal(size, &mut guard, name, f, selection);
                             }
@@ -1074,6 +1152,7 @@ impl<B: Backend + Write> App<B> {
                                     selection_tail,
                                     &guard,
                                     inner.width,
+                                    selection_forced,
                                 );
                                 draw_terminal(size, &mut guard, name, f, selection);
                             }
@@ -1786,11 +1865,15 @@ fn compute_selection_for_view(
     tail: Option<SelectionEndpoint>,
     state: &TerminalState,
     width: u16,
+    force_nonempty: bool,
 ) -> Option<TerminalSelection> {
     let (anchor, tail) = match (anchor, tail) {
-        (Some(a), Some(b)) if a != b => (a, b),
+        (Some(a), Some(b)) => (a, b),
         _ => return None,
     };
+    if anchor == tail && !force_nonempty {
+        return None;
+    }
     if width == 0 {
         return None;
     }
