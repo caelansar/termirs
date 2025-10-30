@@ -587,7 +587,7 @@ impl<B: Backend + Write> App<B> {
         }
         match Clipboard::new() {
             Ok(mut clipboard) => {
-                if let Err(err) = clipboard.set_text(text) {
+                if let Err(err) = clipboard.set_text(text.trim_end()) {
                     self.set_error(AppError::ClipboardError(err.to_string()));
                 }
             }
@@ -1836,11 +1836,15 @@ fn compute_rev_from_view(height: u16, scrollback: usize, view_row: u16) -> i64 {
 }
 
 fn rev_to_view_row(state: &TerminalState, rev_row: i64) -> Option<u16> {
-    let (height, _) = state.parser.screen().size();
+    rev_to_view_row_on_screen(state.parser.screen(), rev_row)
+}
+
+fn rev_to_view_row_on_screen(screen: &vt100::Screen, rev_row: i64) -> Option<u16> {
+    let (height, _) = screen.size();
     if height == 0 {
         return None;
     }
-    let scrollback = state.parser.screen().scrollback() as i64;
+    let scrollback = screen.scrollback() as i64;
     let row = (height as i64 - 1) - (rev_row - scrollback);
     if row < 0 || row >= height as i64 {
         None
@@ -1879,6 +1883,9 @@ fn compute_selection_for_view(
     }
     let (top, bottom) = order_selection_endpoints(anchor, tail);
     let (visible_min, visible_max) = visible_rev_bounds(state)?;
+    if top.rev_row < visible_min || bottom.rev_row > visible_max {
+        return None;
+    }
     let clamped_top = top.rev_row.clamp(visible_min, visible_max);
     let clamped_bottom = bottom.rev_row.clamp(visible_min, visible_max);
     if clamped_top < clamped_bottom {
@@ -1940,7 +1947,6 @@ fn collect_selection_text(
     }
 
     let (top, bottom) = order_selection_endpoints(anchor, tail);
-    let mut screen_clone = screen.clone();
     let mut current_rev = top.rev_row;
     let mut result = String::new();
 
@@ -1948,8 +1954,17 @@ fn collect_selection_text(
         if current_rev < 0 {
             break;
         }
-        screen_clone.set_scrollback(current_rev as usize);
-        let row_index = height - 1;
+
+        let view_row = match rev_to_view_row_on_screen(screen, current_rev) {
+            Some(row) => row,
+            None => {
+                if current_rev == bottom.rev_row {
+                    break;
+                }
+                current_rev -= 1;
+                continue;
+            }
+        };
 
         let mut start_col = if current_rev == top.rev_row {
             top.col
@@ -1966,11 +1981,7 @@ fn collect_selection_text(
         end_col = end_col.min(width);
 
         if end_col > start_col {
-            let slice_width = end_col - start_col;
-            let segment = screen_clone
-                .rows(start_col, slice_width)
-                .nth(row_index as usize)
-                .unwrap_or_default();
+            let segment = extract_screen_segment(screen, view_row, start_col, end_col);
             result.push_str(&segment);
         }
 
@@ -1978,14 +1989,99 @@ fn collect_selection_text(
             break;
         }
 
-        if !screen_clone.row_wrapped(row_index) {
+        if !screen.row_wrapped(view_row) {
             result.push('\n');
         }
 
+        if current_rev == i64::MIN {
+            break;
+        }
         current_rev -= 1;
     }
 
     Some(result)
+}
+
+fn extract_screen_segment(
+    screen: &vt100::Screen,
+    row: u16,
+    start_col: u16,
+    end_col: u16,
+) -> String {
+    let mut text = String::new();
+    let mut col = start_col;
+    while col < end_col {
+        if let Some(cell) = screen.cell(row, col) {
+            if cell.is_wide_continuation() {
+                col = col.saturating_add(1);
+                continue;
+            }
+            if cell.has_contents() {
+                text.push_str(cell.contents());
+                let advance = if cell.is_wide() { 2 } else { 1 };
+                col = col.saturating_add(advance);
+                continue;
+            }
+        }
+        text.push(' ');
+        col = col.saturating_add(1);
+    }
+    text
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+
+    #[test]
+    fn selection_above_viewport_is_hidden() {
+        let state = TerminalState::new(5, 10);
+        let endpoint = SelectionEndpoint {
+            rev_row: 10,
+            col: 3,
+        };
+        let result = compute_selection_for_view(Some(endpoint), Some(endpoint), &state, 10, false);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn selection_below_viewport_is_hidden() {
+        let state = TerminalState::new(5, 10);
+        let endpoint = SelectionEndpoint {
+            rev_row: -1,
+            col: 0,
+        };
+        let result = compute_selection_for_view(Some(endpoint), Some(endpoint), &state, 10, false);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn selection_overlapping_viewport_is_rendered() {
+        let mut state = TerminalState::new(5, 10);
+        state.parser.screen_mut().set_scrollback(2);
+        let anchor = SelectionEndpoint { rev_row: 7, col: 4 };
+        let tail = SelectionEndpoint { rev_row: 4, col: 5 };
+        let selection = compute_selection_for_view(Some(anchor), Some(tail), &state, 10, false)
+            .expect("selection should be visible");
+        assert_eq!(selection.start_row, 0);
+        assert_eq!(selection.end_col, 6);
+    }
+
+    #[test]
+    fn selection_in_alternate_screen_copies_text() {
+        let mut state = TerminalState::new(5, 20);
+        state.process_bytes(b"\x1b[?1049h");
+        state.process_bytes(b"first line in vim");
+        state.process_bytes(b"\r\nsecond row");
+
+        let anchor = make_selection_endpoint(&state, 0, 0).unwrap();
+        let tail = make_selection_endpoint(&state, 1, 6).unwrap();
+        let text =
+            collect_selection_text(state.parser.screen(), anchor, tail).expect("text available");
+
+        assert!(text.contains("first line"));
+        assert!(text.contains("second"));
+    }
 }
 
 fn init_panic_hook() {

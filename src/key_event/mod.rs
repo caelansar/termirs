@@ -446,7 +446,7 @@ fn classify_char(ch: char) -> CharKind {
     // (punctuation/symbols) forms its own cluster.
     if ch.is_whitespace() {
         CharKind::Whitespace
-    } else if ch.is_alphanumeric() || ch == '_' {
+    } else if ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '.' {
         CharKind::Word
     } else {
         CharKind::Other
@@ -462,7 +462,7 @@ mod tests {
         assert_eq!(classify_char('a'), CharKind::Word);
         assert_eq!(classify_char('_'), CharKind::Word);
         assert_eq!(classify_char(' '), CharKind::Whitespace);
-        assert_eq!(classify_char('-'), CharKind::Other);
+        assert_eq!(classify_char('-'), CharKind::Word);
     }
 
     #[test]
