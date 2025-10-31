@@ -3,6 +3,7 @@ use std::io::Write;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::prelude::Backend;
 
+use crate::error::AppError;
 use crate::ui::TerminalState;
 use crate::{App, AppMode, MouseClickClass, SelectionEndpoint, make_selection_endpoint};
 
@@ -47,7 +48,9 @@ pub async fn handle_key_event<B: Backend + Write>(app: &mut App<B>, key: KeyEven
     if app.error.is_some() {
         match key.code {
             KeyCode::Enter | KeyCode::Esc => {
-                app.error = None;
+                if let Some(AppError::ChannelClosedError(_)) = app.error.take() {
+                    app.go_to_connection_list_with_selected(app.current_selected());
+                }
             }
             _ => {}
         }

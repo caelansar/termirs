@@ -24,6 +24,9 @@ pub enum AppError {
     #[error("SSH write error: {0}")]
     SshWriteError(String),
 
+    #[error("SSH channel closed: {0}")]
+    ChannelClosedError(String),
+
     #[error("Russh error: {0}")]
     RusshError(#[from] russh::Error),
 
