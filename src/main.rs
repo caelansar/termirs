@@ -33,12 +33,11 @@ pub(crate) use async_ssh_client::expand_tilde;
 use config::manager::{ConfigManager, Connection};
 use error::{AppError, Result};
 use ui::{
-    ConnectionForm, DropdownState, ScpForm, TerminalSelection, TerminalState,
-    draw_connection_form_popup, draw_connection_list, draw_delete_confirmation_popup,
-    draw_dropdown_with_rect, draw_error_popup, draw_file_explorer, draw_info_popup,
-    draw_port_forward_delete_confirmation_popup, draw_port_forwarding_form_popup,
-    draw_port_forwarding_list, draw_scp_popup, draw_scp_progress_popup, draw_search_overlay,
-    draw_terminal, rect_with_top_margin,
+    ConnectionForm, TerminalSelection, TerminalState, draw_connection_form_popup,
+    draw_connection_list, draw_delete_confirmation_popup, draw_error_popup, draw_file_explorer,
+    draw_info_popup, draw_port_forward_delete_confirmation_popup, draw_port_forwarding_form_popup,
+    draw_port_forwarding_list, draw_scp_progress_popup, draw_search_overlay, draw_terminal,
+    rect_with_top_margin,
 };
 
 impl crate::async_ssh_client::ByteProcessor for TerminalState {
@@ -155,9 +154,9 @@ pub(crate) enum CopyDirection {
 }
 
 pub(crate) enum ScpReturnMode {
-    ConnectionList {
-        current_selected: usize,
-    },
+    #[allow(dead_code)]
+    ConnectionList { current_selected: usize },
+    #[allow(dead_code)]
     Connected {
         name: String,
         client: SshSession,
@@ -251,12 +250,6 @@ pub(crate) enum AppMode {
         state: Arc<Mutex<TerminalState>>,
         current_selected: usize,
         cancel_token: tokio_util::sync::CancellationToken, // Token to cancel the read task
-    },
-    ScpForm {
-        form: ScpForm,
-        dropdown: Option<DropdownState>,
-        return_mode: ScpReturnMode,
-        channel: Option<russh::Channel<russh::client::Msg>>,
     },
     ScpProgress {
         progress: ScpProgress,
@@ -759,42 +752,6 @@ impl<B: Backend + Write> App<B> {
         self.needs_redraw = true; // Mode change requires redraw
     }
 
-    pub(crate) fn go_to_scp_form(&mut self, current_selected: usize) {
-        self.clear_selection();
-        self.mode = AppMode::ScpForm {
-            form: ScpForm::new(),
-            dropdown: None,
-            return_mode: ScpReturnMode::ConnectionList { current_selected },
-            channel: None,
-        };
-        self.needs_redraw = true; // Mode change requires redraw
-    }
-
-    pub(crate) fn go_to_scp_form_from_connected(
-        &mut self,
-        name: String,
-        client: SshSession,
-        state: Arc<Mutex<TerminalState>>,
-        current_selected: usize,
-        channel: Option<russh::Channel<russh::client::Msg>>,
-        cancel_token: tokio_util::sync::CancellationToken,
-    ) {
-        self.mode = AppMode::ScpForm {
-            form: ScpForm::new(),
-            dropdown: None,
-            channel,
-            return_mode: ScpReturnMode::Connected {
-                name,
-                client,
-                state,
-                current_selected,
-                cancel_token,
-            },
-        };
-        self.clear_selection();
-        self.needs_redraw = true; // Mode change requires redraw
-    }
-
     pub(crate) fn go_to_scp_progress(
         &mut self,
         progress: ScpProgress,
@@ -997,15 +954,13 @@ impl<B: Backend + Write> App<B> {
             | AppMode::DeleteConfirmation {
                 current_selected, ..
             } => *current_selected,
-            AppMode::ScpForm { return_mode, .. } | AppMode::ScpProgress { return_mode, .. } => {
-                match return_mode {
-                    ScpReturnMode::ConnectionList { current_selected } => *current_selected,
-                    ScpReturnMode::Connected {
-                        current_selected, ..
-                    } => *current_selected,
-                    ScpReturnMode::FileExplorer { return_to, .. } => *return_to,
-                }
-            }
+            AppMode::ScpProgress { return_mode, .. } => match return_mode {
+                ScpReturnMode::ConnectionList { current_selected } => *current_selected,
+                ScpReturnMode::Connected {
+                    current_selected, ..
+                } => *current_selected,
+                ScpReturnMode::FileExplorer { return_to, .. } => *return_to,
+            },
             AppMode::FileExplorer { return_to, .. } => *return_to,
             AppMode::FormNew { .. } => 0,
             AppMode::PortForwardingList { selected, .. } => {
@@ -1133,62 +1088,6 @@ impl<B: Backend + Write> App<B> {
                             selection_forced,
                         );
                         draw_terminal(size, &mut guard, name, f, selection);
-                    }
-                }
-                AppMode::ScpForm { return_mode, .. } => {
-                    // Render appropriate background based on return mode
-                    match return_mode {
-                        ScpReturnMode::ConnectionList { current_selected } => {
-                            let conns = self.config.connections();
-                            draw_connection_list(
-                                size,
-                                conns,
-                                *current_selected,
-                                false,
-                                "",
-                                f,
-                                false,
-                            );
-                        }
-                        ScpReturnMode::Connected { name, state, .. } => {
-                            let inner = rect_with_top_margin(size, 1);
-                            new_viewport = inner;
-                            if let Ok(mut guard) = state.try_lock() {
-                                if guard.parser.screen().size() != (inner.height, inner.width) {
-                                    guard.resize(inner.height, inner.width);
-                                }
-                                let selection = compute_selection_for_view(
-                                    selection_anchor,
-                                    selection_tail,
-                                    &guard,
-                                    inner.width,
-                                    selection_forced,
-                                );
-                                draw_terminal(size, &mut guard, name, f, selection);
-                            }
-                        }
-                        ScpReturnMode::FileExplorer {
-                            connection_name,
-                            local_explorer,
-                            remote_explorer,
-                            active_pane,
-                            copy_buffer,
-                            search_mode,
-                            search_query,
-                            ..
-                        } => {
-                            draw_file_explorer(
-                                f,
-                                size,
-                                connection_name,
-                                local_explorer,
-                                remote_explorer,
-                                active_pane,
-                                copy_buffer,
-                                *search_mode,
-                                search_query,
-                            );
-                        }
                     }
                 }
                 AppMode::ScpProgress { return_mode, .. } => {
@@ -1464,16 +1363,6 @@ impl<B: Backend + Write> App<B> {
                         "",
                         f,
                     );
-                }
-            }
-
-            // Overlay SCP popup if in SCP form mode
-            if let AppMode::ScpForm { form, dropdown, .. } = &mut self.mode {
-                let scp_input_rects = draw_scp_popup(size, form, f);
-
-                // Update dropdown anchor rect if dropdown exists
-                if let Some(dropdown) = dropdown {
-                    draw_dropdown_with_rect(dropdown, scp_input_rects.0, f);
                 }
             }
 

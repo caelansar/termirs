@@ -7,7 +7,6 @@ use crate::error::AppError;
 use crate::ui::TerminalState;
 use crate::{App, AppMode, MouseClickClass, SelectionEndpoint, make_selection_endpoint};
 
-pub mod autocomplete;
 pub mod connected;
 pub mod connection_list;
 pub mod file_explorer;
@@ -24,10 +23,7 @@ pub use port_forwarding::{
     handle_port_forward_delete_confirmation_key, handle_port_forwarding_form_connection_select_key,
     handle_port_forwarding_form_key, handle_port_forwarding_list_key,
 };
-pub use scp::{
-    handle_delete_confirmation_key, handle_scp_form_dropdown_key, handle_scp_form_key,
-    handle_scp_progress_key,
-};
+pub use scp::{handle_delete_confirmation_key, handle_scp_progress_key};
 
 const TERMINAL_MOUSE_SCROLL_STEP: i32 = 5;
 
@@ -73,10 +69,6 @@ pub async fn handle_key_event<B: Backend + Write>(app: &mut App<B>, key: KeyEven
         AppMode::FormNew { .. } => handle_form_new_key(app, key).await,
         AppMode::FormEdit { .. } => handle_form_edit_key(app, key).await,
         AppMode::Connected { .. } => handle_connected_key(app, key).await,
-        AppMode::ScpForm {
-            dropdown: Some(_), ..
-        } => handle_scp_form_dropdown_key(app, key).await,
-        AppMode::ScpForm { .. } => handle_scp_form_key(app, key).await,
         AppMode::ScpProgress { .. } => handle_scp_progress_key(app, key).await,
         AppMode::DeleteConfirmation { .. } => handle_delete_confirmation_key(app, key).await,
         AppMode::FileExplorer { .. } => handle_file_explorer_key(app, key).await,
@@ -122,10 +114,6 @@ pub async fn handle_paste_event<B: Backend + Write>(app: &mut App<B>, data: &str
             if let Err(e) = client.write_all(data.as_bytes()).await {
                 app.error = Some(e);
             }
-        }
-        AppMode::ScpForm { form, .. } => {
-            let textarea = form.focused_textarea_mut();
-            textarea.insert_str(data);
         }
         AppMode::PortForwardingFormNew { form, .. } => {
             if let Some(textarea) = form.focused_textarea_mut() {

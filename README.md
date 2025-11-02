@@ -71,7 +71,7 @@ cargo build --release --locked
 - `n`: Create new connection
 - `e`: Edit selected connection
 - `d`: Delete selected connection
-- `s`: Start SFTP file transfer
+- `i`: Open file explorer
 - `p`: Open port forwarding management
 - `/`: Search connections
 - `q`: Quit application

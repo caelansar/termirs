@@ -197,41 +197,6 @@ pub async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: Key
                     guard.scroll_by(5);
                 }
             }
-            // Handle Ctrl+S to open SCP form
-            KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let AppMode::Connected {
-                    name,
-                    client,
-                    state,
-                    current_selected,
-                    cancel_token,
-                } = &mut app.mode
-                {
-                    // Clone all the values we need before changing the mode
-                    let name_clone = name.clone();
-                    let client_clone = client.clone();
-                    let state_clone = state.clone();
-                    let current_selected_clone = *current_selected;
-                    let cancel_token_clone = cancel_token.clone();
-
-                    match client.open_session_channel().await {
-                        Ok(channel) => {
-                            app.go_to_scp_form_from_connected(
-                                name_clone,
-                                client_clone,
-                                state_clone,
-                                current_selected_clone,
-                                Some(channel),
-                                cancel_token_clone,
-                            );
-                        }
-                        Err(e) => {
-                            app.error = Some(e);
-                            return KeyFlow::Continue;
-                        }
-                    }
-                }
-            }
             // All other keys can be handled by the ANSI encoder
             _ => {
                 let guard = state.lock().await;

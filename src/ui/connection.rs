@@ -395,7 +395,7 @@ pub fn draw_connection_list(
         let hint_text = if choose_connection_mode {
             "Enter: Select   K/↑: Up   J/↓: Down   /: Search"
         } else {
-            "Enter: Connect   K/↑: Up   J/↓: Down   N: New   S: SCP   I: File Explorer   P: Port Forward   D: Delete   E: Edit   /: Search"
+            "Enter: Connect   K/↑: Up   J/↓: Down   N: New   I: File Explorer   P: Port Forward   D: Delete   E: Edit   /: Search"
         };
 
         let left = Paragraph::new(Line::from(Span::styled(

@@ -53,11 +53,6 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
         KeyCode::Char('n') | KeyCode::Char('N') => {
             app.go_to_form_new();
         }
-        KeyCode::Char('s') | KeyCode::Char('S') => {
-            if len != 0 {
-                app.go_to_scp_form(app.current_selected());
-            }
-        }
         KeyCode::Char('i') | KeyCode::Char('I') => {
             // Open file explorer for the selected connection
             let selected_idx = app.current_selected();

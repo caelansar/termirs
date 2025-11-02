@@ -981,17 +981,6 @@ impl SshSession {
         .await
     }
 
-    pub async fn open_session_channel(&self) -> Result<Channel<client::Msg>> {
-        let guard = self.session.lock().await;
-        let session = guard.as_ref().ok_or_else(|| {
-            AppError::SshConnectionError("SSH session handle unavailable".to_string())
-        })?;
-        session
-            .channel_open_session()
-            .await
-            .map_err(|e| AppError::SshConnectionError(format!("Failed to open channel: {e}")))
-    }
-
     /// Start a port forwarding task and return the handle and cancellation token
     pub async fn start_port_forwarding_task(
         local_addr: &str,
