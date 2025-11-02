@@ -1,6 +1,7 @@
 //! Key event handling for the file explorer mode.
 
 use crossterm::event::{KeyCode, KeyEvent};
+use futures::future::join_all;
 use ratatui::backend::Backend;
 use std::io::Write;
 
@@ -16,7 +17,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
         local_explorer,
         remote_explorer,
         active_pane,
-        copy_operation,
+        copy_buffer,
         return_to,
         search_mode,
         search_query,
@@ -91,8 +92,9 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
         }
 
         // Handle copy mode cancellation first
-        if key.code == KeyCode::Esc && copy_operation.is_some() {
-            *copy_operation = None;
+        if key.code == KeyCode::Esc && !copy_buffer.is_empty() {
+            copy_buffer.clear();
+            // app.info = Some("Cleared selected files".to_string());
             app.mark_redraw();
             return KeyFlow::Continue;
         }
@@ -203,7 +205,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                 app.mark_redraw();
             }
 
-            // Copy file: Enter copy mode
+            // Copy file: Toggle selection
             KeyCode::Char('c') => {
                 let (current_file, direction) = match active_pane {
                     FileExplorerPane::Local => {
@@ -214,178 +216,280 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                     }
                 };
 
-                // Only copy files, not directories
-                if !current_file.is_dir() {
-                    *copy_operation = Some(CopyOperation {
-                        source_path: current_file.path().to_string_lossy().to_string(),
+                if current_file.is_dir() {
+                    app.info = Some("Cannot copy directories (not yet supported)".to_string());
+                    app.mark_redraw();
+                    return KeyFlow::Continue;
+                }
+
+                let source_path = current_file.path().to_string_lossy().to_string();
+                if let Some(existing_idx) = copy_buffer
+                    .iter()
+                    .position(|item| item.source_path == source_path)
+                {
+                    copy_buffer.remove(existing_idx);
+                    // if copy_buffer.is_empty() {
+                    //     app.info = Some(format!("Removed {} from selection", current_file.name()));
+                    // } else {
+                    //     app.info = Some(format!(
+                    //         "Removed {} ({} remaining)",
+                    //         current_file.name(),
+                    //         copy_buffer.len()
+                    //     ));
+                    // }
+                } else {
+                    if let Some(existing_direction) = copy_buffer.first().map(|item| item.direction)
+                    {
+                        if existing_direction != direction {
+                            app.info = Some(
+                                "Selected files must all come from the same source pane"
+                                    .to_string(),
+                            );
+                            app.mark_redraw();
+                            return KeyFlow::Continue;
+                        }
+                    }
+
+                    copy_buffer.push(CopyOperation {
+                        source_path,
                         source_name: current_file.name().to_string(),
                         direction,
                     });
 
+                    // let count = copy_buffer.len();
+                    // let count_msg = if count == 1 {
+                    //     "1 file selected".to_string()
+                    // } else {
+                    //     format!("{count} files selected")
+                    // };
                     // app.info = Some(format!(
-                    //     "Copied {} - Press Tab to switch pane, then 'v' to paste",
-                    //     current_file.name()
+                    //     "{} - Press Tab to switch pane, then 'v' to paste",
+                    //     count_msg
                     // ));
-                } else {
-                    app.info = Some("Cannot copy directories (not yet supported)".to_string());
                 }
                 app.mark_redraw();
             }
 
-            // Paste file: Execute transfer
+            // Paste file: Execute transfer (batch aware)
             KeyCode::Char('v') => {
-                if let Some(copy_op) = copy_operation.take() {
-                    // Get destination directory
-                    let dest_dir = match active_pane {
-                        FileExplorerPane::Local => {
-                            local_explorer.cwd().to_string_lossy().to_string()
-                        }
-                        FileExplorerPane::Remote => {
-                            remote_explorer.cwd().to_string_lossy().to_string()
-                        }
-                    };
+                if copy_buffer.is_empty() {
+                    app.info =
+                        Some("No files selected - press 'c' on files to add them".to_string());
+                    app.mark_redraw();
+                    return KeyFlow::Continue;
+                }
 
-                    // Check if we're pasting in the same pane as we copied from
-                    let same_pane = match (&copy_op.direction, active_pane) {
-                        (CopyDirection::LocalToRemote, FileExplorerPane::Local) => true,
-                        (CopyDirection::RemoteToLocal, FileExplorerPane::Remote) => true,
-                        _ => false,
-                    };
+                let dest_dir = match active_pane {
+                    FileExplorerPane::Local => local_explorer.cwd().to_string_lossy().to_string(),
+                    FileExplorerPane::Remote => remote_explorer.cwd().to_string_lossy().to_string(),
+                };
 
-                    if same_pane {
-                        app.info =
-                            Some("Cannot paste in the same pane - press Tab to switch".to_string());
-                        // Restore the copy operation
-                        *copy_operation = Some(copy_op);
-                    } else {
-                        // Determine local and remote paths based on direction
-                        let (local_path, remote_path, mode) = match copy_op.direction {
+                let direction = copy_buffer[0].direction;
+                let same_pane = match (direction, active_pane) {
+                    (CopyDirection::LocalToRemote, FileExplorerPane::Local) => true,
+                    (CopyDirection::RemoteToLocal, FileExplorerPane::Remote) => true,
+                    _ => false,
+                };
+
+                if same_pane {
+                    app.info =
+                        Some("Cannot paste in the same pane - press Tab to switch".to_string());
+                    app.mark_redraw();
+                    return KeyFlow::Continue;
+                }
+
+                let mode = match direction {
+                    CopyDirection::LocalToRemote => crate::ui::ScpMode::Send,
+                    CopyDirection::RemoteToLocal => crate::ui::ScpMode::Receive,
+                };
+
+                let mut transfer_specs = Vec::with_capacity(copy_buffer.len());
+                for item in copy_buffer.iter() {
+                    let (local_path, remote_path, display_name, destination_filename) =
+                        match direction {
                             CopyDirection::LocalToRemote => {
                                 let remote_dest = format!(
                                     "{}/{}",
                                     dest_dir.trim_end_matches('/'),
-                                    copy_op.source_name
+                                    item.source_name
                                 );
                                 (
-                                    copy_op.source_path.clone(),
-                                    remote_dest,
-                                    crate::ui::ScpMode::Send,
+                                    item.source_path.clone(),
+                                    remote_dest.clone(),
+                                    item.source_name.clone(),
+                                    std::path::Path::new(&remote_dest)
+                                        .file_name()
+                                        .map(|f| f.to_string_lossy().to_string())
+                                        .unwrap_or_else(|| item.source_name.clone()),
                                 )
                             }
                             CopyDirection::RemoteToLocal => {
                                 let local_dest = format!(
                                     "{}/{}",
                                     dest_dir.trim_end_matches('/'),
-                                    copy_op.source_name
+                                    item.source_name
                                 );
                                 (
-                                    local_dest,
-                                    copy_op.source_path.clone(),
-                                    crate::ui::ScpMode::Receive,
+                                    local_dest.clone(),
+                                    item.source_path.clone(),
+                                    item.source_name.clone(),
+                                    std::path::Path::new(&local_dest)
+                                        .file_name()
+                                        .map(|f| f.to_string_lossy().to_string())
+                                        .unwrap_or_else(|| item.source_name.clone()),
                                 )
                             }
                         };
 
-                        // We need to extract the entire FileExplorer state to transition to ScpProgress
-                        // Take ownership by replacing app.mode temporarily
-                        let old_mode = std::mem::replace(
-                            &mut app.mode,
-                            AppMode::ConnectionList {
-                                selected: 0,
-                                search_mode: false,
-                                search_input: crate::create_search_textarea(),
-                            },
-                        );
+                    transfer_specs.push(crate::ScpTransferSpec {
+                        mode,
+                        local_path,
+                        remote_path,
+                        display_name,
+                        destination_filename,
+                    });
+                }
 
-                        if let AppMode::FileExplorer {
-                            connection_name,
-                            local_explorer,
-                            remote_explorer,
-                            active_pane,
-                            copy_operation: _,
-                            return_to,
-                            sftp_session,
-                            ssh_connection,
-                            channel,
-                            search_mode,
-                            search_query,
-                        } = old_mode
-                        {
-                            // Create channel for communication with background task
-                            let (sender, receiver) = tokio::sync::mpsc::channel(1);
+                copy_buffer.clear();
 
-                            // Create progress tracker
-                            let progress = crate::ScpProgress::new_with_mode(
-                                local_path.clone(),
-                                remote_path.clone(),
-                                connection_name.clone(),
-                                mode,
-                            );
+                let old_mode = std::mem::replace(
+                    &mut app.mode,
+                    AppMode::ConnectionList {
+                        selected: 0,
+                        search_mode: false,
+                        search_input: crate::create_search_textarea(),
+                    },
+                );
 
-                            // Create return mode with file explorer state
-                            let return_mode = crate::ScpReturnMode::FileExplorer {
-                                connection_name: connection_name.clone(),
-                                local_explorer,
-                                remote_explorer,
-                                active_pane,
-                                copy_operation: None, // Clear copy operation after paste
-                                return_to,
-                                sftp_session,
-                                ssh_connection: ssh_connection.clone(),
-                                channel: None, // Channel will be consumed by transfer
-                                search_mode,
-                                search_query,
-                            };
+                if let AppMode::FileExplorer {
+                    connection_name,
+                    local_explorer,
+                    remote_explorer,
+                    active_pane,
+                    copy_buffer: _,
+                    return_to,
+                    sftp_session,
+                    ssh_connection,
+                    channel: _channel,
+                    search_mode,
+                    search_query,
+                } = old_mode
+                {
+                    let (result_sender, result_receiver) = tokio::sync::mpsc::channel(1);
+                    let (progress_sender, progress_receiver) = tokio::sync::mpsc::channel(64);
 
-                            // Transition to progress mode
-                            app.go_to_scp_progress(progress, receiver, return_mode);
+                    let progress_items: Vec<crate::ScpFileProgress> = transfer_specs
+                        .iter()
+                        .map(crate::ScpFileProgress::from_spec)
+                        .collect();
+                    let mut progress =
+                        crate::ScpProgress::new(connection_name.clone(), progress_items);
 
-                            // Spawn background task to perform the transfer
-                            // Keep the destination filename for auto-selection
-                            let dest_filename = copy_op.source_name.clone();
+                    for (idx, spec) in transfer_specs.iter().enumerate() {
+                        if matches!(spec.mode, crate::ui::ScpMode::Send) {
+                            if let Ok(metadata) =
+                                tokio::fs::metadata(crate::expand_tilde(&spec.local_path)).await
+                            {
+                                if let Some(file_progress) = progress.files.get_mut(idx) {
+                                    file_progress.total_bytes = Some(metadata.len());
+                                }
+                            }
+                        }
+                    }
 
-                            tokio::spawn(async move {
-                                let result = match mode {
+                    let return_mode = crate::ScpReturnMode::FileExplorer {
+                        connection_name: connection_name.clone(),
+                        local_explorer,
+                        remote_explorer,
+                        active_pane,
+                        copy_buffer: Vec::new(),
+                        return_to,
+                        sftp_session,
+                        ssh_connection: ssh_connection.clone(),
+                        channel: None,
+                        search_mode,
+                        search_query,
+                    };
+
+                    app.go_to_scp_progress(
+                        progress,
+                        result_receiver,
+                        progress_receiver,
+                        return_mode,
+                    );
+
+                    tokio::spawn(async move {
+                        let total = transfer_specs.len();
+                        let mut tasks = Vec::with_capacity(total);
+
+                        for (index, spec) in transfer_specs.into_iter().enumerate() {
+                            let ssh_connection = ssh_connection.clone();
+                            let progress_tx = progress_sender.clone();
+                            tasks.push(tokio::spawn(async move {
+                                let transfer_result = match spec.mode {
                                     crate::ui::ScpMode::Send => {
                                         crate::async_ssh_client::SshSession::sftp_send_file(
-                                            channel,
+                                            None,
                                             &ssh_connection,
-                                            &local_path,
-                                            &remote_path,
+                                            &spec.local_path,
+                                            &spec.remote_path,
+                                            index,
+                                            Some(progress_tx.clone()),
                                         )
                                         .await
                                     }
                                     crate::ui::ScpMode::Receive => {
                                         crate::async_ssh_client::SshSession::sftp_receive_file(
-                                            channel,
+                                            None,
                                             &ssh_connection,
-                                            &remote_path,
-                                            &local_path,
+                                            &spec.remote_path,
+                                            &spec.local_path,
+                                            index,
+                                            Some(progress_tx),
                                         )
                                         .await
                                     }
                                 };
 
-                                let scp_result = match result {
-                                    Ok(_) => crate::ScpResult::Success {
-                                        mode,
-                                        local_path,
-                                        remote_path,
-                                        destination_filename: dest_filename,
-                                    },
-                                    Err(e) => crate::ScpResult::Error {
-                                        error: e.to_string(),
-                                    },
-                                };
+                                let success = transfer_result.is_ok();
+                                let error = transfer_result.err().map(|e| e.to_string());
 
-                                let _ = sender.send(scp_result).await;
-                            });
+                                crate::ScpFileResult {
+                                    mode: spec.mode,
+                                    local_path: spec.local_path,
+                                    remote_path: spec.remote_path,
+                                    destination_filename: spec.destination_filename,
+                                    success,
+                                    error,
+                                    completed_at: Some(std::time::Instant::now()),
+                                }
+                            }));
                         }
-                    }
-                } else {
-                    app.info = Some("No file in copy mode - press 'c' on a file first".to_string());
+
+                        drop(progress_sender);
+
+                        let joined = join_all(tasks).await;
+                        let mut results = Vec::with_capacity(joined.len());
+
+                        for outcome in joined {
+                            match outcome {
+                                Ok(file_result) => results.push(file_result),
+                                Err(e) => {
+                                    let _ = result_sender
+                                        .send(crate::ScpResult::Error {
+                                            error: format!("Transfer task failed to complete: {e}"),
+                                        })
+                                        .await;
+                                    return;
+                                }
+                            }
+                        }
+
+                        let _ = result_sender
+                            .send(crate::ScpResult::Completed(results))
+                            .await;
+                    });
                 }
-                app.mark_redraw();
             }
 
             // Toggle hidden files

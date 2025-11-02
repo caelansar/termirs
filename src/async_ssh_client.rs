@@ -8,7 +8,7 @@ use std::time::Duration;
 use bytes::{Bytes, BytesMut};
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -19,6 +19,7 @@ use russh_sftp::client::rawsession::RawSftpSession;
 use russh_sftp::protocol::{FileAttributes, OpenFlags, StatusCode};
 use tokio::net::TcpListener;
 
+use crate::ScpTransferProgress;
 use crate::config::manager::{AuthMethod, Connection, PortForward};
 use crate::error::{AppError, Result};
 
@@ -519,6 +520,8 @@ impl SshSession {
         remote_path: &str,
         timeout: Option<Duration>,
         cancel: &tokio_util::sync::CancellationToken,
+        file_index: usize,
+        progress: Option<mpsc::Sender<ScpTransferProgress>>,
     ) -> Result<()> {
         // let now = std::time::Instant::now();
 
@@ -543,6 +546,14 @@ impl SshSession {
         // Open local file and get its size
         let mut local_file = tokio::fs::File::open(expand_tilde(local_path)).await?;
         let file_size = local_file.metadata().await?.len();
+
+        if let Some(progress_tx) = &progress {
+            let _ = progress_tx.try_send(ScpTransferProgress {
+                file_index,
+                transferred_bytes: 0,
+                total_bytes: Some(file_size),
+            });
+        }
 
         // Open remote file using RawSftpSession
         let remote_handle = sftp
@@ -638,6 +649,14 @@ impl SshSession {
 
                             bytes_written += chunk_size;
 
+                            if let Some(progress_tx) = &progress {
+                                let _ = progress_tx.try_send(ScpTransferProgress {
+                                    file_index,
+                                    transferred_bytes: bytes_written,
+                                    total_bytes: Some(file_size),
+                                });
+                            }
+
                             // Log progress for large files (every 5MB)
                             if file_size > 5 * 1024 * 1024 && bytes_written - last_progress_logged >= 5 * 1024 * 1024 {
                                 // eprintln!("Progress: {:.1}% ({} / {} bytes), pipeline: {}",
@@ -666,6 +685,14 @@ impl SshSession {
 
                             bytes_written += chunk_size;
 
+                            if let Some(progress_tx) = &progress {
+                                let _ = progress_tx.try_send(ScpTransferProgress {
+                                    file_index,
+                                    transferred_bytes: bytes_written,
+                                    total_bytes: Some(file_size),
+                                });
+                            }
+
                             // Log progress for large files (every 5MB)
                             if file_size > 5 * 1024 * 1024 && bytes_written - last_progress_logged >= 5 * 1024 * 1024 {
                                 // eprintln!("Progress: {:.1}% ({} / {} bytes), pipeline: {}",
@@ -687,6 +714,14 @@ impl SshSession {
             .await
             .map_err(|e| AppError::SftpError(format!("Failed to close remote file: {e}")))?;
 
+        if let Some(progress_tx) = &progress {
+            let _ = progress_tx.try_send(ScpTransferProgress {
+                file_index,
+                transferred_bytes: bytes_written,
+                total_bytes: Some(file_size),
+            });
+        }
+
         // eprintln!(
         //     "Transfer completed: {} bytes in {:?}, speed: {:.2} MB/s",
         //     bytes_written,
@@ -702,6 +737,8 @@ impl SshSession {
         connection: &Connection,
         local_path: &str,
         remote_path: &str,
+        file_index: usize,
+        progress: Option<mpsc::Sender<ScpTransferProgress>>,
     ) -> Result<()> {
         Self::sftp_send_file_with_timeout(
             channel,
@@ -710,6 +747,8 @@ impl SshSession {
             remote_path,
             None,
             &tokio_util::sync::CancellationToken::new(),
+            file_index,
+            progress,
         )
         .await
     }
@@ -721,6 +760,8 @@ impl SshSession {
         local_path: &str,
         timeout: Option<Duration>,
         cancel: &tokio_util::sync::CancellationToken,
+        file_index: usize,
+        progress: Option<mpsc::Sender<ScpTransferProgress>>,
     ) -> Result<()> {
         let channel = if let Some(ch) = channel {
             ch
@@ -739,14 +780,26 @@ impl SshSession {
             .await
             .map_err(|e| AppError::SftpError(format!("Failed to initialize SFTP: {e}")))?;
 
+        let mut file_size = None;
+
+        if let Some(progress_tx) = &progress {
+            file_size = match sftp.stat(remote_path).await {
+                Ok(attrs) => Some(attrs.attrs.len()),
+                Err(_) => None,
+            };
+
+            let _ = progress_tx.try_send(ScpTransferProgress {
+                file_index,
+                transferred_bytes: 0,
+                total_bytes: file_size,
+            });
+        }
+
         // Open remote file for reading
         let remote_handle = sftp
             .open(remote_path, OpenFlags::READ, FileAttributes::empty())
             .await
             .map_err(|e| AppError::SftpError(format!("Failed to open remote file: {e}")))?;
-
-        // For simplicity, we'll transfer without knowing the exact file size
-        let file_size = 0u64;
 
         // Create local file for writing
         let mut local_file = tokio::fs::File::create(expand_tilde(local_path)).await?;
@@ -756,7 +809,6 @@ impl SshSession {
 
         let mut bytes_read = 0u64;
         let mut offset = 0u64;
-        let mut last_progress_logged = 0u64;
 
         // Set a shorter timeout for faster operations
         sftp.set_timeout(3).await;
@@ -872,11 +924,12 @@ impl SshSession {
                     next_write_offset += data.len() as u64;
                     bytes_read += data.len() as u64;
 
-                    // Log progress for large files (every 5MB)
-                    if file_size > 5 * 1024 * 1024
-                        && bytes_read - last_progress_logged >= 5 * 1024 * 1024
-                    {
-                        last_progress_logged = bytes_read;
+                    if let Some(progress_tx) = &progress {
+                        let _ = progress_tx.try_send(ScpTransferProgress {
+                            file_index,
+                            transferred_bytes: bytes_read,
+                            total_bytes: file_size,
+                        });
                     }
                 } else {
                     break; // Wait for the next expected chunk
@@ -896,6 +949,14 @@ impl SshSession {
             .await
             .map_err(|e| AppError::SftpError(format!("Failed to close remote file: {e}")))?;
 
+        if let Some(progress_tx) = &progress {
+            let _ = progress_tx.try_send(ScpTransferProgress {
+                file_index,
+                transferred_bytes: bytes_read,
+                total_bytes: file_size,
+            });
+        }
+
         Ok(())
     }
 
@@ -904,6 +965,8 @@ impl SshSession {
         connection: &Connection,
         remote_path: &str,
         local_path: &str,
+        file_index: usize,
+        progress: Option<mpsc::Sender<ScpTransferProgress>>,
     ) -> Result<()> {
         Self::sftp_receive_file_with_timeout(
             channel,
@@ -912,6 +975,8 @@ impl SshSession {
             local_path,
             None,
             &tokio_util::sync::CancellationToken::new(),
+            file_index,
+            progress,
         )
         .await
     }
@@ -2472,6 +2537,8 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
             &conn,
             local_file_path.to_str().unwrap(),
             remote_file_name,
+            0,
+            None,
         )
         .await
         .expect("failed to send file");
@@ -2522,6 +2589,8 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
             &conn,
             remote_file_name,
             local_file_path.to_str().unwrap(),
+            0,
+            None,
         )
         .await
         .expect("failed to receive file");
@@ -2569,6 +2638,8 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
             &conn,
             original_file_path.to_str().unwrap(),
             remote_file_name,
+            0,
+            None,
         )
         .await
         .expect("failed to send file");
@@ -2580,6 +2651,8 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
             &conn,
             remote_file_name,
             downloaded_file_path.to_str().unwrap(),
+            0,
+            None,
         )
         .await
         .expect("failed to receive file");

@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph};
 use tui_textarea::TextArea;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -91,8 +91,10 @@ pub fn draw_scp_progress_popup(
     progress: &crate::ScpProgress,
     frame: &mut ratatui::Frame<'_>,
 ) {
-    let popup_w = (area.width as f32 * 0.35) as u16; // 35% of screen width for more compact look
-    let popup_h = 8u16.min(area.height.saturating_sub(2)).max(6);
+    let file_count = progress.files.len().max(1);
+    let popup_w = (area.width as f32 * 0.45) as u16;
+    let ideal_height = 4 + (file_count as u16) * 3;
+    let popup_h = ideal_height.min(area.height.saturating_sub(2)).max(6);
     let x = area.x + (area.width.saturating_sub(popup_w)) / 2;
     let y = area.y + (area.height.saturating_sub(popup_h)) / 2;
     let popup = Rect {
@@ -104,15 +106,10 @@ pub fn draw_scp_progress_popup(
 
     frame.render_widget(Clear, popup);
 
-    let title = match progress.mode {
-        ScpMode::Send => "SFTP Send in Progress",
-        ScpMode::Receive => "SFTP Receive in Progress",
-    };
-
     let outer = Block::default()
         .borders(Borders::ALL)
         .title(Line::from(Span::styled(
-            title,
+            "SFTP Transfers",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -120,15 +117,16 @@ pub fn draw_scp_progress_popup(
     frame.render_widget(outer, popup);
 
     let inner = popup.inner(Margin::new(1, 1));
+
+    let mut constraints = vec![Constraint::Length(1)];
+    for _ in &progress.files {
+        constraints.push(Constraint::Length(3));
+    }
+    constraints.push(Constraint::Length(1));
+
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // connection info
-            Constraint::Length(1), // local path
-            Constraint::Length(1), // remote path
-            Constraint::Length(1), // progress indicator
-            Constraint::Length(1), // elapsed time
-        ])
+        .constraints(constraints)
         .split(inner);
 
     // Connection info
@@ -141,60 +139,129 @@ pub fn draw_scp_progress_popup(
     ]));
     frame.render_widget(connection_info, layout[0]);
 
-    // Path info based on mode
-    let (from_label, from_path, to_label, to_path) = match progress.mode {
-        ScpMode::Send => (
-            "From: ",
-            &progress.local_path,
-            "To: ",
-            &progress.remote_path,
-        ),
-        ScpMode::Receive => (
-            "From: ",
-            &progress.remote_path,
-            "To: ",
-            &progress.local_path,
-        ),
-    };
+    for (idx, file) in progress.files.iter().enumerate() {
+        let row = layout.get(idx + 1).copied().unwrap_or_else(|| Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: 0,
+        });
+        if row.height < 3 {
+            continue;
+        }
 
-    let local_info = Paragraph::new(Line::from(vec![
-        Span::styled(from_label, Style::default().fg(Color::Gray)),
-        Span::styled(from_path.clone(), Style::default().fg(Color::White)),
-    ]));
-    frame.render_widget(local_info, layout[1]);
+        let file_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(row);
 
-    let remote_info = Paragraph::new(Line::from(vec![
-        Span::styled(to_label, Style::default().fg(Color::Gray)),
-        Span::styled(to_path.clone(), Style::default().fg(Color::White)),
-    ]));
-    frame.render_widget(remote_info, layout[2]);
+        let (status_label, status_style): (String, Style) = match &file.state {
+            crate::TransferState::Pending => {
+                ("Pending".to_string(), Style::default().fg(Color::Gray))
+            }
+            crate::TransferState::InProgress => (
+                "In Progress".to_string(),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            crate::TransferState::Completed => (
+                "Completed".to_string(),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            crate::TransferState::Failed(err) => (
+                format!("Failed ({err})"),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+        };
 
-    // Progress indicator with spinner
-    let spinner_char = progress.get_spinner_char();
-    let action_text = match progress.mode {
-        ScpMode::Send => "Uploading ",
-        ScpMode::Receive => "Downloading ",
-    };
+        let header = Paragraph::new(Line::from(vec![
+            Span::styled(format!("{:<11}", status_label), status_style),
+            Span::styled(file.display_name.clone(), Style::default().fg(Color::White)),
+        ]));
+        frame.render_widget(header, file_chunks[0]);
 
-    let progress_text = Paragraph::new(Line::from(vec![
-        Span::styled(action_text, Style::default().fg(Color::Yellow)),
-        Span::styled(
-            spinner_char.to_string(),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]));
-    frame.render_widget(progress_text, layout[3]);
+        let (from_path, to_path) = match file.mode {
+            ScpMode::Send => (&file.local_path, &file.remote_path),
+            ScpMode::Receive => (&file.remote_path, &file.local_path),
+        };
+        let path_line = Paragraph::new(Line::from(vec![
+            Span::styled("From: ", Style::default().fg(Color::Gray)),
+            Span::styled(from_path.clone(), Style::default().fg(Color::White)),
+            Span::styled("  To: ", Style::default().fg(Color::Gray)),
+            Span::styled(to_path.clone(), Style::default().fg(Color::White)),
+        ]));
+        frame.render_widget(path_line, file_chunks[1]);
 
-    // Elapsed time
-    let elapsed = progress.start_time.elapsed();
-    let elapsed_text = format!("Elapsed: {:.1}s", elapsed.as_secs_f32());
-    let time_info = Paragraph::new(Line::from(Span::styled(
-        elapsed_text,
-        Style::default().fg(Color::Gray),
-    )));
-    frame.render_widget(time_info, layout[4]);
+        let ratio = file.ratio();
+        let gauge_label = if let Some(total) = file.total_bytes {
+            let percent = ratio * 100.0;
+            Span::styled(
+                format!(
+                    "{} / {} ({percent:.1}%)",
+                    format_bytes(file.transferred_bytes),
+                    format_bytes(total)
+                ),
+                Style::default().fg(Color::White),
+            )
+        } else {
+            Span::styled(
+                format!("{} transferred", format_bytes(file.transferred_bytes)),
+                Style::default().fg(Color::White),
+            )
+        };
+
+        let gauge_color = match file.state {
+            crate::TransferState::Pending
+            | crate::TransferState::InProgress
+            | crate::TransferState::Completed => Color::Cyan,
+            crate::TransferState::Failed(_) => Color::Red,
+        };
+
+        let gauge = Gauge::default()
+            .gauge_style(
+                Style::default()
+                    .fg(gauge_color)
+                    .bg(Color::Reset)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .ratio(ratio)
+            .label(gauge_label)
+            .use_unicode(true);
+        frame.render_widget(gauge, file_chunks[2]);
+    }
+
+    if let Some(time_area) = layout.last().copied() {
+        let elapsed = if progress.completed {
+            if let Some(results) = &progress.completion_results {
+                let mut max_time = progress.start_time.elapsed();
+                if let Some(last) = results.iter().filter_map(|res| res.completed_at).max() {
+                    max_time = last.duration_since(progress.start_time);
+                }
+                max_time
+            } else {
+                progress.start_time.elapsed()
+            }
+        } else {
+            progress.start_time.elapsed()
+        };
+
+        let mut elapsed_text = format!("Elapsed: {:.1}s", elapsed.as_secs_f32());
+        if progress.completed {
+            elapsed_text.push_str("  •  Press Enter or Esc to close");
+        }
+        let time_info = Paragraph::new(Line::from(Span::styled(
+            elapsed_text,
+            Style::default().fg(Color::Gray),
+        )));
+        frame.render_widget(time_info, time_area);
+    }
 }
 
 pub fn draw_scp_popup(area: Rect, form: &ScpForm, frame: &mut ratatui::Frame<'_>) -> (Rect, Rect) {
@@ -282,4 +349,21 @@ pub fn draw_scp_popup(area: Rect, form: &ScpForm, frame: &mut ratatui::Frame<'_>
     frame.render_widget(hint, layout[2]);
 
     (local_path_rect, remote_path_rect)
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit_index = 0;
+
+    while value >= 1024.0 && unit_index < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit_index += 1;
+    }
+
+    if unit_index == 0 {
+        format!("{bytes} {}", UNITS[unit_index])
+    } else {
+        format!("{value:.1} {}", UNITS[unit_index])
+    }
 }

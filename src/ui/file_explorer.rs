@@ -7,6 +7,8 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
+use std::collections::HashSet;
+use std::path::PathBuf;
 
 use crate::{CopyOperation, FileExplorerPane, filesystem::SftpFileSystem};
 
@@ -19,7 +21,7 @@ use crate::{CopyOperation, FileExplorerPane, filesystem::SftpFileSystem};
 /// * `local_explorer` - The local file explorer
 /// * `remote_explorer` - The remote SFTP file explorer
 /// * `active_pane` - Which pane is currently active
-/// * `copy_operation` - Optional copy operation in progress
+/// * `copy_buffer` - Collection of selected files pending transfer
 /// * `search_mode` - Whether search mode is active
 /// * `search_query` - Current search query string
 pub fn draw_file_explorer(
@@ -29,7 +31,7 @@ pub fn draw_file_explorer(
     local_explorer: &mut ratatui_explorer::FileExplorer<ratatui_explorer::LocalFileSystem>,
     remote_explorer: &mut ratatui_explorer::FileExplorer<SftpFileSystem>,
     active_pane: &FileExplorerPane,
-    copy_operation: &Option<CopyOperation>,
+    copy_buffer: &[CopyOperation],
     search_mode: bool,
     search_query: &str,
 ) {
@@ -55,7 +57,7 @@ pub fn draw_file_explorer(
         .split(area);
 
     // Render header
-    draw_header(f, main_layout[0], connection_name, copy_operation);
+    draw_header(f, main_layout[0], connection_name, copy_buffer);
 
     // Split content area into left (local) and right (remote) panes
     let panes = Layout::default()
@@ -70,7 +72,7 @@ pub fn draw_file_explorer(
         "Local",
         local_explorer,
         matches!(active_pane, FileExplorerPane::Local),
-        copy_operation,
+        copy_buffer,
     );
 
     // Render remote pane (right)
@@ -80,41 +82,45 @@ pub fn draw_file_explorer(
         "Remote",
         remote_explorer,
         matches!(active_pane, FileExplorerPane::Remote),
-        copy_operation,
+        copy_buffer,
     );
 
     // Render search input if in search mode
     if search_mode {
         draw_search_input(f, main_layout[2], search_query);
-        draw_footer(f, main_layout[3], copy_operation, search_mode);
+        draw_footer(f, main_layout[3], copy_buffer, search_mode);
     } else {
-        draw_footer(f, main_layout[2], copy_operation, search_mode);
+        draw_footer(f, main_layout[2], copy_buffer, search_mode);
     }
 }
 
 /// Draw the header showing connection name and copy status
-fn draw_header(
-    f: &mut Frame,
-    area: Rect,
-    connection_name: &str,
-    copy_operation: &Option<CopyOperation>,
-) {
-    let header_text = if let Some(copy_op) = copy_operation {
+fn draw_header(f: &mut Frame, area: Rect, connection_name: &str, copy_buffer: &[CopyOperation]) {
+    let header_text = if let Some(first) = copy_buffer.first() {
+        let direction = match first.direction {
+            crate::CopyDirection::LocalToRemote => "Local → Remote",
+            crate::CopyDirection::RemoteToLocal => "Remote → Local",
+        };
+        let copy_details = if copy_buffer.len() == 1 {
+            format!("{} ({direction})", first.source_name)
+        } else {
+            format!("{} files selected ({direction})", copy_buffer.len())
+        };
         format!(
-            " SFTP File Transfer - {} | [COPY MODE] {} → Press Tab to switch, 'v' to paste ",
-            connection_name, copy_op.source_name
+            " SFTP File Transfer - {} | [COPY MODE] {copy_details} • Tab→switch • v→paste ",
+            connection_name
         )
     } else {
         format!(" SFTP File Transfer - {} ", connection_name)
     };
 
-    let header_style = if copy_operation.is_some() {
+    let header_style = if copy_buffer.is_empty() {
         Style::default()
-            .fg(Color::Yellow)
+            .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
-            .fg(Color::Cyan)
+            .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD)
     };
 
@@ -134,8 +140,17 @@ fn draw_pane<F: ratatui_explorer::FileSystem>(
     title: &str,
     explorer: &mut ratatui_explorer::FileExplorer<F>,
     is_active: bool,
-    _copy_operation: &Option<CopyOperation>,
+    copy_buffer: &[CopyOperation],
 ) {
+    // Build HashSet of selected paths from copy_buffer
+    let selected_paths: HashSet<PathBuf> = copy_buffer
+        .iter()
+        .map(|op| PathBuf::from(&op.source_path))
+        .collect();
+
+    // Pass selection state to explorer
+    explorer.set_selected_paths(selected_paths);
+
     let border_style = if is_active {
         Style::default().fg(Color::Cyan)
     } else {
@@ -220,12 +235,7 @@ fn draw_search_input(f: &mut Frame, area: Rect, search_query: &str) {
 }
 
 /// Draw the footer showing available keybindings
-fn draw_footer(
-    f: &mut Frame,
-    area: Rect,
-    copy_operation: &Option<CopyOperation>,
-    search_mode: bool,
-) {
+fn draw_footer(f: &mut Frame, area: Rect, copy_buffer: &[CopyOperation], search_mode: bool) {
     use ratatui::layout::{Alignment, Constraint, Direction, Layout};
 
     let footer_layout = Layout::default()
@@ -234,11 +244,17 @@ fn draw_footer(
         .split(area);
 
     let hint_text = if search_mode {
-        "Enter/Esc: Exit Search   Backspace: Delete   Arrow Keys: Navigate"
-    } else if copy_operation.is_some() {
-        "Esc: Cancel | Tab: Switch Pane | v: Paste | q: Quit"
+        "Enter/Esc: Exit Search   Backspace: Delete   Arrow Keys: Navigate".to_string()
+    } else if !copy_buffer.is_empty() {
+        let count_label = if copy_buffer.len() == 1 {
+            "1 file selected".to_string()
+        } else {
+            format!("{} files selected", copy_buffer.len())
+        };
+        format!("Esc: Clear | Tab: Switch Pane | v: Paste ({count_label}) | q: Quit")
     } else {
         "↑↓/jk: Move | ←→: Dir | Tab: Switch | c: Copy | /: Search | h: Hidden | r: Refresh | q: Quit"
+            .to_string()
     };
 
     let left = Paragraph::new(Line::from(Span::styled(

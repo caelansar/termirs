@@ -47,18 +47,32 @@ impl crate::async_ssh_client::ByteProcessor for TerminalState {
     }
 }
 
-/// Result of SCP transfer operation
+/// Result summary of SFTP transfer operations
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) enum ScpResult {
-    Success {
-        mode: crate::ui::ScpMode,
-        local_path: String,
-        remote_path: String,
-        destination_filename: String, // Filename to select after transfer
-    },
-    Error {
-        error: String,
-    },
+    Completed(Vec<ScpFileResult>),
+    Error { error: String },
+}
+
+/// Outcome for a single file within a batch transfer
+#[derive(Debug, Clone)]
+pub(crate) struct ScpFileResult {
+    pub(crate) mode: crate::ui::ScpMode,
+    pub(crate) local_path: String,
+    pub(crate) remote_path: String,
+    pub(crate) destination_filename: String,
+    pub(crate) success: bool,
+    pub(crate) error: Option<String>,
+    pub(crate) completed_at: Option<std::time::Instant>,
+}
+
+/// Byte-level progress updates for SFTP transfers (per file)
+#[derive(Debug, Clone)]
+pub(crate) struct ScpTransferProgress {
+    pub(crate) file_index: usize,
+    pub(crate) transferred_bytes: u64,
+    pub(crate) total_bytes: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -123,8 +137,18 @@ pub(crate) struct CopyOperation {
     pub(crate) direction: CopyDirection,
 }
 
-/// Direction of file transfer
+/// Specification for a single file transfer within a batch
 #[derive(Clone, Debug)]
+pub(crate) struct ScpTransferSpec {
+    pub(crate) mode: crate::ui::ScpMode,
+    pub(crate) local_path: String,
+    pub(crate) remote_path: String,
+    pub(crate) display_name: String,
+    pub(crate) destination_filename: String,
+}
+
+/// Direction of file transfer
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CopyDirection {
     LocalToRemote,
     RemoteToLocal,
@@ -146,7 +170,7 @@ pub(crate) enum ScpReturnMode {
         local_explorer: ratatui_explorer::FileExplorer<ratatui_explorer::LocalFileSystem>,
         remote_explorer: ratatui_explorer::FileExplorer<crate::filesystem::SftpFileSystem>,
         active_pane: FileExplorerPane,
-        copy_operation: Option<CopyOperation>,
+        copy_buffer: Vec<CopyOperation>,
         return_to: usize,
         sftp_session: Arc<russh_sftp::client::SftpSession>,
         ssh_connection: Connection,
@@ -181,7 +205,7 @@ impl ScpReturnMode {
                 local_explorer,
                 remote_explorer,
                 active_pane,
-                copy_operation,
+                copy_buffer,
                 return_to,
                 sftp_session,
                 ssh_connection,
@@ -193,7 +217,7 @@ impl ScpReturnMode {
                 local_explorer: local_explorer.clone(),
                 remote_explorer: remote_explorer.clone(),
                 active_pane: active_pane.clone(),
-                copy_operation: copy_operation.clone(),
+                copy_buffer: copy_buffer.clone(),
                 return_to: *return_to,
                 sftp_session: sftp_session.clone(),
                 ssh_connection: ssh_connection.clone(),
@@ -237,6 +261,7 @@ pub(crate) enum AppMode {
     ScpProgress {
         progress: ScpProgress,
         receiver: mpsc::Receiver<ScpResult>,
+        progress_updates: mpsc::Receiver<ScpTransferProgress>,
         return_mode: ScpReturnMode,
     },
     DeleteConfirmation {
@@ -249,7 +274,7 @@ pub(crate) enum AppMode {
         local_explorer: ratatui_explorer::FileExplorer<ratatui_explorer::LocalFileSystem>,
         remote_explorer: ratatui_explorer::FileExplorer<crate::filesystem::SftpFileSystem>,
         active_pane: FileExplorerPane,
-        copy_operation: Option<CopyOperation>,
+        copy_buffer: Vec<CopyOperation>,
         return_to: usize,
         sftp_session: Arc<russh_sftp::client::SftpSession>,
         ssh_connection: Connection,
@@ -285,61 +310,98 @@ pub(crate) enum AppMode {
     },
 }
 
-/// SCP transfer progress state
+/// Per-file progress snapshot
 #[derive(Clone, Debug)]
-pub(crate) struct ScpProgress {
+pub(crate) struct ScpFileProgress {
     pub(crate) local_path: String,
     pub(crate) remote_path: String,
+    pub(crate) display_name: String,
+    pub(crate) mode: crate::ui::ScpMode, // Send or Receive mode
+    pub(crate) transferred_bytes: u64,
+    pub(crate) total_bytes: Option<u64>,
+    pub(crate) state: TransferState,
+}
+
+impl ScpFileProgress {
+    pub(crate) fn from_spec(spec: &ScpTransferSpec) -> Self {
+        Self {
+            local_path: spec.local_path.clone(),
+            remote_path: spec.remote_path.clone(),
+            display_name: spec.display_name.clone(),
+            mode: spec.mode.clone(),
+            transferred_bytes: 0,
+            total_bytes: None,
+            state: TransferState::Pending,
+        }
+    }
+
+    pub(crate) fn ratio(&self) -> f64 {
+        match self.total_bytes {
+            Some(total) if total > 0 => {
+                (self.transferred_bytes as f64 / total as f64).clamp(0.0, 1.0)
+            }
+            _ => 0.0,
+        }
+    }
+}
+
+/// Aggregate transfer progress for a batch of files
+#[derive(Clone, Debug)]
+pub(crate) struct ScpProgress {
     pub(crate) connection_name: String,
     pub(crate) start_time: std::time::Instant,
-    pub(crate) spinner_state: usize, // For rotating spinner animation
-    pub(crate) tick_counter: usize,  // Counter to slow down spinner updates
-    pub(crate) mode: crate::ui::ScpMode, // Send or Receive mode
+    pub(crate) files: Vec<ScpFileProgress>,
+    pub(crate) completed: bool,
+    pub(crate) completion_results: Option<Vec<ScpFileResult>>,
+    pub(crate) last_success_destination: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum TransferState {
+    Pending,
+    InProgress,
+    Completed,
+    Failed(String),
 }
 
 impl ScpProgress {
-    #[allow(unused)]
-    pub(crate) fn new(local_path: String, remote_path: String, connection_name: String) -> Self {
-        Self::new_with_mode(
-            local_path,
-            remote_path,
-            connection_name,
-            crate::ui::ScpMode::Send,
-        )
-    }
-
-    pub(crate) fn new_with_mode(
-        local_path: String,
-        remote_path: String,
-        connection_name: String,
-        mode: crate::ui::ScpMode,
-    ) -> Self {
+    pub(crate) fn new(connection_name: String, files: Vec<ScpFileProgress>) -> Self {
         Self {
-            local_path,
-            remote_path,
             connection_name,
             start_time: std::time::Instant::now(),
-            spinner_state: 0,
-            tick_counter: 0,
-            mode,
+            files,
+            completed: false,
+            completion_results: None,
+            last_success_destination: None,
         }
     }
 
-    pub(crate) fn tick(&mut self) {
-        self.tick_counter += 1;
-        // Update spinner every 20 ticks (200ms at 10ms tick rate)
-        if self.tick_counter % 20 == 0 {
-            self.spinner_state = (self.spinner_state + 1) % 4;
+    pub(crate) fn update_progress(&mut self, update: ScpTransferProgress) {
+        if let Some(file) = self.files.get_mut(update.file_index) {
+            if matches!(
+                file.state,
+                TransferState::Pending | TransferState::InProgress
+            ) {
+                file.state = TransferState::InProgress;
+                file.transferred_bytes = update.transferred_bytes;
+                if update.total_bytes.is_some() {
+                    file.total_bytes = update.total_bytes;
+                }
+            }
         }
     }
 
-    pub(crate) fn get_spinner_char(&self) -> char {
-        match self.spinner_state {
-            0 => '|',
-            1 => '/',
-            2 => '-',
-            3 => '\\',
-            _ => '|',
+    pub(crate) fn mark_completed(&mut self, index: usize, success: bool, error: Option<String>) {
+        if let Some(file) = self.files.get_mut(index) {
+            if success {
+                file.state = TransferState::Completed;
+            } else {
+                let message = error.unwrap_or_else(|| "Unknown error".to_string());
+                file.state = TransferState::Failed(message);
+            }
+            if let Some(total) = file.total_bytes {
+                file.transferred_bytes = total;
+            }
         }
     }
 }
@@ -448,6 +510,7 @@ impl<B: Backend + Write> App<B> {
         Ok(())
     }
 
+    #[inline]
     fn update_mouse_capture_mode(&mut self) -> Result<()> {
         let should_enable = matches!(self.mode, AppMode::Connected { .. });
         self.set_mouse_capture(should_enable)?;
@@ -736,11 +799,13 @@ impl<B: Backend + Write> App<B> {
         &mut self,
         progress: ScpProgress,
         receiver: mpsc::Receiver<ScpResult>,
+        progress_updates: mpsc::Receiver<ScpTransferProgress>,
         return_mode: ScpReturnMode,
     ) {
         self.mode = AppMode::ScpProgress {
             progress,
             receiver,
+            progress_updates,
             return_mode,
         };
         self.needs_redraw = true; // Mode change requires redraw
@@ -872,7 +937,7 @@ impl<B: Backend + Write> App<B> {
             local_explorer,
             remote_explorer,
             active_pane: FileExplorerPane::Local,
-            copy_operation: None,
+            copy_buffer: Vec::new(),
             return_to,
             sftp_session,
             ssh_connection: conn,
@@ -979,7 +1044,8 @@ impl<B: Backend + Write> App<B> {
         self.needs_redraw = true;
     }
 
-    /// Set info and mark for redraw  
+    /// Set info and mark for redraw
+    #[allow(dead_code)]
     pub(crate) fn set_info(&mut self, info: String) {
         self.info = Some(info);
         self.needs_redraw = true;
@@ -1106,7 +1172,7 @@ impl<B: Backend + Write> App<B> {
                             local_explorer,
                             remote_explorer,
                             active_pane,
-                            copy_operation,
+                            copy_buffer,
                             search_mode,
                             search_query,
                             ..
@@ -1118,7 +1184,7 @@ impl<B: Backend + Write> App<B> {
                                 local_explorer,
                                 remote_explorer,
                                 active_pane,
-                                copy_operation,
+                                copy_buffer,
                                 *search_mode,
                                 search_query,
                             );
@@ -1162,7 +1228,7 @@ impl<B: Backend + Write> App<B> {
                             local_explorer,
                             remote_explorer,
                             active_pane,
-                            copy_operation,
+                            copy_buffer,
                             search_mode,
                             search_query,
                             ..
@@ -1174,7 +1240,7 @@ impl<B: Backend + Write> App<B> {
                                 local_explorer,
                                 remote_explorer,
                                 active_pane,
-                                copy_operation,
+                                copy_buffer,
                                 *search_mode,
                                 search_query,
                             );
@@ -1193,7 +1259,7 @@ impl<B: Backend + Write> App<B> {
                     local_explorer,
                     remote_explorer,
                     active_pane,
-                    copy_operation,
+                    copy_buffer,
                     search_mode,
                     search_query,
                     ..
@@ -1205,7 +1271,7 @@ impl<B: Backend + Write> App<B> {
                         local_explorer,
                         remote_explorer,
                         active_pane,
-                        copy_operation,
+                        copy_buffer,
                         *search_mode,
                         search_query,
                     );
@@ -1552,219 +1618,168 @@ impl<B: Backend + Write> App<B> {
                     }
 
                     // Update spinner animation for SCP progress and handle results
+                    let mut progress_needs_redraw = false;
                     if let AppMode::ScpProgress {
                         progress,
                         receiver,
+                        progress_updates,
                         return_mode,
                     } = &mut self.mode
                     {
-                        progress.tick();
+                        progress_needs_redraw = true;
+                        while let Ok(update) = progress_updates.try_recv() {
+                            progress.update_progress(update);
+                            progress_needs_redraw = true;
+                        }
                         // Mark redraw after handling the progress update
 
                         // Drain any SCP results
                         match receiver.try_recv() {
                             Ok(result) => {
-                                // Clone the return_mode before we change self.mode
-                                let return_mode = return_mode.clone_without_channel();
+                                let mut pending_error: Option<AppError> = None;
 
-                                // Check if transfer was successful before handling the result
-                                let transfer_successful =
-                                    matches!(result, ScpResult::Success { .. });
-
-                                // Handle the result and extract destination filename
-                                let destination_filename = if let ScpResult::Success {
-                                    ref destination_filename,
-                                    ..
-                                } = result
-                                {
-                                    Some(destination_filename.clone())
-                                } else {
-                                    None
-                                };
-
-                                // Handle the result
                                 match result {
-                                    ScpResult::Success {
-                                        mode,
-                                        local_path,
-                                        remote_path,
-                                        ..
-                                    } => match mode {
-                                        crate::ui::ScpMode::Send => {
-                                            self.set_info(format!(
-                                                    "SCP transfer completed from {local_path} to {remote_path}"
-                                                ));
-                                        }
-                                        crate::ui::ScpMode::Receive => {
-                                            self.set_info(format!(
-                                                    "SCP transfer completed from {remote_path} to {local_path}"
-                                                ));
-                                        }
-                                    },
-                                    ScpResult::Error { error } => {
-                                        self.set_error(AppError::SshConnectionError(error));
-                                    }
-                                }
+                                    ScpResult::Completed(file_results) => {
+                                        let mut all_success = true;
+                                        let mut failure_lines = Vec::new();
+                                        let mut last_success_destination = None;
 
-                                // Return to the appropriate mode
-                                match return_mode {
-                                    ScpReturnMode::ConnectionList { current_selected } => {
-                                        self.go_to_connection_list_with_selected(current_selected);
-                                    }
-                                    ScpReturnMode::Connected {
-                                        name,
-                                        client,
-                                        state,
-                                        current_selected,
-                                        cancel_token,
-                                    } => {
-                                        self.go_to_connected(
-                                            name,
-                                            client,
-                                            state,
-                                            current_selected,
-                                            cancel_token,
-                                        );
-                                    }
-                                    ScpReturnMode::FileExplorer {
-                                        connection_name,
-                                        mut local_explorer,
-                                        mut remote_explorer,
-                                        active_pane,
-                                        copy_operation,
-                                        return_to,
-                                        sftp_session,
-                                        ssh_connection,
-                                        channel,
-                                        search_mode,
-                                        search_query,
-                                    } => {
-                                        // If transfer was successful, refresh the destination pane and select the transferred file
-                                        if transfer_successful {
-                                            // The active_pane is the destination pane (where paste was executed)
-                                            match active_pane {
-                                                FileExplorerPane::Local => {
-                                                    // Refresh local pane
-                                                    let local_cwd =
-                                                        local_explorer.cwd().to_path_buf();
-                                                    if let Err(e) =
-                                                        local_explorer.set_cwd(local_cwd).await
-                                                    {
-                                                        self.set_error(AppError::SftpError(
-                                                            format!(
-                                                                "Failed to refresh local pane: {}",
-                                                                e
-                                                            ),
-                                                        ));
-                                                    } else if let Some(ref filename) =
-                                                        destination_filename
-                                                    {
-                                                        // Select the transferred file
-                                                        local_explorer.select_file(filename);
-                                                    }
-                                                }
-                                                FileExplorerPane::Remote => {
-                                                    // Refresh remote pane
-                                                    let remote_cwd =
-                                                        remote_explorer.cwd().to_path_buf();
-                                                    if let Err(e) =
-                                                        remote_explorer.set_cwd(remote_cwd).await
-                                                    {
-                                                        self.set_error(AppError::SftpError(
-                                                            format!(
-                                                                "Failed to refresh remote pane: {}",
-                                                                e
-                                                            ),
-                                                        ));
-                                                    } else if let Some(ref filename) =
-                                                        destination_filename
-                                                    {
-                                                        // Select the transferred file
-                                                        remote_explorer.select_file(filename);
-                                                    }
-                                                }
+                                        for (idx, file_result) in file_results.iter().enumerate() {
+                                            progress.mark_completed(
+                                                idx,
+                                                file_result.success,
+                                                file_result.error.clone(),
+                                            );
+
+                                            let (from, to) = match file_result.mode {
+                                                crate::ui::ScpMode::Send => (
+                                                    file_result.local_path.clone(),
+                                                    file_result.remote_path.clone(),
+                                                ),
+                                                crate::ui::ScpMode::Receive => (
+                                                    file_result.remote_path.clone(),
+                                                    file_result.local_path.clone(),
+                                                ),
+                                            };
+
+                                            if file_result.success {
+                                                last_success_destination =
+                                                    Some(file_result.destination_filename.clone());
+                                            } else {
+                                                all_success = false;
+                                                let err = file_result
+                                                    .error
+                                                    .clone()
+                                                    .unwrap_or_else(|| "unknown error".into());
+                                                failure_lines.push(format!(
+                                                    " from {from} to {to} (FAILED: {err})"
+                                                ));
                                             }
                                         }
 
-                                        // Return to file explorer mode
-                                        self.mode = AppMode::FileExplorer {
-                                            connection_name,
-                                            local_explorer,
-                                            remote_explorer,
-                                            active_pane,
-                                            copy_operation,
-                                            return_to,
-                                            sftp_session,
-                                            ssh_connection,
-                                            channel,
-                                            search_mode,
-                                            search_query,
-                                        };
+                                        if !all_success {
+                                            let mut message = String::from("sftp transfer issues:");
+                                            for line in failure_lines {
+                                                message.push('\n');
+                                                message.push_str(&line);
+                                            }
+                                            pending_error =
+                                                Some(AppError::SshConnectionError(message));
+                                        }
+
+                                        progress.completed = true;
+                                        progress.last_success_destination =
+                                            last_success_destination;
+                                        progress.completion_results = Some(file_results);
+                                        progress_needs_redraw = true;
                                     }
+                                    ScpResult::Error { error } => {
+                                        for idx in 0..progress.files.len() {
+                                            progress.mark_completed(
+                                                idx,
+                                                false,
+                                                Some(error.clone()),
+                                            );
+                                        }
+                                        pending_error =
+                                            Some(AppError::SshConnectionError(error.clone()));
+                                        progress.completed = true;
+                                        progress.completion_results = None;
+                                        progress_needs_redraw = true;
+                                    }
+                                }
+
+                                if let Some(err) = pending_error {
+                                    self.set_error(err);
                                 }
                             }
                             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
                             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                                // Clone the return_mode before we change self.mode
-                                let return_mode = return_mode.clone_without_channel();
+                                if !progress.completed {
+                                    // Clone the return_mode before we change self.mode
+                                    let return_mode = return_mode.clone_without_channel();
 
-                                self.set_error(AppError::SshConnectionError(
-                                    "SCP transfer task disconnected unexpectedly".to_string(),
-                                ));
+                                    self.set_error(AppError::SshConnectionError(
+                                        "SCP transfer task disconnected unexpectedly".to_string(),
+                                    ));
 
-                                // Return to the appropriate mode
-                                match return_mode {
-                                    ScpReturnMode::ConnectionList { current_selected } => {
-                                        self.go_to_connection_list_with_selected(current_selected);
-                                    }
-                                    ScpReturnMode::Connected {
-                                        name,
-                                        client,
-                                        state,
-                                        current_selected,
-                                        cancel_token,
-                                    } => {
-                                        self.go_to_connected(
+                                    // Return to the appropriate mode
+                                    match return_mode {
+                                        ScpReturnMode::ConnectionList { current_selected } => {
+                                            self.go_to_connection_list_with_selected(
+                                                current_selected,
+                                            );
+                                        }
+                                        ScpReturnMode::Connected {
                                             name,
                                             client,
                                             state,
                                             current_selected,
                                             cancel_token,
-                                        );
-                                    }
-                                    ScpReturnMode::FileExplorer {
-                                        connection_name,
-                                        local_explorer,
-                                        remote_explorer,
-                                        active_pane,
-                                        copy_operation,
-                                        return_to,
-                                        sftp_session,
-                                        ssh_connection,
-                                        channel,
-                                        search_mode,
-                                        search_query,
-                                    } => {
-                                        // Return to file explorer mode
-                                        self.mode = AppMode::FileExplorer {
+                                        } => {
+                                            self.go_to_connected(
+                                                name,
+                                                client,
+                                                state,
+                                                current_selected,
+                                                cancel_token,
+                                            );
+                                        }
+                                        ScpReturnMode::FileExplorer {
                                             connection_name,
                                             local_explorer,
                                             remote_explorer,
                                             active_pane,
-                                            copy_operation,
+                                            copy_buffer,
                                             return_to,
                                             sftp_session,
                                             ssh_connection,
                                             channel,
                                             search_mode,
                                             search_query,
-                                        };
+                                        } => {
+                                            self.mode = AppMode::FileExplorer {
+                                                connection_name,
+                                                local_explorer,
+                                                remote_explorer,
+                                                active_pane,
+                                                copy_buffer,
+                                                return_to,
+                                                sftp_session,
+                                                ssh_connection,
+                                                channel,
+                                                search_mode,
+                                                search_query,
+                                            };
+                                        }
                                     }
                                 }
                             }
                         }
 
                         // Mark redraw after all progress handling is done
+                    }
+                    if progress_needs_redraw {
                         self.mark_redraw();
                     }
                 }
