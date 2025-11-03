@@ -375,10 +375,20 @@ impl ScpProgress {
                 file.state,
                 TransferState::Pending | TransferState::InProgress
             ) {
-                file.state = TransferState::InProgress;
                 file.transferred_bytes = update.transferred_bytes;
                 if update.total_bytes.is_some() {
                     file.total_bytes = update.total_bytes;
+                }
+
+                // Check if transfer is complete (100%)
+                if let Some(total) = file.total_bytes {
+                    if file.transferred_bytes >= total && total > 0 {
+                        file.state = TransferState::Completed;
+                    } else {
+                        file.state = TransferState::InProgress;
+                    }
+                } else {
+                    file.state = TransferState::InProgress;
                 }
             }
         }

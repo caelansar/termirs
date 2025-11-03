@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::convert::TryFrom;
 use std::env;
 use std::path::PathBuf;
@@ -6,8 +6,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
+use futures::FutureExt;
 use futures::stream::{FuturesUnordered, StreamExt};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -571,7 +572,6 @@ impl SshSession {
 
         let mut bytes_written = 0u64;
         let mut offset = 0u64;
-        let mut last_progress_logged = 0u64;
         let mut write_futures = FuturesUnordered::new();
         let mut eof_reached = false;
 
@@ -656,17 +656,6 @@ impl SshSession {
                                     total_bytes: Some(file_size),
                                 });
                             }
-
-                            // Log progress for large files (every 5MB)
-                            if file_size > 5 * 1024 * 1024 && bytes_written - last_progress_logged >= 5 * 1024 * 1024 {
-                                // eprintln!("Progress: {:.1}% ({} / {} bytes), pipeline: {}",
-                                //     (bytes_written as f64 / file_size as f64) * 100.0,
-                                //     bytes_written,
-                                //     file_size,
-                                //     write_futures.len()
-                                // );
-                                last_progress_logged = bytes_written;
-                            }
                         }
                     }
                 }
@@ -691,17 +680,6 @@ impl SshSession {
                                     transferred_bytes: bytes_written,
                                     total_bytes: Some(file_size),
                                 });
-                            }
-
-                            // Log progress for large files (every 5MB)
-                            if file_size > 5 * 1024 * 1024 && bytes_written - last_progress_logged >= 5 * 1024 * 1024 {
-                                // eprintln!("Progress: {:.1}% ({} / {} bytes), pipeline: {}",
-                                //     (bytes_written as f64 / file_size as f64) * 100.0,
-                                //     bytes_written,
-                                //     file_size,
-                                //     write_futures.len()
-                                // );
-                                last_progress_logged = bytes_written;
                             }
                         }
                     }
@@ -802,7 +780,9 @@ impl SshSession {
             .map_err(|e| AppError::SftpError(format!("Failed to open remote file: {e}")))?;
 
         // Create local file for writing
-        let mut local_file = tokio::fs::File::create(expand_tilde(local_path)).await?;
+        const FILE_BUFFER_SIZE: usize = 512 * 1024; // Large buffer to reduce write syscalls
+        let local_file = tokio::fs::File::create(expand_tilde(local_path)).await?;
+        let mut local_file = BufWriter::with_capacity(FILE_BUFFER_SIZE, local_file);
 
         // Use optimal buffer size for SFTP protocol (128KB for better throughput)
         const CHUNK_SIZE: usize = 128 * 1024; // 128KB - good balance between memory and throughput
@@ -816,7 +796,7 @@ impl SshSession {
         // Optimized pipeline logic: concurrent read and write with ordered writes
         const MAX_CONCURRENT_READS: usize = 12; // Reasonable number of concurrent operations
         let mut read_futures = FuturesUnordered::new();
-        let mut write_queue: VecDeque<(u64, Vec<u8>)> = VecDeque::new();
+        let mut write_queue: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
         let mut next_write_offset = 0u64;
         let mut eof_reached = false;
         let mut pending_reads: VecDeque<(u64, u32)> = VecDeque::new();
@@ -834,12 +814,10 @@ impl SshSession {
                 break;
             }
 
-            // Check if we can read more data
-            let can_read = read_futures.len() < MAX_CONCURRENT_READS
-                && (!eof_reached || !pending_reads.is_empty());
-
-            // Start new read operations if we have capacity
-            if can_read {
+            // Fill the pipeline with as many requests as allowed
+            while read_futures.len() < MAX_CONCURRENT_READS
+                && (!eof_reached || !pending_reads.is_empty())
+            {
                 let (current_offset, requested_len) =
                     if let Some((pending_offset, pending_len)) = pending_reads.pop_front() {
                         (pending_offset, pending_len)
@@ -849,28 +827,58 @@ impl SshSession {
                         (next_offset, CHUNK_SIZE as u32)
                     };
 
-                if requested_len > 0 {
-                    let handle = remote_handle.handle.clone();
-                    let sftp_clone = Arc::clone(&sftp);
-
-                    let read_future = async move {
-                        let result = sftp_clone
-                            .read(&handle, current_offset, requested_len)
-                            .await;
-                        match result {
-                            Ok(data) => Ok((current_offset, requested_len, data.data, false)),
-                            Err(russh_sftp::client::error::Error::Status(status))
-                                if status.status_code == StatusCode::Eof =>
-                            {
-                                Ok((current_offset, requested_len, Vec::new(), true))
-                            }
-                            Err(err) => Err(AppError::RusshSftpError(err)),
-                        }
-                    };
-
-                    read_futures.push(read_future);
+                if requested_len == 0 {
+                    continue;
                 }
+
+                let handle = remote_handle.handle.clone();
+                let sftp_clone = Arc::clone(&sftp);
+
+                let read_future = async move {
+                    let result = sftp_clone
+                        .read(&handle, current_offset, requested_len)
+                        .await;
+                    match result {
+                        Ok(data) => Ok((current_offset, requested_len, data.data, false)),
+                        Err(russh_sftp::client::error::Error::Status(status))
+                            if status.status_code == StatusCode::Eof =>
+                        {
+                            Ok((current_offset, requested_len, Vec::new(), true))
+                        }
+                        Err(err) => Err(AppError::RusshSftpError(err)),
+                    }
+                };
+
+                read_futures.push(read_future);
             }
+
+            // Helper closure to process a single read result
+            let mut process_read_result =
+                |result: std::result::Result<(u64, u32, Vec<u8>, bool), AppError>| -> Result<()> {
+                    let (read_offset, requested_len, data, is_eof) = result?;
+                    let bytes_in_chunk = data.len();
+                    let bytes_in_chunk_u32 = u32::try_from(bytes_in_chunk).map_err(|_| {
+                        AppError::SftpError(
+                            "Received chunk larger than u32::MAX; unsupported transfer size"
+                                .to_string(),
+                        )
+                    })?;
+
+                    if bytes_in_chunk_u32 == 0 || is_eof {
+                        eof_reached = true;
+                    } else {
+                        // Add to write queue with offset for ordering
+                        write_queue.insert(read_offset, data);
+
+                        if !is_eof && bytes_in_chunk_u32 < requested_len {
+                            let remaining = requested_len - bytes_in_chunk_u32;
+                            let next_offset = read_offset + u64::from(bytes_in_chunk_u32);
+                            pending_reads.push_back((next_offset, remaining));
+                        }
+                    }
+
+                    Ok(())
+                };
 
             // Process completed reads
             tokio::select! {
@@ -880,65 +888,43 @@ impl SshSession {
 
                 read_result = read_futures.next(), if !read_futures.is_empty() => {
                     if let Some(result) = read_result {
-                        let result = result?;
-                        let (read_offset, requested_len, data, is_eof) = result;
-                        let bytes_in_chunk = data.len();
-                        let bytes_in_chunk_u32 = u32::try_from(bytes_in_chunk).map_err(|_| {
-                            AppError::SftpError(
-                                "Received chunk larger than u32::MAX; unsupported transfer size"
-                                    .to_string(),
-                            )
-                        })?;
+                        // Process the first completed result
+                        process_read_result(result)?;
 
-                        if bytes_in_chunk_u32 == 0 || is_eof {
-                            eof_reached = true;
-                        } else {
-                            // Add to write queue with offset for ordering
-                            write_queue.push_back((read_offset, data));
-                            write_queue.make_contiguous().sort_by_key(|(offset, _)| *offset);
-
-                            if !is_eof && bytes_in_chunk_u32 < requested_len {
-                                let remaining = requested_len - bytes_in_chunk_u32;
-                                let next_offset = read_offset + u64::from(bytes_in_chunk_u32);
-                                pending_reads.push_back((next_offset, remaining));
-                            }
+                        // Batch process additional completed results without blocking
+                        // Use zero-timeout to check for immediately available results
+                        // This significantly reduces loop overhead when multiple reads complete simultaneously
+                        while let Some(Some(res)) = read_futures.next().now_or_never() {
+                            process_read_result(res)?;
                         }
                     }
                 }
 
                 // If no reads are pending and we can't start new ones, just yield
-                _ = tokio::task::yield_now(), if read_futures.is_empty() && !can_read => {}
+                _ = tokio::task::yield_now(), if read_futures.is_empty() => {}
             }
 
             // Process writes in order
-            while let Some((write_offset, _)) = write_queue.front() {
-                if *write_offset == next_write_offset {
-                    let (_, data) = write_queue.pop_front().unwrap();
+            while let Some(data) = write_queue.remove(&next_write_offset) {
+                // Write data to local file
+                local_file.write_all(&data).await.map_err(|e| {
+                    AppError::SftpError(format!("Failed to write to local file: {e}"))
+                })?;
 
-                    // Write data to local file
-                    use tokio::io::AsyncWriteExt;
-                    local_file.write_all(&data).await.map_err(|e| {
-                        AppError::SftpError(format!("Failed to write to local file: {e}"))
-                    })?;
+                next_write_offset += data.len() as u64;
+                bytes_read += data.len() as u64;
 
-                    next_write_offset += data.len() as u64;
-                    bytes_read += data.len() as u64;
-
-                    if let Some(progress_tx) = &progress {
-                        let _ = progress_tx.try_send(ScpTransferProgress {
-                            file_index,
-                            transferred_bytes: bytes_read,
-                            total_bytes: file_size,
-                        });
-                    }
-                } else {
-                    break; // Wait for the next expected chunk
+                if let Some(progress_tx) = &progress {
+                    let _ = progress_tx.try_send(ScpTransferProgress {
+                        file_index,
+                        transferred_bytes: bytes_read,
+                        total_bytes: file_size,
+                    });
                 }
             }
         }
 
         // Flush and close the local file
-        use tokio::io::AsyncWriteExt;
         local_file
             .flush()
             .await
