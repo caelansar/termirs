@@ -11,6 +11,7 @@ Sleep 500ms
 Enter
 Sleep 1s
 
+# create new connection
 Type "n"
 Type "host.docker.internal"
 Sleep 200ms
@@ -34,12 +35,23 @@ Sleep 1s
 Escape
 Sleep 1s
 
-Type "s"
-Type "./Cargo.toml"
-Sleep 200ms
-Down 1
-Type "/home/devuser/"
-Sleep 200ms
+# file explorer
+Type "i"
+Sleep 1s
+Type "/"
+Sleep 1s
+Type "cargo"
+Sleep 1s
+Enter
+Type "c"
+Sleep 1s
+Type "j"
+Sleep 1s
+Type "c"
+Sleep 1s
+Tab
+Type "v"
+Sleep 1s
 Enter
 Sleep 1s
 Escape
@@ -50,7 +62,7 @@ Enter
 Type "ls"
 Enter
 Sleep 1s
-Type "rm Cargo.toml"
+Type "rm Cargo.*"
 Enter
 Sleep 1s
 Escape
