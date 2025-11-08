@@ -147,7 +147,7 @@ pub async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                         match SshSession::connect(&conn).await {
                             Ok(client) => {
                                 // Save the server key if it was received
-                                if let Some(server_key) = client.get_server_key().await {
+                                if let Some(server_key) = client.get_server_key() {
                                     conn.public_key = Some(server_key);
                                 }
 

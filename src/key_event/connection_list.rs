@@ -114,7 +114,7 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
                     Ok(client) => {
                         // Save the server key if it was received and the connection doesn't have one stored
                         if conn.public_key.is_none() {
-                            if let Some(server_key) = client.get_server_key().await {
+                            if let Some(server_key) = client.get_server_key() {
                                 if let Some(stored_conn) =
                                     app.config.connections_mut().iter_mut().find(|c| {
                                         c.host == conn.host

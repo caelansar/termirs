@@ -9,7 +9,7 @@ use bytes::{Bytes, BytesMut};
 use futures::FutureExt;
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, OnceCell, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -78,7 +78,7 @@ impl BufferPool {
 
 pub struct SshClient {
     connection: Connection,
-    server_key: Arc<tokio::sync::Mutex<Option<String>>>,
+    server_key: Arc<OnceCell<String>>,
 }
 
 impl client::Handler for SshClient {
@@ -94,10 +94,7 @@ impl client::Handler for SshClient {
         })?;
 
         // Store the server key for later validation
-        {
-            let mut key_guard = self.server_key.lock().await;
-            *key_guard = Some(server_key_openssh.clone());
-        }
+        let _ = self.server_key.set(server_key_openssh.clone());
 
         // Check if connection already has a stored public key
         if let Some(stored_key) = &self.connection.public_key {
@@ -121,7 +118,7 @@ pub struct SshSession {
     session: Arc<tokio::sync::Mutex<Option<client::Handle<SshClient>>>>,
     r: Arc<tokio::sync::Mutex<russh::ChannelReadHalf>>,
     w: Arc<russh::ChannelWriteHalf<client::Msg>>,
-    server_key: Arc<tokio::sync::Mutex<Option<String>>>,
+    server_key: Arc<OnceCell<String>>,
 }
 
 impl Clone for SshSession {
@@ -140,10 +137,7 @@ impl SshSession {
         connection: &Connection,
         timeout: Option<Duration>,
         cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<(
-        client::Handle<SshClient>,
-        Arc<tokio::sync::Mutex<Option<String>>>,
-    )> {
+    ) -> Result<(client::Handle<SshClient>, Arc<OnceCell<String>>)> {
         let config = client::Config {
             keepalive_interval: Some(std::time::Duration::from_secs(30)),
             keepalive_max: 3,
@@ -151,7 +145,7 @@ impl SshSession {
         };
 
         let config = Arc::new(config);
-        let server_key = Arc::new(tokio::sync::Mutex::new(None));
+        let server_key = Arc::new(OnceCell::new());
         let ssh_client = SshClient {
             connection: connection.clone(),
             server_key: server_key.clone(),
@@ -389,10 +383,7 @@ impl SshSession {
 
     async fn new_session(
         connection: &Connection,
-    ) -> Result<(
-        client::Handle<SshClient>,
-        Arc<tokio::sync::Mutex<Option<String>>>,
-    )> {
+    ) -> Result<(client::Handle<SshClient>, Arc<OnceCell<String>>)> {
         Self::new_session_with_timeout(
             connection,
             None,
@@ -509,9 +500,8 @@ impl SshSession {
     }
 
     /// Get the server public key that was received during connection
-    pub async fn get_server_key(&self) -> Option<String> {
-        let key_guard = self.server_key.lock().await;
-        key_guard.clone()
+    pub fn get_server_key(&self) -> Option<String> {
+        self.server_key.get().cloned()
     }
 
     pub async fn sftp_send_file_with_timeout(
