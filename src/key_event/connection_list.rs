@@ -1,14 +1,9 @@
 use std::io::Write;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::Backend;
-use tokio_util;
 
 use super::KeyFlow;
-use crate::async_ssh_client::SshSession;
-use crate::ui::TerminalState;
 use crate::{App, AppMode};
 
 pub async fn handle_connection_list_key<B: Backend + Write>(
@@ -110,51 +105,19 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
                 .get(app.current_selected())
                 .cloned()
             {
-                match SshSession::connect(&conn).await {
-                    Ok(client) => {
-                        // Save the server key if it was received and the connection doesn't have one stored
-                        if conn.public_key.is_none() {
-                            if let Some(server_key) = client.get_server_key() {
-                                if let Some(stored_conn) =
-                                    app.config.connections_mut().iter_mut().find(|c| {
-                                        c.host == conn.host
-                                            && c.port == conn.port
-                                            && c.username == conn.username
-                                    })
-                                {
-                                    stored_conn.public_key = Some(server_key);
-                                    let _ = app.config.save();
-                                }
-                            }
-                        }
-
-                        let scrollback = app.config.terminal_scrollback_lines();
-                        let state = Arc::new(Mutex::new(TerminalState::new_with_scrollback(
-                            30, 100, scrollback,
-                        )));
-                        let app_reader = state.clone();
-                        let mut client_clone = client.clone();
-                        let cancel_token = tokio_util::sync::CancellationToken::new();
-                        let cancel_for_task = cancel_token.clone();
-                        let event_tx = app.event_tx.clone();
-                        tokio::spawn(async move {
-                            client_clone
-                                .read_loop(app_reader, cancel_for_task, event_tx)
-                                .await;
-                        });
-                        let _ = app.config.touch_last_used(&conn.id);
-                        app.go_to_connected(
-                            conn.display_name.clone(),
-                            client,
-                            state,
-                            app.current_selected(),
-                            cancel_token,
-                        );
-                    }
-                    Err(e) => {
-                        app.error = Some(e);
-                    }
-                }
+                // Initiate connection
+                let (cancel_token, receiver) =
+                    crate::async_ssh_client::SshSession::initiate_connection(conn.clone());
+                let connection_name = conn.display_name.clone();
+                let return_from = crate::ConnectingSource::ConnectionList;
+                app.go_to_connecting(
+                    conn,
+                    connection_name,
+                    app.current_selected(),
+                    return_from,
+                    cancel_token,
+                    receiver,
+                );
             } else if len == 0 {
                 app.info = Some("No connections available".to_string());
             }

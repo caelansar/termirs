@@ -68,6 +68,7 @@ pub async fn handle_key_event<B: Backend + Write>(app: &mut App<B>, key: KeyEven
         AppMode::ConnectionList { .. } => handle_connection_list_key(app, key).await,
         AppMode::FormNew { .. } => handle_form_new_key(app, key).await,
         AppMode::FormEdit { .. } => handle_form_edit_key(app, key).await,
+        AppMode::Connecting { .. } => handle_connecting_key(app, key).await,
         AppMode::Connected { .. } => handle_connected_key(app, key).await,
         AppMode::ScpProgress { .. } => handle_scp_progress_key(app, key).await,
         AppMode::DeleteConfirmation { .. } => handle_delete_confirmation_key(app, key).await,
@@ -126,12 +127,58 @@ pub async fn handle_paste_event<B: Backend + Write>(app: &mut App<B>, data: &str
             }
         }
         AppMode::ConnectionList { .. }
+        | AppMode::Connecting { .. }
         | AppMode::ScpProgress { .. }
         | AppMode::DeleteConfirmation { .. }
         | AppMode::FileExplorer { .. }
         | AppMode::PortForwardingList { .. }
         | AppMode::PortForwardDeleteConfirmation { .. } => {}
     }
+}
+
+/// Handle key events while connecting to SSH
+async fn handle_connecting_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> KeyFlow {
+    match key.code {
+        KeyCode::Esc => {
+            if let AppMode::Connecting {
+                cancel_token,
+                return_from,
+                return_to,
+                ..
+            } = &mut app.mode
+            {
+                // Cancel the connection task
+                cancel_token.cancel();
+
+                // Clone the data we need before changing mode
+                let return_from = return_from.clone();
+                let return_to = *return_to;
+
+                // Return to the appropriate mode
+                match return_from {
+                    crate::ConnectingSource::FormNew { auto_auth, form } => {
+                        app.mode = AppMode::FormNew {
+                            auto_auth,
+                            form,
+                            current_selected: return_to,
+                        };
+                    }
+                    crate::ConnectingSource::FormEdit { form, original } => {
+                        app.mode = AppMode::FormEdit {
+                            form,
+                            original,
+                            current_selected: return_to,
+                        };
+                    }
+                    crate::ConnectingSource::ConnectionList => {
+                        app.go_to_connection_list_with_selected(return_to);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    KeyFlow::Continue
 }
 
 pub async fn handle_mouse_event<B: Backend + Write>(app: &mut App<B>, event: MouseEvent) {

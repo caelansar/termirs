@@ -392,6 +392,29 @@ impl SshSession {
         .await
     }
 
+    /// Initiate an SSH connection asynchronously
+    /// Returns a cancel token and a receiver for the connection result
+    pub(crate) fn initiate_connection(
+        conn: Connection,
+    ) -> (
+        tokio_util::sync::CancellationToken,
+        mpsc::Receiver<Result<SshSession>>,
+    ) {
+        let (tx, rx) = mpsc::channel(1);
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let cancel_clone = cancel_token.clone();
+
+        tokio::spawn(async move {
+            let result = Self::connect(&conn).await;
+            // Only send result if not cancelled
+            if !cancel_clone.is_cancelled() {
+                let _ = tx.send(result).await;
+            }
+        });
+
+        (cancel_token, rx)
+    }
+
     pub async fn connect(connection: &Connection) -> Result<Self> {
         let (session, server_key) = Self::new_session(connection).await?;
 

@@ -102,6 +102,55 @@ pub fn draw_info_popup(area: Rect, message: &str, frame: &mut ratatui::Frame<'_>
     frame.render_widget(body, popup);
 }
 
+// Connecting popup renderer (shows cancellation hint at bottom)
+pub fn draw_connecting_popup(area: Rect, message: &str, frame: &mut ratatui::Frame<'_>) {
+    let popup_w = (area.width as f32 * 0.45) as u16;
+    let inner_w = popup_w.saturating_sub(2).max(1);
+    let estimated_lines: u16 = message
+        .lines()
+        .map(|l| {
+            let len = l.chars().count() as u16;
+            if len == 0 { 1 } else { len.div_ceil(inner_w) }
+        })
+        .sum();
+    let content_h = estimated_lines.max(1) + 4; // title + message + hint
+    let popup_h = content_h.min(area.height.saturating_sub(2));
+    let x = area.x + (area.width.saturating_sub(popup_w)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_h)) / 2;
+    let popup = Rect {
+        x,
+        y,
+        width: popup_w,
+        height: popup_h,
+    };
+
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Line::from(Span::styled(
+            "Info",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )));
+    let body = Paragraph::new(vec![
+        Line::from(Span::styled(
+            message.to_string(),
+            Style::default().fg(Color::Cyan),
+        )),
+        Line::from(Span::raw("")),
+        Line::from(Span::styled(
+            "Press ESC to cancel",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::DIM),
+        )),
+    ])
+    .wrap(ratatui::widgets::Wrap { trim: true })
+    .block(block);
+    frame.render_widget(body, popup);
+}
+
 // Delete confirmation popup renderer
 pub fn draw_delete_confirmation_popup(
     area: Rect,

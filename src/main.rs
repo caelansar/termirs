@@ -33,9 +33,10 @@ pub(crate) use async_ssh_client::expand_tilde;
 use config::manager::{ConfigManager, Connection};
 use error::{AppError, Result};
 use ui::{
-    ConnectionForm, TerminalSelection, TerminalState, draw_connection_form_popup,
-    draw_connection_list, draw_delete_confirmation_popup, draw_error_popup, draw_file_explorer,
-    draw_info_popup, draw_port_forward_delete_confirmation_popup, draw_port_forwarding_form_popup,
+    ConnectionForm, TerminalSelection, TerminalState, draw_connecting_popup,
+    draw_connection_form_popup, draw_connection_list, draw_delete_confirmation_popup,
+    draw_error_popup, draw_file_explorer, draw_info_popup,
+    draw_port_forward_delete_confirmation_popup, draw_port_forwarding_form_popup,
     draw_port_forwarding_list, draw_scp_progress_popup, draw_search_overlay, draw_terminal,
     rect_with_top_margin,
 };
@@ -228,6 +229,21 @@ impl ScpReturnMode {
     }
 }
 
+/// Track where a connection was initiated from
+#[derive(Clone)]
+#[allow(dead_code)]
+pub(crate) enum ConnectingSource {
+    FormNew {
+        auto_auth: bool,
+        form: ConnectionForm,
+    },
+    FormEdit {
+        form: ConnectionForm,
+        original: Connection,
+    },
+    ConnectionList,
+}
+
 pub(crate) enum AppMode {
     ConnectionList {
         selected: usize,
@@ -243,6 +259,14 @@ pub(crate) enum AppMode {
         form: ConnectionForm,
         original: Connection,
         current_selected: usize,
+    },
+    Connecting {
+        connection: Connection,
+        connection_name: String,
+        return_to: usize,
+        return_from: ConnectingSource,
+        cancel_token: tokio_util::sync::CancellationToken,
+        receiver: mpsc::Receiver<Result<SshSession>>,
     },
     Connected {
         name: String,
@@ -850,6 +874,26 @@ impl<B: Backend + Write> App<B> {
         self.needs_redraw = true;
     }
 
+    pub(crate) fn go_to_connecting(
+        &mut self,
+        connection: Connection,
+        connection_name: String,
+        return_to: usize,
+        return_from: ConnectingSource,
+        cancel_token: tokio_util::sync::CancellationToken,
+        receiver: mpsc::Receiver<Result<SshSession>>,
+    ) {
+        self.mode = AppMode::Connecting {
+            connection,
+            connection_name,
+            return_to,
+            return_from,
+            cancel_token,
+            receiver,
+        };
+        self.needs_redraw = true;
+    }
+
     pub(crate) async fn go_to_file_explorer(
         &mut self,
         conn: Connection,
@@ -964,6 +1008,7 @@ impl<B: Backend + Write> App<B> {
             | AppMode::DeleteConfirmation {
                 current_selected, ..
             } => *current_selected,
+            AppMode::Connecting { return_to, .. } => *return_to,
             AppMode::ScpProgress { return_mode, .. } => match return_mode {
                 ScpReturnMode::ConnectionList { current_selected } => *current_selected,
                 ScpReturnMode::Connected {
@@ -1082,6 +1127,29 @@ impl<B: Backend + Write> App<B> {
                     // Render the connection list background first
                     let conns = self.config.connections();
                     draw_connection_list(size, conns, *current_selected, false, "", f, false);
+                }
+                AppMode::Connecting {
+                    return_from,
+                    return_to,
+                    ..
+                } => {
+                    // Render appropriate background based on return_from
+                    match return_from {
+                        ConnectingSource::FormNew { form, .. } => {
+                            let conns = self.config.connections();
+                            draw_connection_list(size, conns, *return_to, false, "", f, false);
+                            draw_connection_form_popup(size, form, true, f);
+                        }
+                        ConnectingSource::FormEdit { form, .. } => {
+                            let conns = self.config.connections();
+                            draw_connection_list(size, conns, *return_to, false, "", f, false);
+                            draw_connection_form_popup(size, form, false, f);
+                        }
+                        ConnectingSource::ConnectionList => {
+                            let conns = self.config.connections();
+                            draw_connection_list(size, conns, *return_to, false, "", f, false);
+                        }
+                    }
                 }
                 AppMode::Connected { name, state, .. } => {
                     let inner = rect_with_top_margin(size, 1);
@@ -1429,6 +1497,15 @@ impl<B: Backend + Write> App<B> {
                 draw_connection_form_popup(size, form, false, f);
             }
 
+            // Overlay connecting popup if in connecting mode
+            if let AppMode::Connecting {
+                connection_name, ..
+            } = &self.mode
+            {
+                let message = format!("Connecting to {}...", connection_name);
+                draw_connecting_popup(size, &message, f);
+            }
+
             // Overlay info popup if any
             if let Some(msg) = &self.info {
                 draw_info_popup(size, msg, f);
@@ -1680,6 +1757,144 @@ impl<B: Backend + Write> App<B> {
                     }
                     if progress_needs_redraw {
                         self.mark_redraw();
+                    }
+
+                    // Handle connection result polling in Connecting mode
+                    if let AppMode::Connecting {
+                        connection,
+                        return_from,
+                        return_to,
+                        receiver,
+                        ..
+                    } = &mut self.mode
+                    {
+                        match receiver.try_recv() {
+                            Ok(result) => {
+                                match result {
+                                    Ok(client) => {
+                                        // Connection successful - extract data and transition to Connected mode
+                                        let conn = connection.clone();
+                                        let return_to = *return_to;
+
+                                        // Save the server key if it was received
+                                        if conn.public_key.is_none() {
+                                            if let Some(server_key) = client.get_server_key() {
+                                                if let Some(stored_conn) =
+                                                    self.config.connections_mut().iter_mut().find(
+                                                        |c| {
+                                                            c.host == conn.host
+                                                                && c.port == conn.port
+                                                                && c.username == conn.username
+                                                        },
+                                                    )
+                                                {
+                                                    stored_conn.public_key = Some(server_key);
+                                                    let _ = self.config.save();
+                                                }
+                                            }
+                                        }
+
+                                        // Handle based on source
+                                        match return_from {
+                                            ConnectingSource::FormNew { .. } => {
+                                                // Save the connection (only for new connections)
+                                                let mut conn_to_save = conn.clone();
+                                                if let Some(server_key) = client.get_server_key() {
+                                                    conn_to_save.public_key = Some(server_key);
+                                                }
+                                                if let Err(e) =
+                                                    self.config.add_connection(conn_to_save.clone())
+                                                {
+                                                    self.set_error(e);
+                                                    self.go_to_form_new();
+                                                    continue;
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+
+                                        let scrollback = self.config.terminal_scrollback_lines();
+                                        let state = Arc::new(Mutex::new(
+                                            TerminalState::new_with_scrollback(30, 100, scrollback),
+                                        ));
+                                        let app_reader = state.clone();
+                                        let mut client_clone = client.clone();
+                                        let cancel_token =
+                                            tokio_util::sync::CancellationToken::new();
+                                        let cancel_for_task = cancel_token.clone();
+                                        let event_tx = self.event_tx.clone();
+                                        tokio::spawn(async move {
+                                            client_clone
+                                                .read_loop(app_reader, cancel_for_task, event_tx)
+                                                .await;
+                                        });
+
+                                        let _ = self.config.touch_last_used(&conn.id);
+                                        self.go_to_connected(
+                                            conn.display_name.clone(),
+                                            client,
+                                            state,
+                                            return_to,
+                                            cancel_token,
+                                        );
+                                    }
+                                    Err(e) => {
+                                        // Connection failed - clone data before setting error
+                                        let return_from = return_from.clone();
+                                        let return_to = *return_to;
+
+                                        // Now show error and return to previous mode
+                                        self.set_error(e);
+                                        match return_from {
+                                            ConnectingSource::FormNew { auto_auth, form } => {
+                                                self.mode = AppMode::FormNew {
+                                                    auto_auth,
+                                                    form,
+                                                    current_selected: return_to,
+                                                };
+                                            }
+                                            ConnectingSource::FormEdit { form, original } => {
+                                                self.mode = AppMode::FormEdit {
+                                                    form,
+                                                    original,
+                                                    current_selected: return_to,
+                                                };
+                                            }
+                                            ConnectingSource::ConnectionList => {
+                                                self.go_to_connection_list_with_selected(return_to);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                                // Still waiting for connection result
+                            }
+                            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                                // Connection task was cancelled or dropped
+                                let return_from = return_from.clone();
+                                let return_to = *return_to;
+                                match return_from {
+                                    ConnectingSource::FormNew { auto_auth, form } => {
+                                        self.mode = AppMode::FormNew {
+                                            auto_auth,
+                                            form,
+                                            current_selected: return_to,
+                                        };
+                                    }
+                                    ConnectingSource::FormEdit { form, original } => {
+                                        self.mode = AppMode::FormEdit {
+                                            form,
+                                            original,
+                                            current_selected: return_to,
+                                        };
+                                    }
+                                    ConnectingSource::ConnectionList => {
+                                        self.go_to_connection_list_with_selected(return_to);
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 AppEvent::Input(ev) => {

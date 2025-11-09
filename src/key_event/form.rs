@@ -1,18 +1,13 @@
 use std::io::Write;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::Backend;
-use tokio_util;
 use tui_textarea::Input;
 
 use super::KeyFlow;
-use crate::async_ssh_client::SshSession;
 use crate::config::manager::AuthMethod;
 use crate::config::manager::Connection;
 use crate::error::AppError;
-use crate::ui::TerminalState;
 use crate::{App, AppMode};
 
 pub async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> KeyFlow {
@@ -144,46 +139,23 @@ pub async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                         if !form.get_display_name_value().trim().is_empty() {
                             conn.set_display_name(form.get_display_name_value().trim().to_string());
                         }
-                        match SshSession::connect(&conn).await {
-                            Ok(client) => {
-                                // Save the server key if it was received
-                                if let Some(server_key) = client.get_server_key() {
-                                    conn.public_key = Some(server_key);
-                                }
 
-                                if let Err(e) = app.config.add_connection(conn.clone()) {
-                                    app.error = Some(e);
-                                    return KeyFlow::Continue;
-                                }
-
-                                let scrollback = app.config.terminal_scrollback_lines();
-                                let state = Arc::new(Mutex::new(
-                                    TerminalState::new_with_scrollback(30, 100, scrollback),
-                                ));
-                                let app_reader = state.clone();
-                                let mut client_clone = client.clone();
-                                let cancel_token = tokio_util::sync::CancellationToken::new();
-                                let cancel_for_task = cancel_token.clone();
-                                let event_tx = app.event_tx.clone();
-                                tokio::spawn(async move {
-                                    client_clone
-                                        .read_loop(app_reader, cancel_for_task, event_tx)
-                                        .await;
-                                });
-                                form.error = None;
-                                let _ = app.config.touch_last_used(&conn.id);
-                                app.go_to_connected(
-                                    conn.display_name.clone(),
-                                    client,
-                                    state,
-                                    0,
-                                    cancel_token,
-                                );
-                            }
-                            Err(e) => {
-                                app.error = Some(e);
-                            }
-                        }
+                        // Initiate connection
+                        let (cancel_token, receiver) =
+                            crate::async_ssh_client::SshSession::initiate_connection(conn.clone());
+                        let connection_name = conn.display_name.clone();
+                        let return_from = crate::ConnectingSource::FormNew {
+                            auto_auth: *auto_auth,
+                            form: form.clone(),
+                        };
+                        app.go_to_connecting(
+                            conn,
+                            connection_name,
+                            0,
+                            return_from,
+                            cancel_token,
+                            receiver,
+                        );
                     }
                     Err(msg) => {
                         app.error = Some(AppError::ValidationError(msg));
