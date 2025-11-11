@@ -8,7 +8,7 @@ use std::time::Duration;
 use bytes::{Bytes, BytesMut};
 use futures::FutureExt;
 use futures::stream::{FuturesUnordered, StreamExt};
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::sync::{Mutex, OnceCell, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -34,6 +34,20 @@ const STANDARD_KEY_PATHS: &[&str] = &[
 
 pub(crate) trait ByteProcessor {
     fn process_bytes(&mut self, bytes: &[u8]);
+}
+
+pub(crate) trait HostFile: AsyncRead + AsyncWrite + Unpin {
+    async fn file_size(&self) -> Result<u64>;
+}
+
+impl HostFile for tokio::fs::File {
+    async fn file_size(&self) -> Result<u64> {
+        let metadata = self
+            .metadata()
+            .await
+            .map_err(|e| AppError::SftpError(format!("Failed to get metadata: {e}")))?;
+        Ok(metadata.len())
+    }
 }
 
 /// Buffer pool for efficient memory reuse during SFTP transfers
@@ -530,15 +544,13 @@ impl SshSession {
     pub async fn sftp_send_file_with_timeout(
         channel: Option<Channel<client::Msg>>,
         connection: &Connection,
-        local_path: &str,
-        remote_path: &str,
+        mut from: impl HostFile,
+        to: &str,
         timeout: Option<Duration>,
         cancel: &tokio_util::sync::CancellationToken,
         file_index: usize,
         progress: Option<mpsc::Sender<ScpTransferProgress>>,
     ) -> Result<()> {
-        // let now = std::time::Instant::now();
-
         let channel = if let Some(channel) = channel {
             channel
         } else {
@@ -558,8 +570,7 @@ impl SshSession {
             .map_err(|e| AppError::SftpError(format!("Failed to initialize SFTP: {e}")))?;
 
         // Open local file and get its size
-        let mut local_file = tokio::fs::File::open(expand_tilde(local_path)).await?;
-        let file_size = local_file.metadata().await?.len();
+        let file_size = from.file_size().await?;
 
         if let Some(progress_tx) = &progress {
             let _ = progress_tx.try_send(ScpTransferProgress {
@@ -572,7 +583,7 @@ impl SshSession {
         // Open remote file using RawSftpSession
         let remote_handle = sftp
             .open(
-                remote_path,
+                to,
                 OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
                 FileAttributes::empty(),
             )
@@ -588,8 +599,7 @@ impl SshSession {
         let mut write_futures = FuturesUnordered::new();
         let mut eof_reached = false;
 
-        // Set a shorter timeout for faster operations
-        sftp.set_timeout(3).await;
+        sftp.set_timeout(30).await;
 
         // Wrap sftp in Arc to share between tasks
         let sftp = Arc::new(sftp);
@@ -617,7 +627,7 @@ impl SshSession {
                     // Try to read next chunk
                     read_result = async {
                         let mut buffer = buffer_pool.get_buffer().await;
-                        let result = local_file.read(&mut buffer).await;
+                        let result = from.read(&mut buffer).await;
                         (buffer, result)
                     } => {
                         let (mut buffer, read_result) = read_result;
@@ -713,13 +723,6 @@ impl SshSession {
             });
         }
 
-        // eprintln!(
-        //     "Transfer completed: {} bytes in {:?}, speed: {:.2} MB/s",
-        //     bytes_written,
-        //     now.elapsed(),
-        //     bytes_written as f64 / now.elapsed().as_secs_f64() / 1024.0 / 1024.0
-        // );
-
         Ok(())
     }
 
@@ -731,10 +734,12 @@ impl SshSession {
         file_index: usize,
         progress: Option<mpsc::Sender<ScpTransferProgress>>,
     ) -> Result<()> {
+        let local_file = tokio::fs::File::open(expand_tilde(local_path)).await?;
+
         Self::sftp_send_file_with_timeout(
             channel,
             connection,
-            local_path,
+            local_file,
             remote_path,
             None,
             &tokio_util::sync::CancellationToken::new(),
@@ -747,8 +752,8 @@ impl SshSession {
     pub async fn sftp_receive_file_with_timeout(
         channel: Option<Channel<client::Msg>>,
         connection: &Connection,
-        remote_path: &str,
-        local_path: &str,
+        from: &str,
+        to: impl HostFile,
         timeout: Option<Duration>,
         cancel: &tokio_util::sync::CancellationToken,
         file_index: usize,
@@ -774,7 +779,7 @@ impl SshSession {
         let mut file_size = None;
 
         if let Some(progress_tx) = &progress {
-            file_size = match sftp.stat(remote_path).await {
+            file_size = match sftp.stat(from).await {
                 Ok(attrs) => Some(attrs.attrs.len()),
                 Err(_) => None,
             };
@@ -788,14 +793,13 @@ impl SshSession {
 
         // Open remote file for reading
         let remote_handle = sftp
-            .open(remote_path, OpenFlags::READ, FileAttributes::empty())
+            .open(from, OpenFlags::READ, FileAttributes::empty())
             .await
             .map_err(|e| AppError::SftpError(format!("Failed to open remote file: {e}")))?;
 
         // Create local file for writing
         const FILE_BUFFER_SIZE: usize = 512 * 1024; // Large buffer to reduce write syscalls
-        let local_file = tokio::fs::File::create(expand_tilde(local_path)).await?;
-        let mut local_file = BufWriter::with_capacity(FILE_BUFFER_SIZE, local_file);
+        let mut local_file = BufWriter::with_capacity(FILE_BUFFER_SIZE, to);
 
         // Use optimal buffer size for SFTP protocol (128KB for better throughput)
         const CHUNK_SIZE: usize = 128 * 1024; // 128KB - good balance between memory and throughput
@@ -803,8 +807,7 @@ impl SshSession {
         let mut bytes_read = 0u64;
         let mut offset = 0u64;
 
-        // Set a shorter timeout for faster operations
-        sftp.set_timeout(3).await;
+        sftp.set_timeout(30).await;
 
         // Optimized pipeline logic: concurrent read and write with ordered writes
         const MAX_CONCURRENT_READS: usize = 12; // Reasonable number of concurrent operations
@@ -967,11 +970,13 @@ impl SshSession {
         file_index: usize,
         progress: Option<mpsc::Sender<ScpTransferProgress>>,
     ) -> Result<()> {
+        let local_file = tokio::fs::File::create(expand_tilde(local_path)).await?;
+
         Self::sftp_receive_file_with_timeout(
             channel,
             connection,
             remote_path,
-            local_path,
+            local_file,
             None,
             &tokio_util::sync::CancellationToken::new(),
             file_index,

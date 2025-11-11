@@ -7,7 +7,7 @@ pub mod search;
 pub mod terminal;
 
 pub use connection::{ConnectionForm, draw_connection_list};
-pub use file_explorer::draw_file_explorer;
+pub use file_explorer::{draw_connection_selector_popup, draw_file_explorer};
 pub use popup::{
     draw_connecting_popup, draw_connection_form_popup, draw_delete_confirmation_popup,
     draw_error_popup, draw_info_popup,

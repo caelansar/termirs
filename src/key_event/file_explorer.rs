@@ -6,21 +6,173 @@ use ratatui::backend::Backend;
 use std::io::Write;
 
 use super::KeyFlow;
-use crate::{App, AppMode, CopyDirection, CopyOperation, FileExplorerPane};
+use crate::{
+    ActivePane, App, AppMode, CopyDirection, CopyOperation, FileExplorerPane,
+    ui::file_explorer::filter_connection_indices,
+};
 
 /// Handle key events in file explorer mode
 pub async fn handle_file_explorer_key<B: Backend + Write>(
     app: &mut App<B>,
     key: KeyEvent,
 ) -> KeyFlow {
+    // Handle source selector popup first (needs separate scope to avoid borrow issues)
     if let AppMode::FileExplorer {
-        local_explorer,
+        showing_source_selector,
+        selector_selected,
+        selector_search_mode,
+        selector_search_query,
+        ssh_connection,
+        ..
+    } = &mut app.mode
+    {
+        if *showing_source_selector {
+            let local_offset = 1;
+            let mut filtered_indices = filter_connection_indices(
+                app.config.connections(),
+                Some(ssh_connection.id.as_str()),
+                selector_search_query.as_str(),
+            );
+            let mut total_items = filtered_indices.len() + local_offset;
+            if *selector_selected >= total_items {
+                *selector_selected = total_items.saturating_sub(1);
+            }
+
+            if *selector_search_mode {
+                match key.code {
+                    KeyCode::Char(c) => {
+                        selector_search_query.push(c);
+                        filtered_indices = filter_connection_indices(
+                            app.config.connections(),
+                            Some(ssh_connection.id.as_str()),
+                            selector_search_query.as_str(),
+                        );
+                        total_items = filtered_indices.len() + local_offset;
+                        if selector_search_query.is_empty() {
+                            *selector_selected =
+                                (*selector_selected).min(total_items.saturating_sub(1));
+                        } else if filtered_indices.is_empty() {
+                            *selector_selected = 0;
+                        } else {
+                            *selector_selected = local_offset;
+                        }
+                        app.mark_redraw();
+                        return KeyFlow::Continue;
+                    }
+                    KeyCode::Backspace => {
+                        selector_search_query.pop();
+                        filtered_indices = filter_connection_indices(
+                            app.config.connections(),
+                            Some(ssh_connection.id.as_str()),
+                            selector_search_query.as_str(),
+                        );
+                        total_items = filtered_indices.len() + local_offset;
+                        if selector_search_query.is_empty() {
+                            *selector_selected =
+                                (*selector_selected).min(total_items.saturating_sub(1));
+                        } else if filtered_indices.is_empty() {
+                            *selector_selected = 0;
+                        } else {
+                            *selector_selected = local_offset;
+                        }
+                        app.mark_redraw();
+                        return KeyFlow::Continue;
+                    }
+                    KeyCode::Esc => {
+                        if !selector_search_query.is_empty() {
+                            selector_search_query.clear();
+                            filtered_indices = filter_connection_indices(
+                                app.config.connections(),
+                                Some(ssh_connection.id.as_str()),
+                                selector_search_query.as_str(),
+                            );
+                            total_items = filtered_indices.len() + local_offset;
+                            *selector_selected =
+                                (*selector_selected).min(total_items.saturating_sub(1));
+                        } else {
+                            *selector_search_mode = false;
+                        }
+                        app.mark_redraw();
+                        return KeyFlow::Continue;
+                    }
+                    _ => {}
+                }
+            }
+
+            match key.code {
+                KeyCode::Char('/') => {
+                    *selector_search_mode = true;
+                    app.mark_redraw();
+                    return KeyFlow::Continue;
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if *selector_selected > 0 {
+                        *selector_selected -= 1;
+                    } else {
+                        *selector_selected = total_items.saturating_sub(1);
+                    }
+                    app.mark_redraw();
+                    return KeyFlow::Continue;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if *selector_selected < total_items.saturating_sub(1) {
+                        *selector_selected += 1;
+                    } else {
+                        *selector_selected = 0;
+                    }
+                    app.mark_redraw();
+                    return KeyFlow::Continue;
+                }
+                KeyCode::Enter => {
+                    let selected_idx = (*selector_selected).min(total_items.saturating_sub(1));
+                    let selection = if selected_idx < local_offset {
+                        None
+                    } else {
+                        filtered_indices
+                            .get(selected_idx - local_offset)
+                            .and_then(|conn_idx| app.config.connections().get(*conn_idx).cloned())
+                    };
+
+                    *showing_source_selector = false;
+                    *selector_search_mode = false;
+                    selector_search_query.clear();
+
+                    if let Some(conn) = selection {
+                        app.switch_left_pane_to_ssh(conn).await;
+                    } else {
+                        app.switch_left_pane_to_local().await;
+                    }
+
+                    app.mark_redraw();
+                    return KeyFlow::Continue;
+                }
+                KeyCode::Esc => {
+                    *showing_source_selector = false;
+                    *selector_search_mode = false;
+                    selector_search_query.clear();
+                    app.mark_redraw();
+                    return KeyFlow::Continue;
+                }
+                _ => return KeyFlow::Continue,
+            }
+        }
+    }
+
+    // Main file explorer handling
+    if let AppMode::FileExplorer {
+        left_pane,
+        left_explorer,
         remote_explorer,
         active_pane,
         copy_buffer,
         return_to,
         search_mode,
         search_query,
+        showing_source_selector,
+        selector_selected,
+        selector_search_mode,
+        selector_search_query,
+        ssh_connection,
         ..
     } = &mut app.mode
     {
@@ -33,14 +185,14 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
 
                     // Apply filter and select first match
                     match active_pane {
-                        FileExplorerPane::Local => {
-                            local_explorer.set_search_filter(Some(search_query.clone()));
+                        ActivePane::Left => {
+                            left_explorer.set_search_filter(Some(search_query.clone()));
                             // Select first match if available
-                            if !local_explorer.files().is_empty() {
-                                local_explorer.set_selected_idx(0);
+                            if !left_explorer.files().is_empty() {
+                                left_explorer.set_selected_idx(0);
                             }
                         }
-                        FileExplorerPane::Remote => {
+                        ActivePane::Right => {
                             remote_explorer.set_search_filter(Some(search_query.clone()));
                             // Select first match if available
                             if !remote_explorer.files().is_empty() {
@@ -63,13 +215,13 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                     };
 
                     match active_pane {
-                        FileExplorerPane::Local => {
-                            local_explorer.set_search_filter(filter);
-                            if !search_query.is_empty() && !local_explorer.files().is_empty() {
-                                local_explorer.set_selected_idx(0);
+                        ActivePane::Left => {
+                            left_explorer.set_search_filter(filter);
+                            if !search_query.is_empty() && !left_explorer.files().is_empty() {
+                                left_explorer.set_selected_idx(0);
                             }
                         }
-                        FileExplorerPane::Remote => {
+                        ActivePane::Right => {
                             remote_explorer.set_search_filter(filter);
                             if !search_query.is_empty() && !remote_explorer.files().is_empty() {
                                 remote_explorer.set_selected_idx(0);
@@ -113,12 +265,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
             // Navigation: Move selection up
             KeyCode::Char('k') | KeyCode::Up => {
                 let result = match active_pane {
-                    FileExplorerPane::Local => {
-                        local_explorer.handle(ratatui_explorer::Input::Up).await
-                    }
-                    FileExplorerPane::Remote => {
-                        remote_explorer.handle(ratatui_explorer::Input::Up).await
-                    }
+                    ActivePane::Left => left_explorer.handle(ratatui_explorer::Input::Up).await,
+                    ActivePane::Right => remote_explorer.handle(ratatui_explorer::Input::Up).await,
                 };
                 if let Err(e) = result {
                     app.error = Some(crate::error::AppError::SftpError(format!(
@@ -132,10 +280,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
             // Navigation: Move selection down
             KeyCode::Char('j') | KeyCode::Down => {
                 let result = match active_pane {
-                    FileExplorerPane::Local => {
-                        local_explorer.handle(ratatui_explorer::Input::Down).await
-                    }
-                    FileExplorerPane::Remote => {
+                    ActivePane::Left => left_explorer.handle(ratatui_explorer::Input::Down).await,
+                    ActivePane::Right => {
                         remote_explorer.handle(ratatui_explorer::Input::Down).await
                     }
                 };
@@ -151,10 +297,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
             // Navigation: Enter directory
             KeyCode::Right | KeyCode::Enter => {
                 let result = match active_pane {
-                    FileExplorerPane::Local => {
-                        local_explorer.handle(ratatui_explorer::Input::Right).await
-                    }
-                    FileExplorerPane::Remote => {
+                    ActivePane::Left => left_explorer.handle(ratatui_explorer::Input::Right).await,
+                    ActivePane::Right => {
                         remote_explorer.handle(ratatui_explorer::Input::Right).await
                     }
                 };
@@ -167,7 +311,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                 // Clear search filter when changing directories
                 search_query.clear();
                 *search_mode = false;
-                local_explorer.set_search_filter(None);
+                left_explorer.set_search_filter(None);
                 remote_explorer.set_search_filter(None);
                 app.mark_redraw();
             }
@@ -175,10 +319,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
             // Navigation: Go to parent directory
             KeyCode::Left | KeyCode::Backspace => {
                 let result = match active_pane {
-                    FileExplorerPane::Local => {
-                        local_explorer.handle(ratatui_explorer::Input::Left).await
-                    }
-                    FileExplorerPane::Remote => {
+                    ActivePane::Left => left_explorer.handle(ratatui_explorer::Input::Left).await,
+                    ActivePane::Right => {
                         remote_explorer.handle(ratatui_explorer::Input::Left).await
                     }
                 };
@@ -191,7 +333,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                 // Clear search filter when changing directories
                 search_query.clear();
                 *search_mode = false;
-                local_explorer.set_search_filter(None);
+                left_explorer.set_search_filter(None);
                 remote_explorer.set_search_filter(None);
                 app.mark_redraw();
             }
@@ -199,21 +341,49 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
             // Switch pane with Tab
             KeyCode::Tab => {
                 *active_pane = match active_pane {
-                    FileExplorerPane::Local => FileExplorerPane::Remote,
-                    FileExplorerPane::Remote => FileExplorerPane::Local,
+                    ActivePane::Left => ActivePane::Right,
+                    ActivePane::Right => ActivePane::Left,
                 };
                 app.mark_redraw();
+            }
+
+            // Switch left pane source with 's'
+            KeyCode::Char('s') => {
+                if matches!(active_pane, ActivePane::Left) {
+                    *showing_source_selector = true;
+                    *selector_search_mode = false;
+                    selector_search_query.clear();
+                    // Reset selector to current source
+                    let base_indices = filter_connection_indices(
+                        app.config.connections(),
+                        Some(ssh_connection.id.as_str()),
+                        "",
+                    );
+                    *selector_selected = match left_pane {
+                        FileExplorerPane::Local => 0,
+                        FileExplorerPane::RemoteSsh { connection, .. } => {
+                            let connections = app.config.connections();
+                            base_indices
+                                .iter()
+                                .position(|idx| {
+                                    connections
+                                        .get(*idx)
+                                        .map(|conn| conn.id == connection.id)
+                                        .unwrap_or(false)
+                                })
+                                .map(|idx| idx + 1)
+                                .unwrap_or(0)
+                        }
+                    };
+                    app.mark_redraw();
+                }
             }
 
             // Copy file: Toggle selection
             KeyCode::Char('c') => {
                 let (current_file, direction) = match active_pane {
-                    FileExplorerPane::Local => {
-                        (local_explorer.current(), CopyDirection::LocalToRemote)
-                    }
-                    FileExplorerPane::Remote => {
-                        (remote_explorer.current(), CopyDirection::RemoteToLocal)
-                    }
+                    ActivePane::Left => (left_explorer.current(), CopyDirection::LeftToRight),
+                    ActivePane::Right => (remote_explorer.current(), CopyDirection::RightToLeft),
                 };
 
                 if current_file.is_dir() {
@@ -280,14 +450,14 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                 }
 
                 let dest_dir = match active_pane {
-                    FileExplorerPane::Local => local_explorer.cwd().to_string_lossy().to_string(),
-                    FileExplorerPane::Remote => remote_explorer.cwd().to_string_lossy().to_string(),
+                    ActivePane::Left => left_explorer.cwd().to_string_lossy().to_string(),
+                    ActivePane::Right => remote_explorer.cwd().to_string_lossy().to_string(),
                 };
 
                 let direction = copy_buffer[0].direction;
                 let same_pane = match (direction, active_pane) {
-                    (CopyDirection::LocalToRemote, FileExplorerPane::Local) => true,
-                    (CopyDirection::RemoteToLocal, FileExplorerPane::Remote) => true,
+                    (CopyDirection::LeftToRight, ActivePane::Left) => true,
+                    (CopyDirection::RightToLeft, ActivePane::Right) => true,
                     _ => false,
                 };
 
@@ -298,16 +468,25 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                     return KeyFlow::Continue;
                 }
 
-                let mode = match direction {
-                    CopyDirection::LocalToRemote => crate::ui::ScpMode::Send,
-                    CopyDirection::RemoteToLocal => crate::ui::ScpMode::Receive,
+                // Determine transfer mode based on pane types
+                let (is_ssh_to_ssh, mode) = match direction {
+                    CopyDirection::LeftToRight => {
+                        // Source is left pane, dest is right pane (always SSH)
+                        let is_ssh_to_ssh = matches!(left_pane, FileExplorerPane::RemoteSsh { .. });
+                        (is_ssh_to_ssh, crate::ui::ScpMode::Send)
+                    }
+                    CopyDirection::RightToLeft => {
+                        // Source is right pane (always SSH), dest is left pane
+                        let is_ssh_to_ssh = matches!(left_pane, FileExplorerPane::RemoteSsh { .. });
+                        (is_ssh_to_ssh, crate::ui::ScpMode::Receive)
+                    }
                 };
 
                 let mut transfer_specs = Vec::with_capacity(copy_buffer.len());
                 for item in copy_buffer.iter() {
                     let (local_path, remote_path, display_name, destination_filename) =
                         match direction {
-                            CopyDirection::LocalToRemote => {
+                            CopyDirection::LeftToRight => {
                                 let remote_dest = format!(
                                     "{}/{}",
                                     dest_dir.trim_end_matches('/'),
@@ -323,7 +502,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                                         .unwrap_or_else(|| item.source_name.clone()),
                                 )
                             }
-                            CopyDirection::RemoteToLocal => {
+                            CopyDirection::RightToLeft => {
                                 let local_dest = format!(
                                     "{}/{}",
                                     dest_dir.trim_end_matches('/'),
@@ -347,6 +526,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                         remote_path,
                         display_name,
                         destination_filename,
+                        is_ssh_to_ssh,
                     });
                 }
 
@@ -363,16 +543,19 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
 
                 if let AppMode::FileExplorer {
                     connection_name,
-                    local_explorer,
+                    left_pane,
+                    left_explorer,
+                    left_sftp,
                     remote_explorer,
-                    active_pane,
-                    copy_buffer: _,
-                    return_to,
                     sftp_session,
                     ssh_connection,
                     channel: _channel,
+                    active_pane,
+                    copy_buffer: _,
+                    return_to,
                     search_mode,
                     search_query,
+                    ..
                 } = old_mode
                 {
                     let (result_sender, result_receiver) = tokio::sync::mpsc::channel(1);
@@ -397,16 +580,23 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                         }
                     }
 
+                    // Clone left_sftp if it exists for SSH-to-SSH transfers (before moving into return_mode)
+                    let left_sftp_for_transfer = left_sftp
+                        .as_ref()
+                        .map(|(session, conn)| (session.clone(), conn.clone()));
+
                     let return_mode = crate::ScpReturnMode::FileExplorer {
                         connection_name: connection_name.clone(),
-                        local_explorer,
+                        left_pane,
+                        left_explorer,
+                        left_sftp,
                         remote_explorer,
-                        active_pane,
-                        copy_buffer: Vec::new(),
-                        return_to,
                         sftp_session,
                         ssh_connection: ssh_connection.clone(),
                         channel: None,
+                        active_pane,
+                        copy_buffer: Vec::new(),
+                        return_to,
                         search_mode,
                         search_query,
                     };
@@ -425,29 +615,88 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                         for (index, spec) in transfer_specs.into_iter().enumerate() {
                             let ssh_connection = ssh_connection.clone();
                             let progress_tx = progress_sender.clone();
+                            let left_sftp_clone = left_sftp_for_transfer.clone();
+
                             tasks.push(tokio::spawn(async move {
-                                let transfer_result = match spec.mode {
-                                    crate::ui::ScpMode::Send => {
-                                        crate::async_ssh_client::SshSession::sftp_send_file(
-                                            None,
-                                            &ssh_connection,
-                                            &spec.local_path,
-                                            &spec.remote_path,
-                                            index,
-                                            Some(progress_tx.clone()),
-                                        )
-                                        .await
+                                let transfer_result = if spec.is_ssh_to_ssh {
+                                    // SSH-to-SSH transfer
+                                    match spec.mode {
+                                        crate::ui::ScpMode::Send => {
+                                            // Left SSH → Right SSH
+                                            if let Some((left_sftp_session, _left_conn)) = left_sftp_clone {
+                                                match crate::filesystem::sftp_file::open_for_read(left_sftp_session.clone(), &spec.local_path).await {
+                                                    Ok(sftp_file) => {
+                                                        crate::async_ssh_client::SshSession::sftp_send_file_with_timeout(
+                                                            None,
+                                                            &ssh_connection,
+                                                            sftp_file,
+                                                            &spec.remote_path,
+                                                            None,
+                                                            &tokio_util::sync::CancellationToken::new(),
+                                                            index,
+                                                            Some(progress_tx.clone()),
+                                                        )
+                                                        .await
+                                                    }
+                                                    Err(e) => Err(e),
+                                                }
+                                            } else {
+                                                Err(crate::error::AppError::SftpError(
+                                                    "SSH-to-SSH Send failed: left SFTP session not available".to_string()
+                                                ))
+                                            }
+                                        }
+                                        crate::ui::ScpMode::Receive => {
+                                            // Right SSH → Left SSH
+                                            if let Some((left_sftp_session, _left_conn)) = left_sftp_clone {
+                                                match crate::filesystem::sftp_file::open_for_write(left_sftp_session.clone(), &spec.local_path).await {
+                                                    Ok(sftp_file) => {
+                                                        crate::async_ssh_client::SshSession::sftp_receive_file_with_timeout(
+                                                            None,
+                                                            &ssh_connection,
+                                                            &spec.remote_path,
+                                                            sftp_file,
+                                                            None,
+                                                            &tokio_util::sync::CancellationToken::new(),
+                                                            index,
+                                                            Some(progress_tx.clone()),
+                                                        )
+                                                        .await
+                                                    }
+                                                    Err(e) => Err(e),
+                                                }
+                                            } else {
+                                                Err(crate::error::AppError::SftpError(
+                                                    "SSH-to-SSH Receive failed: left SFTP session not available".to_string()
+                                                ))
+                                            }
+                                        }
                                     }
-                                    crate::ui::ScpMode::Receive => {
-                                        crate::async_ssh_client::SshSession::sftp_receive_file(
-                                            None,
-                                            &ssh_connection,
-                                            &spec.remote_path,
-                                            &spec.local_path,
-                                            index,
-                                            Some(progress_tx),
-                                        )
-                                        .await
+                                } else {
+                                    // Regular local-to-SSH or SSH-to-local transfer
+                                    match spec.mode {
+                                        crate::ui::ScpMode::Send => {
+                                            crate::async_ssh_client::SshSession::sftp_send_file(
+                                                None,
+                                                &ssh_connection,
+                                                &spec.local_path,
+                                                &spec.remote_path,
+                                                index,
+                                                Some(progress_tx.clone()),
+                                            )
+                                            .await
+                                        }
+                                        crate::ui::ScpMode::Receive => {
+                                            crate::async_ssh_client::SshSession::sftp_receive_file(
+                                                None,
+                                                &ssh_connection,
+                                                &spec.remote_path,
+                                                &spec.local_path,
+                                                index,
+                                                Some(progress_tx),
+                                            )
+                                            .await
+                                        }
                                     }
                                 };
 
@@ -495,14 +744,14 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
             // Toggle hidden files
             KeyCode::Char('h') => {
                 let result = match active_pane {
-                    FileExplorerPane::Local => {
-                        let show_hidden = !local_explorer.show_hidden();
-                        local_explorer
+                    ActivePane::Left => {
+                        let show_hidden = !left_explorer.show_hidden();
+                        left_explorer
                             .set_show_hidden(show_hidden)
                             .await
                             .map(|_| show_hidden)
                     }
-                    FileExplorerPane::Remote => {
+                    ActivePane::Right => {
                         let show_hidden = !remote_explorer.show_hidden();
                         remote_explorer
                             .set_show_hidden(show_hidden)
@@ -531,13 +780,13 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
             // Refresh current pane
             KeyCode::Char('r') => {
                 let result = match active_pane {
-                    FileExplorerPane::Local => {
-                        let current_path = local_explorer.cwd().to_string_lossy().to_string();
-                        local_explorer.set_cwd(&current_path).await
+                    ActivePane::Left => {
+                        let current_path = left_explorer.cwd().to_path_buf();
+                        left_explorer.set_cwd(current_path).await
                     }
-                    FileExplorerPane::Remote => {
-                        let current_path = remote_explorer.cwd().to_string_lossy().to_string();
-                        remote_explorer.set_cwd(&current_path).await
+                    ActivePane::Right => {
+                        let current_path = remote_explorer.cwd().to_path_buf();
+                        remote_explorer.set_cwd(current_path).await
                     }
                 };
 
@@ -555,10 +804,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
             // Home/End for quick navigation
             KeyCode::Home => {
                 let result = match active_pane {
-                    FileExplorerPane::Local => {
-                        local_explorer.handle(ratatui_explorer::Input::Home).await
-                    }
-                    FileExplorerPane::Remote => {
+                    ActivePane::Left => left_explorer.handle(ratatui_explorer::Input::Home).await,
+                    ActivePane::Right => {
                         remote_explorer.handle(ratatui_explorer::Input::Home).await
                     }
                 };
@@ -573,12 +820,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
 
             KeyCode::End => {
                 let result = match active_pane {
-                    FileExplorerPane::Local => {
-                        local_explorer.handle(ratatui_explorer::Input::End).await
-                    }
-                    FileExplorerPane::Remote => {
-                        remote_explorer.handle(ratatui_explorer::Input::End).await
-                    }
+                    ActivePane::Left => left_explorer.handle(ratatui_explorer::Input::End).await,
+                    ActivePane::Right => remote_explorer.handle(ratatui_explorer::Input::End).await,
                 };
                 if let Err(e) = result {
                     app.error = Some(crate::error::AppError::SftpError(format!(
@@ -592,10 +835,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
             // Page up/down for faster scrolling
             KeyCode::PageUp => {
                 let result = match active_pane {
-                    FileExplorerPane::Local => {
-                        local_explorer.handle(ratatui_explorer::Input::PageUp).await
-                    }
-                    FileExplorerPane::Remote => {
+                    ActivePane::Left => left_explorer.handle(ratatui_explorer::Input::PageUp).await,
+                    ActivePane::Right => {
                         remote_explorer
                             .handle(ratatui_explorer::Input::PageUp)
                             .await
@@ -612,12 +853,12 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
 
             KeyCode::PageDown => {
                 let result = match active_pane {
-                    FileExplorerPane::Local => {
-                        local_explorer
+                    ActivePane::Left => {
+                        left_explorer
                             .handle(ratatui_explorer::Input::PageDown)
                             .await
                     }
-                    FileExplorerPane::Remote => {
+                    ActivePane::Right => {
                         remote_explorer
                             .handle(ratatui_explorer::Input::PageDown)
                             .await
@@ -637,7 +878,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                 *search_mode = true;
                 search_query.clear();
                 // Clear any existing filters to show all items
-                local_explorer.set_search_filter(None);
+                left_explorer.set_search_filter(None);
                 remote_explorer.set_search_filter(None);
                 app.mark_redraw();
             }

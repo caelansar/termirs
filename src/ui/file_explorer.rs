@@ -3,24 +3,28 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Margin, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use crate::{CopyOperation, FileExplorerPane, filesystem::SftpFileSystem};
+use crate::{
+    ActivePane, CopyOperation, FileExplorerPane, LeftExplorer, config::manager::Connection,
+    filesystem::SftpFileSystem,
+};
 
 /// Draw the dual-pane file explorer interface.
 ///
 /// # Arguments
 /// * `f` - The frame to render to
 /// * `area` - The area to render in
-/// * `connection_name` - Name of the SSH connection
-/// * `local_explorer` - The local file explorer
-/// * `remote_explorer` - The remote SFTP file explorer
-/// * `active_pane` - Which pane is currently active
+/// * `connection_name` - Name of the SSH connection (right pane)
+/// * `left_pane` - Type of the left pane (Local or RemoteSsh)
+/// * `left_explorer` - The left explorer (Local or Remote)
+/// * `remote_explorer` - The right remote SFTP file explorer
+/// * `active_pane` - Which pane is currently active (Left or Right)
 /// * `copy_buffer` - Collection of selected files pending transfer
 /// * `search_mode` - Whether search mode is active
 /// * `search_query` - Current search query string
@@ -28,9 +32,10 @@ pub fn draw_file_explorer(
     f: &mut Frame,
     area: Rect,
     connection_name: &str,
-    local_explorer: &mut ratatui_explorer::FileExplorer<ratatui_explorer::LocalFileSystem>,
+    left_pane: &FileExplorerPane,
+    left_explorer: &mut LeftExplorer,
     remote_explorer: &mut ratatui_explorer::FileExplorer<SftpFileSystem>,
-    active_pane: &FileExplorerPane,
+    active_pane: &ActivePane,
     copy_buffer: &[CopyOperation],
     search_mode: bool,
     search_query: &str,
@@ -59,29 +64,51 @@ pub fn draw_file_explorer(
     // Render header
     draw_header(f, main_layout[0], connection_name, copy_buffer);
 
-    // Split content area into left (local) and right (remote) panes
+    // Split content area into left and right panes
     let panes = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(main_layout[1]);
 
-    // Render local pane (left)
-    draw_pane(
-        f,
-        panes[0],
-        "Local",
-        local_explorer,
-        matches!(active_pane, FileExplorerPane::Local),
-        copy_buffer,
-    );
+    // Determine left pane title based on its type
+    let left_title = match left_pane {
+        FileExplorerPane::Local => "Local",
+        FileExplorerPane::RemoteSsh {
+            connection_name, ..
+        } => connection_name.as_str(),
+    };
 
-    // Render remote pane (right)
+    // Render left pane
+    match left_explorer {
+        LeftExplorer::Local(explorer) => {
+            draw_pane(
+                f,
+                panes[0],
+                left_title,
+                explorer,
+                matches!(active_pane, ActivePane::Left),
+                copy_buffer,
+            );
+        }
+        LeftExplorer::Remote(explorer) => {
+            draw_pane(
+                f,
+                panes[0],
+                left_title,
+                explorer,
+                matches!(active_pane, ActivePane::Left),
+                copy_buffer,
+            );
+        }
+    }
+
+    // Render right pane (always remote)
     draw_pane(
         f,
         panes[1],
-        "Remote",
+        connection_name,
         remote_explorer,
-        matches!(active_pane, FileExplorerPane::Remote),
+        matches!(active_pane, ActivePane::Right),
         copy_buffer,
     );
 
@@ -98,8 +125,8 @@ pub fn draw_file_explorer(
 fn draw_header(f: &mut Frame, area: Rect, connection_name: &str, copy_buffer: &[CopyOperation]) {
     let header_text = if let Some(first) = copy_buffer.first() {
         let direction = match first.direction {
-            crate::CopyDirection::LocalToRemote => "Local → Remote",
-            crate::CopyDirection::RemoteToLocal => "Remote → Local",
+            crate::CopyDirection::LeftToRight => "Left → Right",
+            crate::CopyDirection::RightToLeft => "Right → Left",
         };
         let copy_details = if copy_buffer.len() == 1 {
             format!("{} ({direction})", first.source_name)
@@ -253,7 +280,7 @@ fn draw_footer(f: &mut Frame, area: Rect, copy_buffer: &[CopyOperation], search_
         };
         format!("Esc: Clear | Tab: Switch Pane | v: Paste ({count_label}) | q: Quit")
     } else {
-        "↑↓/jk: Move | ←→: Dir | Tab: Switch | c: Copy | /: Search | h: Hidden | r: Refresh | q: Quit"
+        "↑↓/jk: Move | ←→: Dir | Tab: Switch | s: Switch Source | c: Copy | /: Search | h: Hidden | r: Refresh | q: Quit"
             .to_string()
     };
 
@@ -275,4 +302,208 @@ fn draw_footer(f: &mut Frame, area: Rect, copy_buffer: &[CopyOperation], search_
 
     f.render_widget(left, footer_layout[0]);
     f.render_widget(right, footer_layout[1]);
+}
+
+/// Draw a generic connection selector popup
+pub fn draw_connection_selector_popup(
+    f: &mut Frame,
+    area: Rect,
+    connections: &[Connection],
+    selected: usize,
+    exclude_connection_id: Option<&str>,
+    include_local_option: bool,
+    title: &str,
+    search_mode: bool,
+    search_query: &str,
+) {
+    use ratatui::widgets::{Clear, List, ListItem, ListState};
+
+    // Calculate popup size (50% width, fit height to content)
+    let popup_w = (area.width as f32 * 0.5) as u16;
+    let max_items = connections.len() + 1; // +1 for "Local" option
+    let popup_h = (max_items as u16 + 4).min(area.height.saturating_sub(4)); // +4 for border and title
+
+    let x = area.x + (area.width.saturating_sub(popup_w)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_h)) / 2;
+    let popup = Rect {
+        x,
+        y,
+        width: popup_w,
+        height: popup_h,
+    };
+
+    // Clear background
+    f.render_widget(Clear, popup);
+
+    // Create block with title
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Line::from(Span::styled(
+            title,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )));
+
+    // Build list items: optional local entry + filtered connections
+    let filtered_indices =
+        filter_connection_indices(connections, exclude_connection_id, search_query);
+    let local_offset = if include_local_option { 1 } else { 0 };
+    let total_items = filtered_indices.len() + local_offset;
+    let clamped_selected = selected.min(total_items.saturating_sub(1));
+
+    let mut items = Vec::with_capacity(total_items.max(1));
+    if include_local_option {
+        items.push(ListItem::new(Line::from(Span::styled(
+            "📁 Local Filesystem",
+            Style::default().fg(Color::White),
+        ))));
+    }
+
+    for idx in filtered_indices {
+        if let Some(conn) = connections.get(idx) {
+            let display = format!("🌐 {} ({}@{})", conn.display_name, conn.username, conn.host);
+            items.push(ListItem::new(Line::from(Span::styled(
+                display,
+                Style::default().fg(Color::White),
+            ))));
+        }
+    }
+
+    // Draw popup block separately so we can manage footer space ourselves
+    f.render_widget(block.clone(), popup);
+    let inner = popup.inner(Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(if inner.height > 1 {
+            vec![Constraint::Min(1), Constraint::Length(1)]
+        } else {
+            vec![Constraint::Min(1)]
+        })
+        .split(inner);
+    let list_area = sections[0];
+    let footer_area = sections.get(1).copied().unwrap_or(Rect {
+        x: inner.x,
+        y: inner.y + inner.height,
+        width: inner.width,
+        height: 0,
+    });
+
+    // Create list widget
+    let list = List::new(items)
+        .highlight_style(
+            Style::default()
+                .bg(Color::Cyan)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▶ ");
+
+    // Create list state
+    let mut list_state = ListState::default();
+    if total_items == 0 {
+        list_state.select(None);
+    } else {
+        list_state.select(Some(clamped_selected));
+    }
+
+    // Render list content
+    f.render_stateful_widget(list, list_area, &mut list_state);
+
+    // Render scrollbar aligned with list content
+    let mut scrollbar_state = ScrollbarState::new(total_items.max(1))
+        .position(clamped_selected.min(total_items.saturating_sub(1)));
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .style(Style::default().fg(Color::Cyan));
+    f.render_stateful_widget(scrollbar, list_area, &mut scrollbar_state);
+
+    // Render footer content (instructions or search)
+    if footer_area.height > 0 {
+        if search_mode {
+            let mut spans = vec![Span::styled(
+                "Search: ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )];
+
+            if search_query.is_empty() {
+                spans.push(Span::styled(
+                    "type to filter connections",
+                    Style::default().fg(Color::DarkGray).dim(),
+                ));
+            } else {
+                spans.push(Span::raw(search_query));
+            }
+
+            let search_line =
+                Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::Reset));
+            f.render_widget(search_line, footer_area);
+        } else {
+            let instructions = Paragraph::new(Line::from(vec![
+                Span::styled(
+                    "↑↓",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(": Navigate  "),
+                Span::styled(
+                    "Enter",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(": Select  "),
+                Span::styled(
+                    "/",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(": Search  "),
+                Span::styled(
+                    "Esc",
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(": Cancel"),
+            ]))
+            .style(Style::default().bg(Color::Reset));
+            f.render_widget(instructions, footer_area);
+        }
+    }
+}
+
+/// Build the list of connection indices shown in a connection selector after filtering.
+pub fn filter_connection_indices(
+    connections: &[Connection],
+    exclude_connection_id: Option<&str>,
+    search_query: &str,
+) -> Vec<usize> {
+    let query = search_query.trim().to_lowercase();
+    connections
+        .iter()
+        .enumerate()
+        .filter(|(_, conn)| {
+            exclude_connection_id
+                .map(|id| id != conn.id.as_str())
+                .unwrap_or(true)
+        })
+        .filter(|(_, conn)| {
+            if query.is_empty() {
+                return true;
+            }
+
+            let display = conn.display_name.to_lowercase();
+            let host = conn.host.to_lowercase();
+            let username = conn.username.to_lowercase();
+            display.contains(&query) || host.contains(&query) || username.contains(&query)
+        })
+        .map(|(idx, _)| idx)
+        .collect()
 }

@@ -126,7 +126,114 @@ pub(crate) enum MouseClickClass {
 #[derive(Clone, Debug)]
 pub(crate) enum FileExplorerPane {
     Local,
-    Remote,
+    RemoteSsh {
+        connection_name: String,
+        connection: Connection,
+    },
+}
+
+/// Enum to track which pane (left/right) is active
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ActivePane {
+    Left,
+    Right,
+}
+
+/// Wrapper enum for left pane explorer (can be Local or Remote)
+pub(crate) enum LeftExplorer {
+    Local(ratatui_explorer::FileExplorer<ratatui_explorer::LocalFileSystem>),
+    Remote(ratatui_explorer::FileExplorer<crate::filesystem::SftpFileSystem>),
+}
+
+impl LeftExplorer {
+    /// Get the current file/directory
+    pub(crate) fn current(&self) -> &ratatui_explorer::File {
+        match self {
+            LeftExplorer::Local(explorer) => explorer.current(),
+            LeftExplorer::Remote(explorer) => explorer.current(),
+        }
+    }
+
+    /// Get current working directory
+    pub(crate) fn cwd(&self) -> &std::path::Path {
+        match self {
+            LeftExplorer::Local(explorer) => explorer.cwd(),
+            LeftExplorer::Remote(explorer) => explorer.cwd(),
+        }
+    }
+
+    /// Set current working directory
+    pub(crate) async fn set_cwd(&mut self, path: std::path::PathBuf) -> std::io::Result<()> {
+        match self {
+            LeftExplorer::Local(explorer) => explorer.set_cwd(path).await,
+            LeftExplorer::Remote(explorer) => explorer.set_cwd(path).await,
+        }
+    }
+
+    /// Handle input
+    pub(crate) async fn handle(&mut self, input: ratatui_explorer::Input) -> std::io::Result<()> {
+        match self {
+            LeftExplorer::Local(explorer) => explorer.handle(input).await,
+            LeftExplorer::Remote(explorer) => explorer.handle(input).await,
+        }
+    }
+
+    /// Set search filter
+    pub(crate) fn set_search_filter(&mut self, filter: Option<String>) {
+        match self {
+            LeftExplorer::Local(explorer) => explorer.set_search_filter(filter),
+            LeftExplorer::Remote(explorer) => explorer.set_search_filter(filter),
+        }
+    }
+
+    /// Get all files in the current directory
+    pub(crate) fn files(&self) -> Vec<&ratatui_explorer::File> {
+        match self {
+            LeftExplorer::Local(explorer) => explorer.files(),
+            LeftExplorer::Remote(explorer) => explorer.files(),
+        }
+    }
+
+    /// Set selected index
+    pub(crate) fn set_selected_idx(&mut self, idx: usize) {
+        match self {
+            LeftExplorer::Local(explorer) => explorer.set_selected_idx(idx),
+            LeftExplorer::Remote(explorer) => explorer.set_selected_idx(idx),
+        }
+    }
+
+    /// Set show hidden files
+    pub(crate) async fn set_show_hidden(&mut self, show: bool) -> std::io::Result<()> {
+        match self {
+            LeftExplorer::Local(explorer) => explorer.set_show_hidden(show).await,
+            LeftExplorer::Remote(explorer) => explorer.set_show_hidden(show).await,
+        }
+    }
+
+    /// Get show hidden setting
+    pub(crate) fn show_hidden(&self) -> bool {
+        match self {
+            LeftExplorer::Local(explorer) => explorer.show_hidden(),
+            LeftExplorer::Remote(explorer) => explorer.show_hidden(),
+        }
+    }
+
+    /// Select a file by name
+    pub(crate) fn select_file(&mut self, filename: &str) -> bool {
+        match self {
+            LeftExplorer::Local(explorer) => explorer.select_file(filename),
+            LeftExplorer::Remote(explorer) => explorer.select_file(filename),
+        }
+    }
+}
+
+impl Clone for LeftExplorer {
+    fn clone(&self) -> Self {
+        match self {
+            LeftExplorer::Local(explorer) => LeftExplorer::Local(explorer.clone()),
+            LeftExplorer::Remote(explorer) => LeftExplorer::Remote(explorer.clone()),
+        }
+    }
 }
 
 /// Copy operation state for file transfer
@@ -145,13 +252,14 @@ pub(crate) struct ScpTransferSpec {
     pub(crate) remote_path: String,
     pub(crate) display_name: String,
     pub(crate) destination_filename: String,
+    pub(crate) is_ssh_to_ssh: bool, // True if transferring between two SSH hosts
 }
 
-/// Direction of file transfer
+/// Direction of file transfer (pane-based, not filesystem-based)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CopyDirection {
-    LocalToRemote,
-    RemoteToLocal,
+    LeftToRight, // From left pane to right pane
+    RightToLeft, // From right pane to left pane
 }
 
 pub(crate) enum ScpReturnMode {
@@ -167,14 +275,19 @@ pub(crate) enum ScpReturnMode {
     },
     FileExplorer {
         connection_name: String,
-        local_explorer: ratatui_explorer::FileExplorer<ratatui_explorer::LocalFileSystem>,
+
+        left_pane: FileExplorerPane,
+        left_explorer: LeftExplorer,
+        left_sftp: Option<(Arc<russh_sftp::client::SftpSession>, Connection)>,
+
         remote_explorer: ratatui_explorer::FileExplorer<crate::filesystem::SftpFileSystem>,
-        active_pane: FileExplorerPane,
-        copy_buffer: Vec<CopyOperation>,
-        return_to: usize,
         sftp_session: Arc<russh_sftp::client::SftpSession>,
         ssh_connection: Connection,
         channel: Option<russh::Channel<russh::client::Msg>>,
+
+        active_pane: ActivePane,
+        copy_buffer: Vec<CopyOperation>,
+        return_to: usize,
         search_mode: bool,
         search_query: String,
     },
@@ -202,7 +315,9 @@ impl ScpReturnMode {
             },
             ScpReturnMode::FileExplorer {
                 connection_name,
-                local_explorer,
+                left_pane,
+                left_explorer,
+                left_sftp,
                 remote_explorer,
                 active_pane,
                 copy_buffer,
@@ -214,14 +329,16 @@ impl ScpReturnMode {
                 ..
             } => ScpReturnMode::FileExplorer {
                 connection_name: connection_name.clone(),
-                local_explorer: local_explorer.clone(),
+                left_pane: left_pane.clone(),
+                left_explorer: left_explorer.clone(),
+                left_sftp: left_sftp.clone(), // Keep the left SFTP session for SSH-to-SSH transfers
                 remote_explorer: remote_explorer.clone(),
-                active_pane: active_pane.clone(),
-                copy_buffer: copy_buffer.clone(),
-                return_to: *return_to,
                 sftp_session: sftp_session.clone(),
                 ssh_connection: ssh_connection.clone(),
                 channel: None,
+                active_pane: *active_pane,
+                copy_buffer: copy_buffer.clone(),
+                return_to: *return_to,
                 search_mode: *search_mode,
                 search_query: search_query.clone(),
             },
@@ -287,17 +404,30 @@ pub(crate) enum AppMode {
         current_selected: usize,
     },
     FileExplorer {
-        connection_name: String,
-        local_explorer: ratatui_explorer::FileExplorer<ratatui_explorer::LocalFileSystem>,
+        connection_name: String, // Right pane connection name (original)
+
+        // Left pane - switchable between Local and SSH
+        left_pane: FileExplorerPane,
+        left_explorer: LeftExplorer,
+        left_sftp: Option<(Arc<russh_sftp::client::SftpSession>, Connection)>,
+
+        // Right pane - always Remote SSH (original connection from entry)
         remote_explorer: ratatui_explorer::FileExplorer<crate::filesystem::SftpFileSystem>,
-        active_pane: FileExplorerPane,
-        copy_buffer: Vec<CopyOperation>,
-        return_to: usize,
         sftp_session: Arc<russh_sftp::client::SftpSession>,
         ssh_connection: Connection,
         channel: Option<russh::Channel<russh::client::Msg>>,
+
+        active_pane: ActivePane,
+        copy_buffer: Vec<CopyOperation>,
+        return_to: usize,
         search_mode: bool,
         search_query: String,
+
+        // Connection selector for left pane
+        showing_source_selector: bool,
+        selector_selected: usize,
+        selector_search_mode: bool,
+        selector_search_query: String,
     },
     PortForwardingList {
         selected: usize,
@@ -310,7 +440,7 @@ pub(crate) enum AppMode {
         select_connection_mode: bool,
         connection_selected: usize, // Connection list position
         connection_search_mode: bool,
-        connection_search_input: TextArea<'static>,
+        connection_search_query: String,
     },
     PortForwardingFormEdit {
         form: crate::ui::PortForwardingForm,
@@ -318,7 +448,7 @@ pub(crate) enum AppMode {
         select_connection_mode: bool,
         connection_selected: usize, // Connection list position
         connection_search_mode: bool,
-        connection_search_input: TextArea<'static>,
+        connection_search_query: String,
     },
     PortForwardDeleteConfirmation {
         port_forward_name: String,
@@ -839,7 +969,7 @@ impl<B: Backend + Write> App<B> {
             select_connection_mode: false,
             connection_selected: 0,
             connection_search_mode: false,
-            connection_search_input: create_search_textarea(),
+            connection_search_query: String::new(),
         };
         self.needs_redraw = true;
     }
@@ -855,7 +985,7 @@ impl<B: Backend + Write> App<B> {
             select_connection_mode: false,
             connection_selected: 0,
             connection_search_mode: false,
-            connection_search_input: create_search_textarea(),
+            connection_search_query: String::new(),
         };
         self.needs_redraw = true;
     }
@@ -945,18 +1075,147 @@ impl<B: Backend + Write> App<B> {
         // Transition to FileExplorer mode
         self.mode = AppMode::FileExplorer {
             connection_name: conn.display_name.clone(),
-            local_explorer,
+
+            // Left pane starts as Local
+            left_pane: FileExplorerPane::Local,
+            left_explorer: LeftExplorer::Local(local_explorer),
+            left_sftp: None,
+
+            // Right pane is the original SSH connection
             remote_explorer,
-            active_pane: FileExplorerPane::Local,
-            copy_buffer: Vec::new(),
-            return_to,
             sftp_session,
             ssh_connection: conn,
             channel: Some(channel),
+
+            active_pane: ActivePane::Left,
+            copy_buffer: Vec::new(),
+            return_to,
             search_mode: false,
             search_query: String::new(),
+
+            showing_source_selector: false,
+            selector_selected: 0,
+            selector_search_mode: false,
+            selector_search_query: String::new(),
         };
         self.needs_redraw = true;
+        Ok(())
+    }
+
+    /// Switch left pane to local filesystem
+    pub(crate) async fn switch_left_pane_to_local(&mut self) {
+        if let AppMode::FileExplorer {
+            left_pane,
+            left_explorer,
+            left_sftp,
+            ..
+        } = &mut self.mode
+        {
+            // Check if already local
+            if matches!(left_pane, FileExplorerPane::Local) {
+                return;
+            }
+
+            // Create local explorer
+            let local_start_dir = std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .or_else(|_| std::env::var("HOME"))
+                .unwrap_or_else(|_| "/tmp".to_string());
+
+            match ratatui_explorer::FileExplorer::with_fs(
+                Arc::new(ratatui_explorer::LocalFileSystem),
+                local_start_dir.clone(),
+            )
+            .await
+            {
+                Ok(local_explorer) => {
+                    *left_pane = FileExplorerPane::Local;
+                    *left_explorer = LeftExplorer::Local(local_explorer);
+                    *left_sftp = None; // Drop old SFTP session
+                    self.needs_redraw = true;
+                }
+                Err(e) => {
+                    self.error = Some(AppError::SftpError(format!(
+                        "Failed to initialize local explorer: {}",
+                        e
+                    )));
+                }
+            }
+        }
+    }
+
+    /// Switch left pane to an SSH connection
+    pub(crate) async fn switch_left_pane_to_ssh(&mut self, conn: Connection) {
+        if let AppMode::FileExplorer {
+            left_pane,
+            left_explorer,
+            left_sftp,
+            ssh_connection: right_conn,
+            ..
+        } = &mut self.mode
+        {
+            // Validate: left and right cannot be the same connection
+            if conn.id == right_conn.id {
+                self.error = Some(AppError::SftpError(
+                    "Left and right panes cannot use the same SSH connection".to_string(),
+                ));
+                return;
+            }
+
+            // Check if already using this connection
+            if let FileExplorerPane::RemoteSsh { connection, .. } = left_pane {
+                if connection.id == conn.id {
+                    return;
+                }
+            }
+
+            // Switch left pane to SSH connection
+            match Self::setup_left_ssh_pane(&conn, left_pane, left_explorer, left_sftp).await {
+                Ok(()) => {
+                    self.needs_redraw = true;
+                }
+                Err(e) => {
+                    self.error = Some(e);
+                }
+            }
+        }
+    }
+
+    /// Setup left pane to connect to an SSH server
+    async fn setup_left_ssh_pane(
+        conn: &Connection,
+        left_pane: &mut FileExplorerPane,
+        left_explorer: &mut LeftExplorer,
+        left_sftp: &mut Option<(Arc<russh_sftp::client::SftpSession>, Connection)>,
+    ) -> Result<()> {
+        // Create SFTP session
+        let (sftp_session, _explorer_channel) = Self::create_sftp_session(conn)
+            .await
+            .map_err(|e| AppError::SftpError(format!("Failed to create SFTP session: {}", e)))?;
+        let sftp_session = Arc::new(sftp_session);
+
+        // Get home directory
+        let remote_home = sftp_session.canonicalize(".").await.map_err(|e| {
+            AppError::SftpError(format!("Failed to get remote home directory: {}", e))
+        })?;
+
+        // Create file explorer for the remote filesystem
+        let sftp_fs = crate::filesystem::SftpFileSystem::new(sftp_session.clone());
+        let remote_explorer =
+            ratatui_explorer::FileExplorer::with_fs(Arc::new(sftp_fs), remote_home.clone())
+                .await
+                .map_err(|e| {
+                    AppError::SftpError(format!("Failed to initialize remote explorer: {}", e))
+                })?;
+
+        // Update state
+        *left_pane = FileExplorerPane::RemoteSsh {
+            connection_name: conn.display_name.clone(),
+            connection: conn.clone(),
+        };
+        *left_explorer = LeftExplorer::Remote(remote_explorer);
+        *left_sftp = Some((sftp_session, conn.clone()));
+
         Ok(())
     }
 
@@ -1202,7 +1461,8 @@ impl<B: Backend + Write> App<B> {
                         }
                         ScpReturnMode::FileExplorer {
                             connection_name,
-                            local_explorer,
+                            left_pane,
+                            left_explorer,
                             remote_explorer,
                             active_pane,
                             copy_buffer,
@@ -1214,7 +1474,8 @@ impl<B: Backend + Write> App<B> {
                                 f,
                                 size,
                                 connection_name,
-                                local_explorer,
+                                left_pane,
+                                left_explorer,
                                 remote_explorer,
                                 active_pane,
                                 copy_buffer,
@@ -1233,25 +1494,48 @@ impl<B: Backend + Write> App<B> {
                 }
                 AppMode::FileExplorer {
                     connection_name,
-                    local_explorer,
+                    left_pane,
+                    left_explorer,
                     remote_explorer,
                     active_pane,
                     copy_buffer,
                     search_mode,
                     search_query,
+                    showing_source_selector,
+                    selector_selected,
+                    selector_search_mode,
+                    selector_search_query,
+                    ssh_connection,
                     ..
                 } => {
                     draw_file_explorer(
                         f,
                         size,
                         connection_name,
-                        local_explorer,
+                        left_pane,
+                        left_explorer,
                         remote_explorer,
                         active_pane,
                         copy_buffer,
                         *search_mode,
                         search_query,
                     );
+
+                    // Draw source selector popup if active
+                    if *showing_source_selector {
+                        let connections = self.config.connections();
+                        crate::ui::draw_connection_selector_popup(
+                            f,
+                            size,
+                            connections,
+                            *selector_selected,
+                            Some(ssh_connection.id.as_str()),
+                            true,
+                            " Select Left Pane Source ",
+                            *selector_search_mode,
+                            selector_search_query.as_str(),
+                        );
+                    }
                 }
                 AppMode::PortForwardingList {
                     selected,
@@ -1299,132 +1583,36 @@ impl<B: Backend + Write> App<B> {
                     }
                 }
                 AppMode::PortForwardingFormNew {
-                    current_selected,
-                    select_connection_mode,
-                    connection_selected,
-                    connection_search_mode,
-                    connection_search_input,
-                    ..
+                    current_selected, ..
                 } => {
-                    if *select_connection_mode {
-                        // Render connection list for selection
-                        let connections = self.config.connections();
-                        // Always use the search query from input, regardless of search mode
-                        let search_query = connection_search_input.lines()[0].to_string();
-                        let search_query_ref = search_query.as_str();
-
-                        if *connection_search_mode {
-                            draw_search_overlay(
-                                f,
-                                size,
-                                connection_search_input,
-                                "Enter: Select   Esc: Cancel Search   K/↑: Up   J/↓: Down",
-                                [
-                                    ratatui::layout::Constraint::Percentage(80),
-                                    ratatui::layout::Constraint::Percentage(20),
-                                ],
-                                |area, frame| {
-                                    draw_connection_list(
-                                        area,
-                                        connections,
-                                        *connection_selected,
-                                        *connection_search_mode,
-                                        search_query_ref,
-                                        frame,
-                                        true,
-                                    );
-                                },
-                            );
-                        } else {
-                            // Normal mode: just render connection list (still filtered by search query)
-                            draw_connection_list(
-                                size,
-                                connections,
-                                *connection_selected,
-                                *connection_search_mode,
-                                search_query_ref,
-                                f,
-                                true,
-                            );
-                        }
-                    } else {
-                        // Render the port forwarding list background first
-                        let port_forwards = self.config.port_forwards();
-                        let connections = self.config.connections();
-                        draw_port_forwarding_list(
-                            size,
-                            port_forwards,
-                            connections,
-                            *current_selected,
-                            false,
-                            "",
-                            f,
-                        );
-                    }
+                    // Render the port forwarding list background
+                    let port_forwards = self.config.port_forwards();
+                    let connections = self.config.connections();
+                    draw_port_forwarding_list(
+                        size,
+                        port_forwards,
+                        connections,
+                        *current_selected,
+                        false,
+                        "",
+                        f,
+                    );
                 }
                 AppMode::PortForwardingFormEdit {
-                    current_selected,
-                    select_connection_mode,
-                    connection_selected,
-                    connection_search_mode,
-                    connection_search_input,
-                    ..
+                    current_selected, ..
                 } => {
-                    if *select_connection_mode {
-                        // Render connection list for selection
-                        let connections = self.config.connections();
-                        // Always use the search query from input, regardless of search mode
-                        let search_query = connection_search_input.lines()[0].to_string();
-                        let search_query_ref = search_query.as_str();
-
-                        if *connection_search_mode {
-                            draw_search_overlay(
-                                f,
-                                size,
-                                connection_search_input,
-                                "Enter: Select   Esc: Cancel Search   K/↑: Up   J/↓: Down",
-                                [
-                                    ratatui::layout::Constraint::Percentage(80),
-                                    ratatui::layout::Constraint::Percentage(20),
-                                ],
-                                |area, frame| {
-                                    draw_connection_list(
-                                        area,
-                                        connections,
-                                        *connection_selected,
-                                        *connection_search_mode,
-                                        search_query_ref,
-                                        frame,
-                                        true,
-                                    );
-                                },
-                            );
-                        } else {
-                            // Normal mode: just render connection list (still filtered by search query)
-                            draw_connection_list(
-                                size,
-                                connections,
-                                *connection_selected,
-                                *connection_search_mode,
-                                search_query_ref,
-                                f,
-                                true,
-                            );
-                        }
-                    } else {
-                        // Render the port forwarding list background first
-                        let port_forwards = self.config.port_forwards();
-                        let connections = self.config.connections();
-                        draw_port_forwarding_list(
-                            size,
-                            port_forwards,
-                            connections,
-                            *current_selected,
-                            false,
-                            "",
-                            f,
-                        );
-                    }
+                    // Render the port forwarding list background
+                    let port_forwards = self.config.port_forwards();
+                    let connections = self.config.connections();
+                    draw_port_forwarding_list(
+                        size,
+                        port_forwards,
+                        connections,
+                        *current_selected,
+                        false,
+                        "",
+                        f,
+                    );
                 }
                 AppMode::PortForwardDeleteConfirmation {
                     current_selected, ..
@@ -1444,27 +1632,61 @@ impl<B: Backend + Write> App<B> {
                 }
             }
 
-            // Overlay port forwarding form popup if in port forwarding form mode and not selecting connection
+            // Overlay port forwarding form popup if in port forwarding form mode
+            if let AppMode::PortForwardingFormNew { form, .. } = &mut self.mode {
+                let connections = self.config.connections();
+                draw_port_forwarding_form_popup(size, form, connections, true, f);
+            }
+            if let AppMode::PortForwardingFormEdit { form, .. } = &mut self.mode {
+                let connections = self.config.connections();
+                draw_port_forwarding_form_popup(size, form, connections, false, f);
+            }
+
+            // Overlay port forwarding connection selector popup when active
             if let AppMode::PortForwardingFormNew {
-                form,
                 select_connection_mode,
+                connection_selected,
+                connection_search_mode,
+                connection_search_query,
                 ..
             } = &mut self.mode
             {
-                if !*select_connection_mode {
+                if *select_connection_mode {
                     let connections = self.config.connections();
-                    draw_port_forwarding_form_popup(size, form, connections, true, f);
+                    crate::ui::draw_connection_selector_popup(
+                        f,
+                        size,
+                        connections,
+                        *connection_selected,
+                        None,
+                        false,
+                        " Choose Connection ",
+                        *connection_search_mode,
+                        connection_search_query.as_str(),
+                    );
                 }
             }
             if let AppMode::PortForwardingFormEdit {
-                form,
                 select_connection_mode,
+                connection_selected,
+                connection_search_mode,
+                connection_search_query,
                 ..
             } = &mut self.mode
             {
-                if !*select_connection_mode {
+                if *select_connection_mode {
                     let connections = self.config.connections();
-                    draw_port_forwarding_form_popup(size, form, connections, false, f);
+                    crate::ui::draw_connection_selector_popup(
+                        f,
+                        size,
+                        connections,
+                        *connection_selected,
+                        None,
+                        false,
+                        " Choose Connection ",
+                        *connection_search_mode,
+                        connection_search_query.as_str(),
+                    );
                 }
             }
 
@@ -1723,29 +1945,37 @@ impl<B: Backend + Write> App<B> {
                                         }
                                         ScpReturnMode::FileExplorer {
                                             connection_name,
-                                            local_explorer,
+                                            left_pane,
+                                            left_explorer,
+                                            left_sftp,
                                             remote_explorer,
-                                            active_pane,
-                                            copy_buffer,
-                                            return_to,
                                             sftp_session,
                                             ssh_connection,
                                             channel,
+                                            active_pane,
+                                            copy_buffer,
+                                            return_to,
                                             search_mode,
                                             search_query,
                                         } => {
                                             self.mode = AppMode::FileExplorer {
                                                 connection_name,
-                                                local_explorer,
+                                                left_pane,
+                                                left_explorer,
+                                                left_sftp,
                                                 remote_explorer,
-                                                active_pane,
-                                                copy_buffer,
-                                                return_to,
                                                 sftp_session,
                                                 ssh_connection,
                                                 channel,
+                                                active_pane,
+                                                copy_buffer,
+                                                return_to,
                                                 search_mode,
                                                 search_query,
+                                                showing_source_selector: false,
+                                                selector_selected: 0,
+                                                selector_search_mode: false,
+                                                selector_search_query: String::new(),
                                             };
                                         }
                                     }

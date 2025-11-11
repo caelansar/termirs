@@ -65,14 +65,16 @@ async fn restore_after_scp_progress<B: Backend + Write>(
         }
         crate::ScpReturnMode::FileExplorer {
             connection_name,
-            mut local_explorer,
+            left_pane,
+            mut left_explorer,
+            left_sftp,
             mut remote_explorer,
-            active_pane,
-            copy_buffer,
-            return_to,
             sftp_session,
             ssh_connection,
             channel,
+            active_pane,
+            copy_buffer,
+            return_to,
             search_mode,
             search_query,
         } => {
@@ -83,18 +85,18 @@ async fn restore_after_scp_progress<B: Backend + Write>(
 
             if any_success {
                 match active_pane {
-                    crate::FileExplorerPane::Local => {
-                        let local_cwd = local_explorer.cwd().to_path_buf();
-                        if let Err(e) = local_explorer.set_cwd(local_cwd).await {
+                    crate::ActivePane::Left => {
+                        let left_cwd = left_explorer.cwd().to_path_buf();
+                        if let Err(e) = left_explorer.set_cwd(left_cwd).await {
                             app.set_error(AppError::SftpError(format!(
-                                "Failed to refresh local pane: {}",
+                                "Failed to refresh left pane: {}",
                                 e
                             )));
                         } else if let Some(filename) = last_success.clone() {
-                            local_explorer.select_file(&filename);
+                            left_explorer.select_file(&filename);
                         }
                     }
-                    crate::FileExplorerPane::Remote => {
+                    crate::ActivePane::Right => {
                         let remote_cwd = remote_explorer.cwd().to_path_buf();
                         if let Err(e) = remote_explorer.set_cwd(remote_cwd).await {
                             app.set_error(AppError::SftpError(format!(
@@ -110,16 +112,22 @@ async fn restore_after_scp_progress<B: Backend + Write>(
 
             app.mode = crate::AppMode::FileExplorer {
                 connection_name,
-                local_explorer,
+                left_pane,
+                left_explorer,
+                left_sftp,
                 remote_explorer,
-                active_pane,
-                copy_buffer,
-                return_to,
                 sftp_session,
                 ssh_connection,
                 channel,
+                active_pane,
+                copy_buffer,
+                return_to,
                 search_mode,
                 search_query,
+                showing_source_selector: false,
+                selector_selected: 0,
+                selector_search_mode: false,
+                selector_search_query: String::new(),
             };
         }
     }

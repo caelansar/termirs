@@ -6,7 +6,7 @@ use ratatui::prelude::Backend;
 use super::KeyFlow;
 use crate::config::manager::{PortForward, PortForwardStatus};
 use crate::error::AppError;
-use crate::ui::PortForwardingForm;
+use crate::ui::{PortForwardingForm, file_explorer::filter_connection_indices};
 use crate::{App, AppMode};
 
 pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
@@ -296,6 +296,8 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
                 form,
                 select_connection_mode,
                 connection_selected,
+                connection_search_mode,
+                connection_search_query,
                 ..
             } = &mut app.mode
             {
@@ -313,6 +315,8 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
                             .position(|c| c.id == form.connection_id)
                             .unwrap_or(0);
                         *select_connection_mode = true;
+                        *connection_search_mode = false;
+                        connection_search_query.clear();
                     }
                 } else {
                     // If not focused on Connection field, pass the key to text input
@@ -324,6 +328,8 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
                 form,
                 select_connection_mode,
                 connection_selected,
+                connection_search_mode,
+                connection_search_query,
                 ..
             } = &mut app.mode
             {
@@ -341,6 +347,8 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
                             .position(|c| c.id == form.connection_id)
                             .unwrap_or(0);
                         *select_connection_mode = true;
+                        *connection_search_mode = false;
+                        connection_search_query.clear();
                     }
                 } else {
                     // If not focused on Connection field, pass the key to text input
@@ -373,297 +381,162 @@ pub async fn handle_port_forwarding_form_connection_select_key<B: Backend + Writ
     app: &mut App<B>,
     key: KeyEvent,
 ) -> KeyFlow {
-    // Check if we're in search mode first
-    if let AppMode::PortForwardingFormNew {
-        connection_search_mode: true,
-        connection_search_input,
-        ..
-    } = &mut app.mode
-    {
-        match key.code {
-            KeyCode::Esc => {
-                if let AppMode::PortForwardingFormNew {
-                    connection_search_mode,
-                    connection_search_input,
-                    ..
-                } = &mut app.mode
-                {
-                    *connection_search_mode = false;
-                    connection_search_input.delete_line_by_head();
-                    connection_search_input.delete_line_by_end();
-                }
-            }
-            KeyCode::Enter => {
-                if let AppMode::PortForwardingFormNew {
-                    connection_search_mode,
-                    ..
-                } = &mut app.mode
-                {
-                    *connection_search_mode = false;
-                }
-            }
-            _ => {
-                // Let TextArea handle all other key events
-                connection_search_input.input(key);
-            }
-        }
+    let Some(selector) = connection_selector_state(&mut app.mode) else {
         return KeyFlow::Continue;
-    } else if let AppMode::PortForwardingFormEdit {
-        connection_search_mode: true,
-        connection_search_input,
-        ..
-    } = &mut app.mode
-    {
+    };
+
+    let connections = app.config.connections();
+    let mut filtered_indices =
+        filter_connection_indices(connections, None, selector.search_query.as_str());
+    let mut total_items = filtered_indices.len();
+
+    if *selector.search_mode {
         match key.code {
-            KeyCode::Esc => {
-                if let AppMode::PortForwardingFormEdit {
-                    connection_search_mode,
-                    connection_search_input,
-                    ..
-                } = &mut app.mode
-                {
-                    *connection_search_mode = false;
-                    connection_search_input.delete_line_by_head();
-                    connection_search_input.delete_line_by_end();
+            KeyCode::Char(c) => {
+                selector.search_query.push(c);
+                *selector.connection_selected = 0;
+                app.mark_redraw();
+            }
+            KeyCode::Backspace => {
+                selector.search_query.pop();
+                filtered_indices =
+                    filter_connection_indices(connections, None, selector.search_query.as_str());
+                total_items = filtered_indices.len();
+                if total_items == 0 {
+                    *selector.connection_selected = 0;
+                } else if *selector.connection_selected >= total_items {
+                    *selector.connection_selected = total_items - 1;
                 }
+                app.mark_redraw();
+            }
+            KeyCode::Esc => {
+                if !selector.search_query.is_empty() {
+                    selector.search_query.clear();
+                    filtered_indices = filter_connection_indices(
+                        connections,
+                        None,
+                        selector.search_query.as_str(),
+                    );
+                    total_items = filtered_indices.len();
+                    if total_items == 0 {
+                        *selector.connection_selected = 0;
+                    } else if *selector.connection_selected >= total_items {
+                        *selector.connection_selected = total_items - 1;
+                    }
+                } else {
+                    *selector.search_mode = false;
+                }
+                app.mark_redraw();
             }
             KeyCode::Enter => {
-                if let AppMode::PortForwardingFormEdit {
-                    connection_search_mode,
-                    ..
-                } = &mut app.mode
-                {
-                    *connection_search_mode = false;
+                *selector.search_mode = false;
+                if total_items == 0 {
+                    app.mark_redraw();
+                    return KeyFlow::Continue;
                 }
+
+                let idx = (*selector.connection_selected).min(total_items.saturating_sub(1));
+                if let Some(conn_idx) = filtered_indices.get(idx) {
+                    if let Some(connection) = connections.get(*conn_idx) {
+                        selector.form.connection_id = connection.id.clone();
+                        selector.form.next();
+                        *selector.select_connection_mode = false;
+                        *selector.search_mode = false;
+                        selector.search_query.clear();
+                    }
+                }
+                app.mark_redraw();
             }
-            _ => {
-                // Let TextArea handle all other key events
-                connection_search_input.input(key);
-            }
+            _ => {}
         }
         return KeyFlow::Continue;
     }
 
-    // Get filtered connection list length for navigation
-    let get_filtered_len = |search_query: &str, app: &App<B>| -> usize {
-        if search_query.is_empty() {
-            app.config.connections().len()
-        } else {
-            app.config
-                .connections()
-                .iter()
-                .filter(|c| {
-                    c.host.to_lowercase().contains(&search_query.to_lowercase())
-                        || c.username
-                            .to_lowercase()
-                            .contains(&search_query.to_lowercase())
-                        || c.display_name
-                            .to_lowercase()
-                            .contains(&search_query.to_lowercase())
-                })
-                .count()
-        }
-    };
-
     match key.code {
         KeyCode::Char('/') => {
-            // Enter search mode
-            if let AppMode::PortForwardingFormNew {
-                connection_search_mode,
-                connection_search_input,
-                ..
-            } = &mut app.mode
-            {
-                *connection_search_mode = true;
-                connection_search_input.delete_line_by_head();
-                connection_search_input.delete_line_by_end();
-            } else if let AppMode::PortForwardingFormEdit {
-                connection_search_mode,
-                connection_search_input,
-                ..
-            } = &mut app.mode
-            {
-                *connection_search_mode = true;
-                connection_search_input.delete_line_by_head();
-                connection_search_input.delete_line_by_end();
-            }
+            *selector.search_mode = true;
+            selector.search_query.clear();
+            app.mark_redraw();
         }
-        KeyCode::Char('k') | KeyCode::Up => {
-            if let AppMode::PortForwardingFormNew {
-                connection_search_input,
-                ..
-            } = &app.mode
-            {
-                let search_query = connection_search_input.lines()[0].as_str().to_string();
-
-                let len = get_filtered_len(&search_query, app);
-
-                // Re-borrow to update
-                if let AppMode::PortForwardingFormNew {
-                    connection_selected,
-                    ..
-                } = &mut app.mode
-                {
-                    if len != 0 {
-                        *connection_selected = if *connection_selected == 0 {
-                            len - 1
-                        } else {
-                            (*connection_selected - 1).min(len - 1)
-                        };
-                    }
-                }
-            } else if let AppMode::PortForwardingFormEdit {
-                connection_search_input,
-                ..
-            } = &app.mode
-            {
-                let search_query = connection_search_input.lines()[0].as_str().to_string();
-
-                let len = get_filtered_len(&search_query, app);
-
-                if let AppMode::PortForwardingFormEdit {
-                    connection_selected,
-                    ..
-                } = &mut app.mode
-                {
-                    if len != 0 {
-                        *connection_selected = if *connection_selected == 0 {
-                            len - 1
-                        } else {
-                            (*connection_selected - 1).min(len - 1)
-                        };
-                    }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if total_items > 0 {
+                if *selector.connection_selected == 0 {
+                    *selector.connection_selected = total_items - 1;
+                } else {
+                    *selector.connection_selected -= 1;
                 }
             }
+            app.mark_redraw();
         }
-        KeyCode::Char('j') | KeyCode::Down => {
-            if let AppMode::PortForwardingFormNew {
-                connection_search_input,
-                ..
-            } = &app.mode
-            {
-                let search_query = connection_search_input.lines()[0].as_str().to_string();
-
-                let len = get_filtered_len(&search_query, app);
-
-                if let AppMode::PortForwardingFormNew {
-                    connection_selected,
-                    ..
-                } = &mut app.mode
-                {
-                    if len != 0 {
-                        *connection_selected = (*connection_selected + 1) % len;
-                    }
-                }
-            } else if let AppMode::PortForwardingFormEdit {
-                connection_search_input,
-                ..
-            } = &app.mode
-            {
-                let search_query = connection_search_input.lines()[0].as_str().to_string();
-
-                let len = get_filtered_len(&search_query, app);
-
-                if let AppMode::PortForwardingFormEdit {
-                    connection_selected,
-                    ..
-                } = &mut app.mode
-                {
-                    if len != 0 {
-                        *connection_selected = (*connection_selected + 1) % len;
-                    }
-                }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if total_items > 0 {
+                *selector.connection_selected = (*selector.connection_selected + 1) % total_items;
             }
+            app.mark_redraw();
         }
         KeyCode::Enter => {
-            // Select the connection from filtered list
-            if let AppMode::PortForwardingFormNew {
-                form,
-                connection_selected,
-                select_connection_mode,
-                connection_search_input,
-                ..
-            } = &mut app.mode
-            {
-                // Get the search query
-                let search_query = connection_search_input.lines()[0].as_str();
+            if total_items == 0 {
+                app.mark_redraw();
+                return KeyFlow::Continue;
+            }
 
-                // Filter connections based on search query (same logic as in draw_connection_list)
-                let mut filtered_connections: Vec<_> = app.config.connections().iter().collect();
-                if !search_query.is_empty() {
-                    filtered_connections.retain(|c| {
-                        c.host.to_lowercase().contains(&search_query.to_lowercase())
-                            || c.username
-                                .to_lowercase()
-                                .contains(&search_query.to_lowercase())
-                            || c.display_name
-                                .to_lowercase()
-                                .contains(&search_query.to_lowercase())
-                    });
-                }
-
-                // Get connection from filtered list
-                if let Some(connection) = filtered_connections.get(*connection_selected) {
-                    form.connection_id = connection.id.clone();
-                    connection_search_input.delete_line_by_head();
-                    connection_search_input.delete_line_by_end();
-                    form.next();
-                    *select_connection_mode = false;
-                }
-            } else if let AppMode::PortForwardingFormEdit {
-                form,
-                connection_selected,
-                select_connection_mode,
-                connection_search_input,
-                ..
-            } = &mut app.mode
-            {
-                // Get the search query
-                let search_query = connection_search_input.lines()[0].as_str();
-
-                // Filter connections based on search query (same logic as in draw_connection_list)
-                let mut filtered_connections: Vec<_> = app.config.connections().iter().collect();
-                if !search_query.is_empty() {
-                    filtered_connections.retain(|c| {
-                        c.host.to_lowercase().contains(&search_query.to_lowercase())
-                            || c.username
-                                .to_lowercase()
-                                .contains(&search_query.to_lowercase())
-                            || c.display_name
-                                .to_lowercase()
-                                .contains(&search_query.to_lowercase())
-                    });
-                }
-
-                // Get connection from filtered list
-                if let Some(connection) = filtered_connections.get(*connection_selected) {
-                    form.connection_id = connection.id.clone();
-                    connection_search_input.delete_line_by_head();
-                    connection_search_input.delete_line_by_end();
-                    form.next();
-                    *select_connection_mode = false;
+            let idx = (*selector.connection_selected).min(total_items.saturating_sub(1));
+            if let Some(conn_idx) = filtered_indices.get(idx) {
+                if let Some(connection) = connections.get(*conn_idx) {
+                    selector.form.connection_id = connection.id.clone();
+                    selector.form.next();
+                    *selector.select_connection_mode = false;
+                    *selector.search_mode = false;
+                    selector.search_query.clear();
+                    app.mark_redraw();
                 }
             }
         }
         KeyCode::Esc => {
-            // Cancel connection selection
-            if let AppMode::PortForwardingFormNew {
-                select_connection_mode,
-                ..
-            } = &mut app.mode
-            {
-                *select_connection_mode = false;
-            } else if let AppMode::PortForwardingFormEdit {
-                select_connection_mode,
-                ..
-            } = &mut app.mode
-            {
-                *select_connection_mode = false;
-            }
+            *selector.select_connection_mode = false;
+            *selector.search_mode = false;
+            selector.search_query.clear();
+            app.mark_redraw();
         }
         _ => {}
     }
     KeyFlow::Continue
+}
+
+struct ConnectionSelectorState<'a> {
+    form: &'a mut PortForwardingForm,
+    select_connection_mode: &'a mut bool,
+    connection_selected: &'a mut usize,
+    search_mode: &'a mut bool,
+    search_query: &'a mut String,
+}
+
+fn connection_selector_state<'a>(mode: &'a mut AppMode) -> Option<ConnectionSelectorState<'a>> {
+    match mode {
+        AppMode::PortForwardingFormNew {
+            form,
+            select_connection_mode,
+            connection_selected,
+            connection_search_mode,
+            connection_search_query,
+            ..
+        }
+        | AppMode::PortForwardingFormEdit {
+            form,
+            select_connection_mode,
+            connection_selected,
+            connection_search_mode,
+            connection_search_query,
+            ..
+        } => Some(ConnectionSelectorState {
+            form,
+            select_connection_mode,
+            connection_selected,
+            search_mode: connection_search_mode,
+            search_query: connection_search_query,
+        }),
+        _ => None,
+    }
 }
 
 async fn save_port_forward<B: Backend + Write>(
