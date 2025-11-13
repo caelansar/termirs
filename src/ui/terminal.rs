@@ -300,6 +300,10 @@ fn build_line(screen: &vt100::Screen, row: u16, width: u16) -> Line<'static> {
 
     for col in 0..width {
         if let Some(cell) = screen.cell(row, col) {
+            // Skip wide character continuation cells to render the actual wide character once
+            if cell.is_wide_continuation() {
+                continue;
+            }
             let fg = map_color(cell.fgcolor());
             let bg = map_color(cell.bgcolor());
             let bold = cell.bold();
