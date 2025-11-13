@@ -2,6 +2,13 @@
 name = "termirs"
 version = "0.2.0"
 edition = "2024"
+authors = ["Caelansar"]
+description = "A modern, async SSH terminal client"
+license = "MIT"
+repository = "https://github.com/caelansar/termirs"
+readme = "README.md"
+keywords = ["ssh", "terminal", "sftp"]
+categories = ["command-line-interface"]
 
 [dependencies]
 ratatui = { version = "0.28", default-features = false, features = ["crossterm"] }
