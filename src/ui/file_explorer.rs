@@ -16,18 +16,7 @@ use crate::{
 };
 
 /// Draw the dual-pane file explorer interface.
-///
-/// # Arguments
-/// * `f` - The frame to render to
-/// * `area` - The area to render in
-/// * `connection_name` - Name of the SSH connection (right pane)
-/// * `left_pane` - Type of the left pane (Local or RemoteSsh)
-/// * `left_explorer` - The left explorer (Local or Remote)
-/// * `remote_explorer` - The right remote SFTP file explorer
-/// * `active_pane` - Which pane is currently active (Left or Right)
-/// * `copy_buffer` - Collection of selected files pending transfer
-/// * `search_mode` - Whether search mode is active
-/// * `search_query` - Current search query string
+#[allow(clippy::too_many_arguments)]
 pub fn draw_file_explorer(
     f: &mut Frame,
     area: Rect,
@@ -134,11 +123,10 @@ fn draw_header(f: &mut Frame, area: Rect, connection_name: &str, copy_buffer: &[
             format!("{} files selected ({direction})", copy_buffer.len())
         };
         format!(
-            " SFTP File Transfer - {} | [COPY MODE] {copy_details} • Tab→switch • v→paste ",
-            connection_name
+            " SFTP File Transfer - {connection_name} | [COPY MODE] {copy_details} • Tab→switch • v→paste "
         )
     } else {
-        format!(" SFTP File Transfer - {} ", connection_name)
+        format!(" SFTP File Transfer - {connection_name} ")
     };
 
     let header_style = if copy_buffer.is_empty() {
@@ -305,6 +293,7 @@ fn draw_footer(f: &mut Frame, area: Rect, copy_buffer: &[CopyOperation], search_
 }
 
 /// Draw a generic connection selector popup
+#[allow(clippy::too_many_arguments)]
 pub fn draw_connection_selector_popup(
     f: &mut Frame,
     area: Rect,

@@ -18,7 +18,7 @@ impl HostFile for SftpFile {
         let metadata = self
             .metadata()
             .await
-            .map_err(|e| AppError::SftpError(format!("Failed to get file metadata: {}", e)))?;
+            .map_err(|e| AppError::SftpError(format!("Failed to get file metadata: {e}")))?;
         Ok(metadata.len())
     }
 }
@@ -28,7 +28,7 @@ pub async fn open_for_read(session: Arc<SftpSession>, path: &str) -> Result<Sftp
     session
         .open_with_flags(path, OpenFlags::READ)
         .await
-        .map_err(|e| AppError::SftpError(format!("Failed to open file for reading: {}", e)))
+        .map_err(|e| AppError::SftpError(format!("Failed to open file for reading: {e}")))
 }
 
 /// Open an SFTP file for writing (creates new file or truncates existing)
@@ -39,5 +39,5 @@ pub async fn open_for_write(session: Arc<SftpSession>, path: &str) -> Result<Sft
             OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
         )
         .await
-        .map_err(|e| AppError::SftpError(format!("Failed to open file for writing: {}", e)))
+        .map_err(|e| AppError::SftpError(format!("Failed to open file for writing: {e}")))
 }

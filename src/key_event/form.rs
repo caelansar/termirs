@@ -84,7 +84,7 @@ pub async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                                 form.private_key_path.delete_line_by_head();
                                 form.private_key_path.delete_line_by_end();
                                 form.private_key_path
-                                    .insert_str(identity_file.to_string_lossy().to_string());
+                                    .insert_str(identity_file.to_string_lossy());
                             }
                         } else {
                             // No identity file found - use auto-auth here so we can skip auth validation

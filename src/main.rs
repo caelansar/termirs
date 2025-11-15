@@ -123,6 +123,7 @@ pub(crate) enum MouseClickClass {
 
 /// Enum to track where to return after SCP operations
 /// Which pane is currently active in the file explorer
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 pub(crate) enum FileExplorerPane {
     Local,
@@ -262,6 +263,7 @@ pub(crate) enum CopyDirection {
     RightToLeft, // From right pane to left pane
 }
 
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum ScpReturnMode {
     #[allow(dead_code)]
     ConnectionList { current_selected: usize },
@@ -361,6 +363,7 @@ pub(crate) enum ConnectingSource {
     ConnectionList,
 }
 
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum AppMode {
     ConnectionList {
         selected: usize,
@@ -475,7 +478,7 @@ impl ScpFileProgress {
             local_path: spec.local_path.clone(),
             remote_path: spec.remote_path.clone(),
             display_name: spec.display_name.clone(),
-            mode: spec.mode.clone(),
+            mode: spec.mode,
             transferred_bytes: 0,
             total_bytes: None,
             state: TransferState::Pending,
@@ -1048,15 +1051,14 @@ impl<B: Backend + Write> App<B> {
         .await
         .map_err(|e| {
             AppError::SftpError(format!(
-                "Failed to initialize local explorer from '{}': {}",
-                local_start_dir, e
+                "Failed to initialize local explorer from '{local_start_dir}': {e}"
             ))
         })?;
 
         // Initialize remote file explorer (start from home directory)
         // Canonicalize the remote home path to get the absolute path
         let remote_home_canonical = sftp_session.canonicalize(".").await.map_err(|e| {
-            AppError::SftpError(format!("Failed to resolve remote home directory: {}", e))
+            AppError::SftpError(format!("Failed to resolve remote home directory: {e}"))
         })?;
 
         let sftp_fs = crate::filesystem::SftpFileSystem::new(sftp_session.clone());
@@ -1067,8 +1069,7 @@ impl<B: Backend + Write> App<B> {
         .await
         .map_err(|e| {
             AppError::SftpError(format!(
-                "Failed to initialize remote explorer from '{}': {}",
-                remote_home_canonical, e
+                "Failed to initialize remote explorer from '{remote_home_canonical}': {e}"
             ))
         })?;
 
@@ -1136,8 +1137,7 @@ impl<B: Backend + Write> App<B> {
                 }
                 Err(e) => {
                     self.error = Some(AppError::SftpError(format!(
-                        "Failed to initialize local explorer: {}",
-                        e
+                        "Failed to initialize local explorer: {e}"
                     )));
                 }
             }
@@ -1191,12 +1191,12 @@ impl<B: Backend + Write> App<B> {
         // Create SFTP session
         let (sftp_session, _explorer_channel) = Self::create_sftp_session(conn)
             .await
-            .map_err(|e| AppError::SftpError(format!("Failed to create SFTP session: {}", e)))?;
+            .map_err(|e| AppError::SftpError(format!("Failed to create SFTP session: {e}")))?;
         let sftp_session = Arc::new(sftp_session);
 
         // Get home directory
         let remote_home = sftp_session.canonicalize(".").await.map_err(|e| {
-            AppError::SftpError(format!("Failed to get remote home directory: {}", e))
+            AppError::SftpError(format!("Failed to get remote home directory: {e}"))
         })?;
 
         // Create file explorer for the remote filesystem
@@ -1205,7 +1205,7 @@ impl<B: Backend + Write> App<B> {
             ratatui_explorer::FileExplorer::with_fs(Arc::new(sftp_fs), remote_home.clone())
                 .await
                 .map_err(|e| {
-                    AppError::SftpError(format!("Failed to initialize remote explorer: {}", e))
+                    AppError::SftpError(format!("Failed to initialize remote explorer: {e}"))
                 })?;
 
         // Update state
@@ -1240,7 +1240,7 @@ impl<B: Backend + Write> App<B> {
         // Create and initialize SFTP session
         let sftp = russh_sftp::client::SftpSession::new(channel.into_stream())
             .await
-            .map_err(|e| AppError::SftpError(format!("SFTP session creation failed: {}", e)))?;
+            .map_err(|e| AppError::SftpError(format!("SFTP session creation failed: {e}")))?;
 
         let channel = session.channel_open_session().await?;
         channel.request_subsystem(true, "sftp").await?;
@@ -1724,7 +1724,7 @@ impl<B: Backend + Write> App<B> {
                 connection_name, ..
             } = &self.mode
             {
-                let message = format!("Connecting to {}...", connection_name);
+                let message = format!("Connecting to {connection_name}...");
                 draw_connecting_popup(size, &message, f);
             }
 
@@ -2025,22 +2025,19 @@ impl<B: Backend + Write> App<B> {
                                         }
 
                                         // Handle based on source
-                                        match return_from {
-                                            ConnectingSource::FormNew { .. } => {
-                                                // Save the connection (only for new connections)
-                                                let mut conn_to_save = conn.clone();
-                                                if let Some(server_key) = client.get_server_key() {
-                                                    conn_to_save.public_key = Some(server_key);
-                                                }
-                                                if let Err(e) =
-                                                    self.config.add_connection(conn_to_save.clone())
-                                                {
-                                                    self.set_error(e);
-                                                    self.go_to_form_new();
-                                                    continue;
-                                                }
+                                        if let ConnectingSource::FormNew { .. } = return_from {
+                                            // Save the connection (only for new connections)
+                                            let mut conn_to_save = conn.clone();
+                                            if let Some(server_key) = client.get_server_key() {
+                                                conn_to_save.public_key = Some(server_key);
                                             }
-                                            _ => {}
+                                            if let Err(e) =
+                                                self.config.add_connection(conn_to_save.clone())
+                                            {
+                                                self.set_error(e);
+                                                self.go_to_form_new();
+                                                continue;
+                                            }
                                         }
 
                                         let scrollback = self.config.terminal_scrollback_lines();
@@ -2264,10 +2261,8 @@ fn compute_selection_for_view(
         width
     };
 
-    if start_row == end_row {
-        if start_col >= end_col {
-            return None;
-        }
+    if start_row == end_row && start_col >= end_col {
+        return None;
     }
 
     Some(TerminalSelection {

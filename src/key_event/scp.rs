@@ -89,8 +89,7 @@ async fn restore_after_scp_progress<B: Backend + Write>(
                         let left_cwd = left_explorer.cwd().to_path_buf();
                         if let Err(e) = left_explorer.set_cwd(left_cwd).await {
                             app.set_error(AppError::SftpError(format!(
-                                "Failed to refresh left pane: {}",
-                                e
+                                "Failed to refresh left pane: {e}"
                             )));
                         } else if let Some(filename) = last_success.clone() {
                             left_explorer.select_file(&filename);
@@ -100,8 +99,7 @@ async fn restore_after_scp_progress<B: Backend + Write>(
                         let remote_cwd = remote_explorer.cwd().to_path_buf();
                         if let Err(e) = remote_explorer.set_cwd(remote_cwd).await {
                             app.set_error(AppError::SftpError(format!(
-                                "Failed to refresh remote pane: {}",
-                                e
+                                "Failed to refresh remote pane: {e}"
                             )));
                         } else if let Some(filename) = last_success.clone() {
                             remote_explorer.select_file(&filename);

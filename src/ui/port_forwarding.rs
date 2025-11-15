@@ -563,7 +563,7 @@ pub fn draw_port_forwarding_form_popup(
     frame.render_widget(instructions, instructions_area);
 
     // Return the Connection field position (first field, index 0)
-    if layout.len() > 0 {
+    if !layout.is_empty() {
         layout[0]
     } else {
         // Fallback to popup position if layout is empty

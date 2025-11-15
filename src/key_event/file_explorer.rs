@@ -270,8 +270,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                 };
                 if let Err(e) = result {
                     app.error = Some(crate::error::AppError::SftpError(format!(
-                        "Navigation error: {}",
-                        e
+                        "Navigation error: {e}"
                     )));
                 }
                 app.mark_redraw();
@@ -287,8 +286,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                 };
                 if let Err(e) = result {
                     app.error = Some(crate::error::AppError::SftpError(format!(
-                        "Navigation error: {}",
-                        e
+                        "Navigation error: {e}"
                     )));
                 }
                 app.mark_redraw();
@@ -304,8 +302,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                 };
                 if let Err(e) = result {
                     app.error = Some(crate::error::AppError::SftpError(format!(
-                        "Navigation error: {}",
-                        e
+                        "Navigation error: {e}"
                     )));
                 }
                 // Clear search filter when changing directories
@@ -326,8 +323,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                 };
                 if let Err(e) = result {
                     app.error = Some(crate::error::AppError::SftpError(format!(
-                        "Navigation error: {}",
-                        e
+                        "Navigation error: {e}"
                     )));
                 }
                 // Clear search filter when changing directories
@@ -455,11 +451,11 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                 };
 
                 let direction = copy_buffer[0].direction;
-                let same_pane = match (direction, active_pane) {
-                    (CopyDirection::LeftToRight, ActivePane::Left) => true,
-                    (CopyDirection::RightToLeft, ActivePane::Right) => true,
-                    _ => false,
-                };
+                let same_pane = matches!(
+                    (direction, active_pane),
+                    (CopyDirection::LeftToRight, ActivePane::Left)
+                        | (CopyDirection::RightToLeft, ActivePane::Right)
+                );
 
                 if same_pane {
                     app.info =
@@ -769,8 +765,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                     }
                     Err(e) => {
                         app.error = Some(crate::error::AppError::SftpError(format!(
-                            "Failed to toggle hidden files: {}",
-                            e
+                            "Failed to toggle hidden files: {e}"
                         )));
                     }
                 }
@@ -792,8 +787,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
 
                 if let Err(e) = result {
                     app.error = Some(crate::error::AppError::SftpError(format!(
-                        "Failed to refresh: {}",
-                        e
+                        "Failed to refresh: {e}"
                     )));
                 } else {
                     app.info = Some("Refreshed".to_string());
@@ -811,8 +805,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                 };
                 if let Err(e) = result {
                     app.error = Some(crate::error::AppError::SftpError(format!(
-                        "Navigation error: {}",
-                        e
+                        "Navigation error: {e}"
                     )));
                 }
                 app.mark_redraw();
@@ -825,8 +818,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                 };
                 if let Err(e) = result {
                     app.error = Some(crate::error::AppError::SftpError(format!(
-                        "Navigation error: {}",
-                        e
+                        "Navigation error: {e}"
                     )));
                 }
                 app.mark_redraw();
@@ -844,8 +836,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                 };
                 if let Err(e) = result {
                     app.error = Some(crate::error::AppError::SftpError(format!(
-                        "Navigation error: {}",
-                        e
+                        "Navigation error: {e}"
                     )));
                 }
                 app.mark_redraw();
@@ -866,8 +857,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                 };
                 if let Err(e) = result {
                     app.error = Some(crate::error::AppError::SftpError(format!(
-                        "Navigation error: {}",
-                        e
+                        "Navigation error: {e}"
                     )));
                 }
                 app.mark_redraw();

@@ -2,7 +2,7 @@
 
 use ratatui_explorer::{FileEntry, FileSystem};
 use russh_sftp::client::SftpSession;
-use std::io::{Error, ErrorKind, Result};
+use std::io::{Error, Result};
 use std::sync::Arc;
 
 /// A filesystem implementation for SFTP operations using `russh_sftp`.
@@ -39,14 +39,11 @@ impl FileSystem for SftpFileSystem {
         };
 
         // Read directory from SFTP
-        let mut read_dir = self.session.read_dir(&normalized_path).await.map_err(|e| {
-            Error::new(
-                ErrorKind::Other,
-                format!("SFTP read_dir failed for '{}': {}", normalized_path, e),
-            )
+        let read_dir = self.session.read_dir(&normalized_path).await.map_err(|e| {
+            Error::other(format!("SFTP read_dir failed for '{normalized_path}': {e}"))
         })?;
 
-        while let Some(entry_result) = read_dir.next() {
+        for entry_result in read_dir {
             let entry = entry_result;
 
             let filename = entry.file_name().to_string();
@@ -54,11 +51,11 @@ impl FileSystem for SftpFileSystem {
 
             // Construct the full path carefully to avoid double slashes
             let full_path = if normalized_path == "/" {
-                format!("/{}", filename)
+                format!("/{filename}")
             } else if normalized_path == "." {
                 filename.clone()
             } else {
-                format!("{}/{}", normalized_path, filename)
+                format!("{normalized_path}/{filename}")
             };
 
             // Determine if this is a directory
@@ -78,7 +75,7 @@ impl FileSystem for SftpFileSystem {
 
             entries.push(FileEntry {
                 name: if is_dir {
-                    format!("{}/", filename)
+                    format!("{filename}/")
                 } else {
                     filename.clone()
                 },
@@ -108,10 +105,11 @@ impl FileSystem for SftpFileSystem {
     }
 
     async fn is_dir(&self, path: &str) -> Result<bool> {
-        let metadata =
-            self.session.metadata(path).await.map_err(|e| {
-                Error::new(ErrorKind::Other, format!("SFTP metadata failed: {}", e))
-            })?;
+        let metadata = self
+            .session
+            .metadata(path)
+            .await
+            .map_err(|e| Error::other(format!("SFTP metadata failed: {e}")))?;
 
         Ok(metadata.is_dir())
     }
@@ -120,7 +118,7 @@ impl FileSystem for SftpFileSystem {
         self.session
             .canonicalize(path)
             .await
-            .map_err(|e| Error::new(ErrorKind::Other, format!("SFTP canonicalize failed: {}", e)))
+            .map_err(|e| Error::other(format!("SFTP canonicalize failed: {e}")))
     }
 
     fn parent(&self, path: &str) -> Option<String> {

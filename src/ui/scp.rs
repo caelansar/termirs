@@ -64,7 +64,7 @@ pub fn draw_scp_progress_popup(
     frame.render_widget(connection_info, layout[0]);
 
     for (idx, file) in progress.files.iter().enumerate() {
-        let row = layout.get(idx + 1).copied().unwrap_or_else(|| Rect {
+        let row = layout.get(idx + 1).copied().unwrap_or(Rect {
             x: inner.x,
             y: inner.y,
             width: inner.width,
@@ -106,7 +106,7 @@ pub fn draw_scp_progress_popup(
         };
 
         let header = Paragraph::new(Line::from(vec![
-            Span::styled(format!("{:<12}", status_label), status_style),
+            Span::styled(format!("{status_label:<12}"), status_style),
             Span::styled(file.display_name.clone(), Style::default().fg(Color::White)),
         ]));
         frame.render_widget(header, file_chunks[0]);

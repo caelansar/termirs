@@ -338,8 +338,7 @@ impl SshSession {
                 Ok(key) => key,
                 Err(_) => {
                     last_error = Some(format!(
-                        "Key at {} requires passphrase or is invalid",
-                        key_path
+                        "Key at {key_path} requires passphrase or is invalid"
                     ));
                     continue;
                 }
@@ -357,7 +356,7 @@ impl SshSession {
             {
                 Ok(result) if result.success() => return Ok(result),
                 Ok(_) | Err(_) => {
-                    last_error = Some(format!("Authentication failed with key: {}", key_path));
+                    last_error = Some(format!("Authentication failed with key: {key_path}"));
                     continue;
                 }
             }
@@ -541,6 +540,7 @@ impl SshSession {
         self.server_key.get().cloned()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn sftp_send_file_with_timeout(
         channel: Option<Channel<client::Msg>>,
         connection: &Connection,
@@ -749,6 +749,7 @@ impl SshSession {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn sftp_receive_file_with_timeout(
         channel: Option<Channel<client::Msg>>,
         connection: &Connection,
@@ -1033,7 +1034,7 @@ impl SshSession {
                                     {
                                         Ok(channel) => break Some(channel),
                                         Err(e) => {
-                                            eprintln!("Failed to open SSH forwarding channel: {}", e);
+                                            eprintln!("Failed to open SSH forwarding channel: {e}");
 
                                             let should_recreate = Self::is_port_forwarding_session_error(&session, &e);
 
@@ -1045,7 +1046,7 @@ impl SshSession {
                                                         continue;
                                                     }
                                                     Err(new_err) => {
-                                                        eprintln!("Failed to recreate SSH session for port forwarding: {}", new_err);
+                                                        eprintln!("Failed to recreate SSH session for port forwarding: {new_err}");
                                                     }
                                                 }
                                             }
@@ -1072,14 +1073,14 @@ impl SshSession {
                                         }
                                         result = tokio::io::copy_bidirectional(&mut local_socket, &mut ssh_stream) => {
                                             if let Err(e) = result {
-                                                eprintln!("Copy error between local socket and SSH stream: {}", e);
+                                                eprintln!("Copy error between local socket and SSH stream: {e}");
                                             }
                                         }
                                     }
                                 });
                             }
                             Err(e) => {
-                                eprintln!("Failed to accept connection: {}", e);
+                                eprintln!("Failed to accept connection: {e}");
                                 continue;
                             }
                         }
@@ -1114,9 +1115,11 @@ impl SshSession {
     }
 }
 
+type ActiveForwardMap = HashMap<String, (JoinHandle<()>, CancellationToken)>;
+
 /// Runtime management for port forwarding sessions
 pub struct PortForwardingRuntime {
-    active_forwards: Arc<Mutex<HashMap<String, (JoinHandle<()>, CancellationToken)>>>,
+    active_forwards: Arc<Mutex<ActiveForwardMap>>,
 }
 
 impl PortForwardingRuntime {
