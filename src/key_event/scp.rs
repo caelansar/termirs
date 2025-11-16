@@ -126,6 +126,9 @@ async fn restore_after_scp_progress<B: Backend + Write>(
                 selector_selected: 0,
                 selector_search_mode: false,
                 selector_search_query: String::new(),
+                showing_delete_confirmation: false,
+                delete_file_name: String::new(),
+                delete_pane: crate::ActivePane::Left,
             };
         }
     }

@@ -16,6 +16,55 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
     app: &mut App<B>,
     key: KeyEvent,
 ) -> KeyFlow {
+    // Handle delete confirmation popup first (highest priority)
+    if let AppMode::FileExplorer {
+        showing_delete_confirmation,
+        delete_pane,
+        left_explorer,
+        remote_explorer,
+        ..
+    } = &mut app.mode
+    {
+        if *showing_delete_confirmation {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                    // Perform the deletion
+                    let result = match delete_pane {
+                        ActivePane::Left => {
+                            left_explorer.handle(ratatui_explorer::Input::Delete).await
+                        }
+                        ActivePane::Right => {
+                            remote_explorer
+                                .handle(ratatui_explorer::Input::Delete)
+                                .await
+                        }
+                    };
+
+                    if let Err(e) = result {
+                        app.error = Some(crate::error::AppError::SftpError(format!(
+                            "Delete error: {e}"
+                        )));
+                    }
+
+                    // Close the confirmation dialog
+                    *showing_delete_confirmation = false;
+                    app.mark_redraw();
+                    return KeyFlow::Continue;
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    // Cancel deletion
+                    *showing_delete_confirmation = false;
+                    app.mark_redraw();
+                    return KeyFlow::Continue;
+                }
+                _ => {
+                    // Ignore other keys when dialog is showing
+                    return KeyFlow::Continue;
+                }
+            }
+        }
+    }
+
     // Handle source selector popup first (needs separate scope to avoid borrow issues)
     if let AppMode::FileExplorer {
         showing_source_selector,
@@ -173,6 +222,9 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
         selector_search_mode,
         selector_search_query,
         ssh_connection,
+        showing_delete_confirmation,
+        delete_file_name,
+        delete_pane,
         ..
     } = &mut app.mode
     {
@@ -373,6 +425,27 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                     };
                     app.mark_redraw();
                 }
+            }
+
+            // Delete file: Show delete confirmation
+            KeyCode::Char('d') => {
+                let (current_file, pane) = match active_pane {
+                    ActivePane::Left => (left_explorer.current(), ActivePane::Left),
+                    ActivePane::Right => (remote_explorer.current(), ActivePane::Right),
+                };
+
+                // Skip delete confirmation for directories
+                if current_file.is_dir() {
+                    app.info = Some("Cannot delete directories".to_string());
+                    app.mark_redraw();
+                    return KeyFlow::Continue;
+                }
+
+                // Show delete confirmation dialog
+                *showing_delete_confirmation = true;
+                *delete_file_name = current_file.name().to_string();
+                *delete_pane = pane;
+                app.mark_redraw();
             }
 
             // Copy file: Toggle selection

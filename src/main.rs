@@ -35,7 +35,7 @@ use error::{AppError, Result};
 use ui::{
     ConnectionForm, TerminalSelection, TerminalState, draw_connecting_popup,
     draw_connection_form_popup, draw_connection_list, draw_delete_confirmation_popup,
-    draw_error_popup, draw_file_explorer, draw_info_popup,
+    draw_error_popup, draw_file_delete_confirmation_popup, draw_file_explorer, draw_info_popup,
     draw_port_forward_delete_confirmation_popup, draw_port_forwarding_form_popup,
     draw_port_forwarding_list, draw_scp_progress_popup, draw_search_overlay, draw_terminal,
     rect_with_top_margin,
@@ -431,6 +431,11 @@ pub(crate) enum AppMode {
         selector_selected: usize,
         selector_search_mode: bool,
         selector_search_query: String,
+
+        // File delete confirmation
+        showing_delete_confirmation: bool,
+        delete_file_name: String,
+        delete_pane: ActivePane,
     },
     PortForwardingList {
         selected: usize,
@@ -1098,6 +1103,10 @@ impl<B: Backend + Write> App<B> {
             selector_selected: 0,
             selector_search_mode: false,
             selector_search_query: String::new(),
+
+            showing_delete_confirmation: false,
+            delete_file_name: String::new(),
+            delete_pane: ActivePane::Left,
         };
         self.needs_redraw = true;
         Ok(())
@@ -1506,6 +1515,8 @@ impl<B: Backend + Write> App<B> {
                     selector_search_mode,
                     selector_search_query,
                     ssh_connection,
+                    showing_delete_confirmation,
+                    delete_file_name,
                     ..
                 } => {
                     draw_file_explorer(
@@ -1535,6 +1546,11 @@ impl<B: Backend + Write> App<B> {
                             *selector_search_mode,
                             selector_search_query.as_str(),
                         );
+                    }
+
+                    // Draw delete confirmation popup if active
+                    if *showing_delete_confirmation {
+                        draw_file_delete_confirmation_popup(f, size, delete_file_name);
                     }
                 }
                 AppMode::PortForwardingList {
@@ -1976,6 +1992,9 @@ impl<B: Backend + Write> App<B> {
                                                 selector_selected: 0,
                                                 selector_search_mode: false,
                                                 selector_search_query: String::new(),
+                                                showing_delete_confirmation: false,
+                                                delete_file_name: String::new(),
+                                                delete_pane: ActivePane::Left,
                                             };
                                         }
                                     }

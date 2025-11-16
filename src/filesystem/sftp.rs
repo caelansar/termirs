@@ -144,4 +144,11 @@ impl FileSystem for SftpFileSystem {
             }
         })
     }
+
+    async fn delete(&self, path: &str) -> Result<()> {
+        self.session
+            .remove_file(path)
+            .await
+            .map_err(|e| Error::other(format!("SFTP delete failed: {e}")))
+    }
 }
