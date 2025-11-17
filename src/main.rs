@@ -2028,14 +2028,11 @@ impl<B: Backend + Write> App<B> {
                                         // Save the server key if it was received
                                         if conn.public_key.is_none() {
                                             if let Some(server_key) = client.get_server_key() {
-                                                if let Some(stored_conn) =
-                                                    self.config.connections_mut().iter_mut().find(
-                                                        |c| {
-                                                            c.host == conn.host
-                                                                && c.port == conn.port
-                                                                && c.username == conn.username
-                                                        },
-                                                    )
+                                                if let Some(stored_conn) = self
+                                                    .config
+                                                    .connections_mut()
+                                                    .iter_mut()
+                                                    .find(|c| c.id == conn.id)
                                                 {
                                                     stored_conn.public_key = Some(server_key);
                                                     let _ = self.config.save();
