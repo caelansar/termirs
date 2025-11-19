@@ -228,17 +228,23 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
                     Ok(_) => {
                         // After creating a new port forward, go to the end of the list
                         let new_index = app.config.port_forwards().len().saturating_sub(1);
-                        if let Err(e) = app
-                            .port_forwarding_runtime
-                            .start_port_forward(
-                                &app.config.port_forwards()[new_index],
-                                app.config
-                                    .find_connection(&form_clone.connection_id)
-                                    .unwrap(),
-                            )
-                            .await
-                        {
-                            app.error = Some(e);
+                        let connection = app.config.find_connection(&form_clone.connection_id);
+                        if let Some(connection) = connection {
+                            if let Err(e) = app
+                                .port_forwarding_runtime
+                                .start_port_forward(
+                                    &app.config.port_forwards()[new_index],
+                                    connection,
+                                )
+                                .await
+                            {
+                                app.error = Some(e);
+                            }
+                        } else {
+                            app.error = Some(AppError::PortForwardingError(format!(
+                                "Connection not found for port forward '{}'",
+                                form_clone.get_display_name_value()
+                            )));
                         }
                         app.go_to_port_forwarding_list_with_selected(new_index)
                             .await;
