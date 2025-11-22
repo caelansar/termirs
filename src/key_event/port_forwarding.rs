@@ -54,7 +54,7 @@ pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
         KeyCode::Char('e') | KeyCode::Char('E') => {
             if let Some(original) = app.config.port_forwards().get(app.current_selected()) {
                 let form = PortForwardingForm::from(original);
-                app.go_to_port_forwarding_form_edit(form, original.clone());
+                app.go_to_port_forwarding_form_edit(form);
             }
         }
         KeyCode::Char('d') | KeyCode::Char('D') => {

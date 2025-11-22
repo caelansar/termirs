@@ -982,11 +982,7 @@ impl<B: Backend + Write> App<B> {
         self.needs_redraw = true;
     }
 
-    pub(crate) fn go_to_port_forwarding_form_edit(
-        &mut self,
-        form: crate::ui::PortForwardingForm,
-        _original: crate::config::manager::PortForward,
-    ) {
+    pub(crate) fn go_to_port_forwarding_form_edit(&mut self, form: crate::ui::PortForwardingForm) {
         self.mode = AppMode::PortForwardingFormEdit {
             form,
             current_selected: self.current_selected(),
@@ -2034,7 +2030,8 @@ impl<B: Backend + Write> App<B> {
                                                     .iter_mut()
                                                     .find(|c| c.id == conn.id)
                                                 {
-                                                    stored_conn.public_key = Some(server_key);
+                                                    stored_conn.public_key =
+                                                        Some(server_key.to_string());
                                                     let _ = self.config.save();
                                                 }
                                             }
@@ -2045,10 +2042,10 @@ impl<B: Backend + Write> App<B> {
                                             // Save the connection (only for new connections)
                                             let mut conn_to_save = conn.clone();
                                             if let Some(server_key) = client.get_server_key() {
-                                                conn_to_save.public_key = Some(server_key);
+                                                conn_to_save.public_key =
+                                                    Some(server_key.to_string());
                                             }
-                                            if let Err(e) =
-                                                self.config.add_connection(conn_to_save.clone())
+                                            if let Err(e) = self.config.add_connection(conn_to_save)
                                             {
                                                 self.set_error(e);
                                                 self.go_to_form_new();

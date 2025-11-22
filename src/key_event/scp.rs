@@ -91,8 +91,8 @@ async fn restore_after_scp_progress<B: Backend + Write>(
                             app.set_error(AppError::SftpError(format!(
                                 "Failed to refresh left pane: {e}"
                             )));
-                        } else if let Some(filename) = last_success.clone() {
-                            left_explorer.select_file(&filename);
+                        } else if let Some(filename) = last_success.as_ref() {
+                            left_explorer.select_file(filename);
                         }
                     }
                     crate::ActivePane::Right => {
@@ -101,8 +101,8 @@ async fn restore_after_scp_progress<B: Backend + Write>(
                             app.set_error(AppError::SftpError(format!(
                                 "Failed to refresh remote pane: {e}"
                             )));
-                        } else if let Some(filename) = last_success.clone() {
-                            remote_explorer.select_file(&filename);
+                        } else if let Some(filename) = last_success.as_ref() {
+                            remote_explorer.select_file(filename);
                         }
                     }
                 }

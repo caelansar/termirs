@@ -536,8 +536,8 @@ impl SshSession {
     }
 
     /// Get the server public key that was received during connection
-    pub fn get_server_key(&self) -> Option<String> {
-        self.server_key.get().cloned()
+    pub fn get_server_key(&self) -> Option<&str> {
+        self.server_key.get().map(|s| s.as_str())
     }
 
     #[allow(clippy::too_many_arguments)]

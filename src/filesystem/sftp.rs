@@ -77,7 +77,7 @@ impl FileSystem for SftpFileSystem {
                 name: if is_dir {
                     format!("{filename}/")
                 } else {
-                    filename.clone()
+                    filename
                 },
                 path: full_path,
                 is_dir,

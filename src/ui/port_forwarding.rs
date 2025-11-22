@@ -318,11 +318,11 @@ pub fn draw_port_forwarding_list(
                     &item.status_icon,
                     Style::default().fg(status_color),
                 )),
-                Cell::from(item.display_name.clone()),
-                Cell::from(item.connection_name.clone()),
-                Cell::from(item.local_address.clone()),
-                Cell::from(item.service_address.clone()),
-                Cell::from(item.created_at.clone()),
+                Cell::from(item.display_name.as_str()),
+                Cell::from(item.connection_name.as_str()),
+                Cell::from(item.local_address.as_str()),
+                Cell::from(item.service_address.as_str()),
+                Cell::from(item.created_at.as_str()),
             ])
             .height(1)
         })
