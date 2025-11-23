@@ -19,10 +19,10 @@ use russh::keys::{self, PrivateKeyWithHashAlg, ssh_key};
 use russh::{Channel, ChannelMsg, Disconnect, Error as RusshError, MethodKind};
 use russh_sftp::client::rawsession::RawSftpSession;
 use russh_sftp::protocol::{FileAttributes, OpenFlags, StatusCode};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 
 use crate::ScpTransferProgress;
-use crate::config::manager::{AuthMethod, Connection, PortForward};
+use crate::config::manager::{AuthMethod, Connection, PortForward, PortForwardType};
 use crate::error::{AppError, Result};
 
 const STANDARD_KEY_PATHS: &[&str] = &[
@@ -94,6 +94,8 @@ impl BufferPool {
 pub struct SshClient {
     connection: Connection,
     server_key: Arc<OnceCell<String>>,
+    // Channel for forwarding remote port forwarding connections
+    forwarded_tcpip_tx: Option<tokio::sync::mpsc::UnboundedSender<Channel<client::Msg>>>,
 }
 
 impl client::Handler for SshClient {
@@ -127,6 +129,37 @@ impl client::Handler for SshClient {
         // No stored key, accept it for now - we'll save it after successful connection
         Ok(true)
     }
+
+    /// Called when the server opens a channel for a new remote port forwarding connection
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: Channel<client::Msg>,
+        connected_address: &str,
+        connected_port: u32,
+        originator_address: &str,
+        originator_port: u32,
+        _session: &mut client::Session,
+    ) -> std::result::Result<(), Self::Error> {
+        info!(
+            "Received forwarded-tcpip channel: {}:{} <- {}:{}",
+            connected_address, connected_port, originator_address, originator_port
+        );
+
+        // Send the channel to the handler if we have a sender
+        if let Some(ref tx) = self.forwarded_tcpip_tx {
+            if let Err(e) = tx.send(channel) {
+                error!("Failed to send forwarded-tcpip channel: {}", e);
+                return Err(AppError::PortForwardingError(
+                    "Failed to send forwarded channel".to_string(),
+                ));
+            }
+            info!("Forwarded channel sent to handler");
+        } else {
+            warn!("Received forwarded-tcpip channel but no handler is registered");
+        }
+
+        Ok(())
+    }
 }
 
 pub struct SshSession {
@@ -153,6 +186,16 @@ impl SshSession {
         timeout: Option<Duration>,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<(client::Handle<SshClient>, Arc<OnceCell<String>>)> {
+        Self::new_session_with_timeout_and_forwarding(connection, timeout, cancel, None).await
+    }
+
+    /// Create a new SSH session with optional remote port forwarding channel
+    pub(crate) async fn new_session_with_timeout_and_forwarding(
+        connection: &Connection,
+        timeout: Option<Duration>,
+        cancel: &tokio_util::sync::CancellationToken,
+        forwarded_tcpip_tx: Option<tokio::sync::mpsc::UnboundedSender<Channel<client::Msg>>>,
+    ) -> Result<(client::Handle<SshClient>, Arc<OnceCell<String>>)> {
         info!(
             "Initiating SSH connection to {}@{}",
             connection.username,
@@ -170,6 +213,7 @@ impl SshSession {
         let ssh_client = SshClient {
             connection: connection.clone(),
             server_key: server_key.clone(),
+            forwarded_tcpip_tx,
         };
 
         let mut session = {
@@ -1191,6 +1235,533 @@ impl SshSession {
         Ok((handle, cancel_token))
     }
 
+    /// Start a remote port forwarding task (ssh -R)
+    /// Remote server listens on remote_bind_addr:remote_port and forwards to local service_host:service_port
+    pub async fn start_remote_port_forwarding_task(
+        remote_bind_addr: Option<&str>,
+        remote_port: u16,
+        connection: &Connection,
+        service_host: &str,
+        service_port: u16,
+    ) -> Result<(JoinHandle<()>, CancellationToken)> {
+        let remote_bind = remote_bind_addr.unwrap_or("127.0.0.1");
+        info!(
+            "Setting up remote port forwarding: {}:{} <- {}:{}",
+            remote_bind, remote_port, service_host, service_port
+        );
+
+        // Create channel for receiving forwarded connections
+        let (forwarded_tx, forwarded_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let cancel_token = CancellationToken::new();
+        let cancel_token_for_session = cancel_token.clone();
+
+        // Create a new session with forwarding channel
+        let (mut session, _) = Self::new_session_with_timeout_and_forwarding(
+            connection,
+            None,
+            &cancel_token_for_session,
+            Some(forwarded_tx),
+        )
+        .await?;
+
+        let remote_bind = remote_bind.to_string();
+
+        // Request remote port forwarding
+        match session
+            .tcpip_forward(&remote_bind, remote_port as u32)
+            .await
+        {
+            Ok(bound_port) => {
+                info!(
+                    "Remote port forwarding established on {}:{} (actual port: {})",
+                    remote_bind, remote_port, bound_port
+                );
+            }
+            Err(e) => {
+                error!("Failed to establish remote port forwarding: {}", e);
+                return Err(AppError::PortForwardingError(format!(
+                    "Failed to request remote port forwarding: {e}"
+                )));
+            }
+        }
+
+        // Clone these for the async task
+        let service_host_clone = service_host.to_string();
+        let service_port_clone = service_port;
+        let remote_bind_clone = remote_bind.clone();
+        let cancel_token_for_task = cancel_token.clone();
+
+        let handle = tokio::spawn(async move {
+            // Create a handler that will process forwarded connections
+            let mut forwarding_handler = RemoteForwardingHandler {
+                service_host: service_host_clone,
+                service_port: service_port_clone,
+                session,
+                remote_bind: remote_bind_clone,
+                remote_port,
+                cancel_token: cancel_token_for_task,
+                forwarded_rx,
+            };
+
+            if let Err(e) = forwarding_handler.run().await {
+                error!("Remote forwarding handler error: {}", e);
+            }
+        });
+
+        Ok((handle, cancel_token))
+    }
+
+    /// Start a dynamic SOCKS5 port forwarding task (ssh -D)
+    /// Creates a SOCKS5 proxy on local_addr:local_port that tunnels through SSH
+    pub async fn start_dynamic_port_forwarding_task(
+        local_addr: &str,
+        local_port: u16,
+        connection: &Connection,
+    ) -> Result<(JoinHandle<()>, CancellationToken)> {
+        info!(
+            "Setting up dynamic SOCKS5 proxy on {}:{}",
+            local_addr, local_port
+        );
+
+        let cancel_token = CancellationToken::new();
+        let cancel_token_for_task = cancel_token.clone();
+
+        let local_addr = local_addr.to_string();
+        let connection = connection.clone();
+
+        let local_listener = match TcpListener::bind((local_addr.as_str(), local_port)).await {
+            Ok(listener) => {
+                info!("SOCKS5 proxy listening on {}:{}", local_addr, local_port);
+                listener
+            }
+            Err(e) => {
+                error!(
+                    "Failed to bind SOCKS5 listener to {}:{}: {}",
+                    local_addr, local_port, e
+                );
+                return Err(AppError::PortForwardingError(format!(
+                    "Failed to bind to {local_addr}:{local_port}: {e}"
+                )));
+            }
+        };
+
+        let handle = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = cancel_token_for_task.cancelled() => {
+                        info!("Dynamic SOCKS5 proxy task cancelled");
+                        break;
+                    }
+                    result = local_listener.accept() => {
+                        match result {
+                            Ok((local_socket, addr)) => {
+                                debug!("SOCKS5 connection from {}", addr);
+
+                                let cancel_for_connection = cancel_token_for_task.clone();
+                                let connection_clone = connection.clone();
+
+                                // Handle SOCKS5 connection in a separate task
+                                // Each connection gets its own SSH session
+                                tokio::spawn(async move {
+                                    if let Err(e) = Self::handle_socks5_connection(
+                                        local_socket,
+                                        cancel_for_connection,
+                                        connection_clone,
+                                    ).await {
+                                        debug!("SOCKS5 connection error: {}", e);
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                error!("Failed to accept SOCKS5 connection: {}", e);
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok((handle, cancel_token))
+    }
+}
+
+/// Handler for remote port forwarding connections
+struct RemoteForwardingHandler {
+    service_host: String,
+    service_port: u16,
+    session: client::Handle<SshClient>,
+    remote_bind: String,
+    remote_port: u16,
+    cancel_token: CancellationToken,
+    forwarded_rx: tokio::sync::mpsc::UnboundedReceiver<Channel<client::Msg>>,
+}
+
+impl RemoteForwardingHandler {
+    /// Run the forwarding handler, processing incoming connections
+    async fn run(&mut self) -> Result<()> {
+        info!(
+            "Remote forwarding handler running, waiting for connections to forward to {}:{}",
+            self.service_host, self.service_port
+        );
+
+        loop {
+            tokio::select! {
+                _ = self.cancel_token.cancelled() => {
+                    info!("Remote port forwarding task cancelled");
+                    // Cancel the remote forwarding
+                    let _ = self.session.cancel_tcpip_forward(&self.remote_bind, self.remote_port as u32).await;
+                    break;
+                }
+                Some(channel) = self.forwarded_rx.recv() => {
+                    info!("Received forwarded connection, spawning handler");
+
+                    // Clone what we need for the connection handler
+                    let service_host = self.service_host.clone();
+                    let service_port = self.service_port;
+
+                    // Handle each forwarded connection in a separate task
+                    tokio::spawn(async move {
+                        if let Err(e) = SshSession::handle_remote_forwarded_connection(
+                            channel,
+                            &service_host,
+                            service_port,
+                        )
+                        .await
+                        {
+                            error!("Error handling remote forwarded connection: {}", e);
+                        }
+                    });
+                }
+                _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                    // Periodic check if session is still alive
+                    if self.session.is_closed() {
+                        warn!("SSH session closed, remote forwarding terminated");
+                        return Err(AppError::PortForwardingError(
+                            "SSH session closed".to_string(),
+                        ));
+                    }
+                    debug!("Remote forwarding session still alive");
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl SshSession {
+    /// Handle a forwarded connection for remote port forwarding
+    /// This receives connections from the SSH server and forwards them to the local service
+    async fn handle_remote_forwarded_connection(
+        channel: Channel<client::Msg>,
+        service_host: &str,
+        service_port: u16,
+    ) -> Result<()> {
+        info!(
+            "Handling remote forwarded connection to {}:{}",
+            service_host, service_port
+        );
+
+        // Connect to the local service
+        let mut local_stream = match TcpStream::connect((service_host, service_port)).await {
+            Ok(stream) => {
+                info!(
+                    "Connected to local service at {}:{}",
+                    service_host, service_port
+                );
+                stream
+            }
+            Err(e) => {
+                error!(
+                    "Failed to connect to local service {}:{}: {}",
+                    service_host, service_port, e
+                );
+                return Err(AppError::PortForwardingError(format!(
+                    "Failed to connect to local service {service_host}:{service_port}: {e}"
+                )));
+            }
+        };
+
+        // Convert channel to stream for bidirectional copying
+        let mut ssh_stream = channel.into_stream();
+
+        // Proxy data bidirectionally between the SSH channel and local service
+        match tokio::io::copy_bidirectional(&mut ssh_stream, &mut local_stream).await {
+            Ok((to_service, to_channel)) => {
+                info!(
+                    "Remote forward complete: {} bytes to service, {} bytes to client",
+                    to_service, to_channel
+                );
+            }
+            Err(e) => {
+                warn!("Error during remote forwarding: {}", e);
+            }
+        }
+
+        info!("Remote forwarded connection closed");
+        Ok(())
+    }
+
+    /// Handle a single SOCKS5 connection
+    async fn handle_socks5_connection(
+        mut local_socket: TcpStream,
+        cancel_token: CancellationToken,
+        connection: Connection,
+    ) -> Result<()> {
+        // Create a session for this SOCKS5 connection
+        let (mut session, _) = Self::new_session(&connection).await?;
+        // SOCKS5 handshake: receive greeting
+        let mut buf = [0u8; 2];
+        tokio::select! {
+            _ = cancel_token.cancelled() => {
+                return Ok(());
+            }
+            result = local_socket.read_exact(&mut buf) => {
+                result.map_err(|e| AppError::PortForwardingError(format!("SOCKS5 greeting read error: {e}")))?;
+            }
+        }
+
+        let version = buf[0];
+        let nmethods = buf[1];
+
+        if version != 5 {
+            return Err(AppError::PortForwardingError(format!(
+                "Unsupported SOCKS version: {version}"
+            )));
+        }
+
+        // Read methods
+        let mut methods = vec![0u8; nmethods as usize];
+        tokio::select! {
+            _ = cancel_token.cancelled() => {
+                return Ok(());
+            }
+            result = local_socket.read_exact(&mut methods) => {
+                result.map_err(|e| AppError::PortForwardingError(format!("SOCKS5 methods read error: {e}")))?;
+            }
+        }
+
+        // Send method selection (0x00 = no authentication)
+        tokio::select! {
+            _ = cancel_token.cancelled() => {
+                return Ok(());
+            }
+            result = local_socket.write_all(&[5, 0]) => {
+                result.map_err(|e| AppError::PortForwardingError(format!("SOCKS5 method response error: {e}")))?;
+            }
+        }
+
+        // Read request
+        let mut buf = [0u8; 4];
+        tokio::select! {
+            _ = cancel_token.cancelled() => {
+                return Ok(());
+            }
+            result = local_socket.read_exact(&mut buf) => {
+                result.map_err(|e| AppError::PortForwardingError(format!("SOCKS5 request read error: {e}")))?;
+            }
+        }
+
+        let version = buf[0];
+        let cmd = buf[1];
+        let _reserved = buf[2];
+        let atyp = buf[3];
+
+        if version != 5 {
+            return Err(AppError::PortForwardingError(format!(
+                "Unsupported SOCKS version in request: {version}"
+            )));
+        }
+
+        if cmd != 1 {
+            // Only support CONNECT (1), not BIND (2) or UDP ASSOCIATE (3)
+            let _ = local_socket
+                .write_all(&[5, 7, 0, 1, 0, 0, 0, 0, 0, 0])
+                .await; // Command not supported
+            return Err(AppError::PortForwardingError(format!(
+                "Unsupported SOCKS command: {cmd}"
+            )));
+        }
+
+        // Parse destination address
+        let dest_addr = match atyp {
+            1 => {
+                // IPv4
+                let mut ipv4 = [0u8; 4];
+                tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        return Ok(());
+                    }
+                    result = local_socket.read_exact(&mut ipv4) => {
+                        result.map_err(|e| AppError::PortForwardingError(format!("SOCKS5 IPv4 read error: {e}")))?;
+                    }
+                }
+                format!("{}.{}.{}.{}", ipv4[0], ipv4[1], ipv4[2], ipv4[3])
+            }
+            3 => {
+                // Domain name
+                let mut len_buf = [0u8; 1];
+                tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        return Ok(());
+                    }
+                    result = local_socket.read_exact(&mut len_buf) => {
+                        result.map_err(|e| AppError::PortForwardingError(format!("SOCKS5 domain length read error: {e}")))?;
+                    }
+                }
+                let len = len_buf[0] as usize;
+                let mut domain = vec![0u8; len];
+                tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        return Ok(());
+                    }
+                    result = local_socket.read_exact(&mut domain) => {
+                        result.map_err(|e| AppError::PortForwardingError(format!("SOCKS5 domain read error: {e}")))?;
+                    }
+                }
+                String::from_utf8(domain).map_err(|e| {
+                    AppError::PortForwardingError(format!("Invalid domain name: {e}"))
+                })?
+            }
+            4 => {
+                // IPv6
+                let mut ipv6 = [0u8; 16];
+                tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        return Ok(());
+                    }
+                    result = local_socket.read_exact(&mut ipv6) => {
+                        result.map_err(|e| AppError::PortForwardingError(format!("SOCKS5 IPv6 read error: {e}")))?;
+                    }
+                }
+                format!(
+                    "{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}",
+                    ipv6[0],
+                    ipv6[1],
+                    ipv6[2],
+                    ipv6[3],
+                    ipv6[4],
+                    ipv6[5],
+                    ipv6[6],
+                    ipv6[7],
+                    ipv6[8],
+                    ipv6[9],
+                    ipv6[10],
+                    ipv6[11],
+                    ipv6[12],
+                    ipv6[13],
+                    ipv6[14],
+                    ipv6[15]
+                )
+            }
+            _ => {
+                let _ = local_socket
+                    .write_all(&[5, 8, 0, 1, 0, 0, 0, 0, 0, 0])
+                    .await; // Address type not supported
+                return Err(AppError::PortForwardingError(format!(
+                    "Unsupported address type: {atyp}"
+                )));
+            }
+        };
+
+        // Read port
+        let mut port_buf = [0u8; 2];
+        tokio::select! {
+            _ = cancel_token.cancelled() => {
+                return Ok(());
+            }
+            result = local_socket.read_exact(&mut port_buf) => {
+                result.map_err(|e| AppError::PortForwardingError(format!("SOCKS5 port read error: {e}")))?;
+            }
+        }
+        let dest_port = u16::from_be_bytes(port_buf);
+
+        debug!("SOCKS5 CONNECT to {}:{}", dest_addr, dest_port);
+
+        // Open SSH channel to destination
+        let mut attempts = 0;
+        let ssh_channel = loop {
+            match session
+                .channel_open_direct_tcpip(
+                    dest_addr.clone(),
+                    dest_port as u32,
+                    "127.0.0.1".to_string(), // Originator address for SOCKS5
+                    0,                       // local port doesn't matter for SOCKS5
+                )
+                .await
+            {
+                Ok(channel) => {
+                    debug!(
+                        "SSH channel opened for SOCKS5 connection to {}:{}",
+                        dest_addr, dest_port
+                    );
+                    break Some(channel);
+                }
+                Err(e) => {
+                    warn!("Failed to open SSH channel for SOCKS5: {}", e);
+
+                    if Self::is_port_forwarding_session_error(&session, &e) && attempts < 3 {
+                        debug!(
+                            "Attempting to recreate SSH session (attempt {})",
+                            attempts + 1
+                        );
+                        match Self::new_session(&connection).await {
+                            Ok((new_session, _)) => {
+                                info!("SSH session recreated successfully");
+                                session = new_session;
+                                attempts += 1;
+                                continue;
+                            }
+                            Err(e) => {
+                                error!("Failed to recreate SSH session: {}", e);
+                            }
+                        }
+                    }
+
+                    break None;
+                }
+            }
+        };
+
+        let Some(ssh_channel) = ssh_channel else {
+            // Send SOCKS5 error response
+            let _ = local_socket
+                .write_all(&[5, 1, 0, 1, 0, 0, 0, 0, 0, 0])
+                .await; // General failure
+            return Err(AppError::PortForwardingError(
+                "Failed to establish SSH channel for SOCKS5".to_string(),
+            ));
+        };
+
+        // Send SOCKS5 success response
+        tokio::select! {
+            _ = cancel_token.cancelled() => {
+                return Ok(());
+            }
+            result = local_socket.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]) => {
+                result.map_err(|e| AppError::PortForwardingError(format!("SOCKS5 success response error: {e}")))?;
+            }
+        }
+
+        // Proxy data between SOCKS5 client and SSH channel
+        let mut ssh_stream = ssh_channel.into_stream();
+
+        tokio::select! {
+            _ = cancel_token.cancelled() => {
+                debug!("SOCKS5 connection cancelled");
+            }
+            result = tokio::io::copy_bidirectional(&mut local_socket, &mut ssh_stream) => {
+                if let Err(e) = result {
+                    debug!("SOCKS5 copy error: {}", e);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     fn is_port_forwarding_session_error(
         session: &client::Handle<SshClient>,
         err: &RusshError,
@@ -1243,15 +1814,37 @@ impl PortForwardingRuntime {
             ));
         }
 
-        // Start the port forwarding task
-        let (handle, cancel_token) = SshSession::start_port_forwarding_task(
-            &port_forward.local_addr,
-            port_forward.local_port,
-            connection,
-            &port_forward.service_host,
-            port_forward.service_port,
-        )
-        .await?;
+        // Start the appropriate port forwarding task based on type
+        let (handle, cancel_token) = match port_forward.forward_type {
+            PortForwardType::Local => {
+                SshSession::start_port_forwarding_task(
+                    &port_forward.local_addr,
+                    port_forward.local_port,
+                    connection,
+                    &port_forward.service_host,
+                    port_forward.service_port,
+                )
+                .await?
+            }
+            PortForwardType::Remote => {
+                SshSession::start_remote_port_forwarding_task(
+                    port_forward.remote_bind_addr.as_deref(),
+                    port_forward.local_port,
+                    connection,
+                    &port_forward.service_host,
+                    port_forward.service_port,
+                )
+                .await?
+            }
+            PortForwardType::Dynamic => {
+                SshSession::start_dynamic_port_forwarding_task(
+                    &port_forward.local_addr,
+                    port_forward.local_port,
+                    connection,
+                )
+                .await?
+            }
+        };
 
         // Store the handle and cancellation token
         let mut active_forwards = self.active_forwards.lock().await;
