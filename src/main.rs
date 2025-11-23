@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 use arboard::Clipboard;
+use clap::Parser;
 use crossterm::cursor::Show;
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -26,6 +27,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::prelude::Backend;
 use tokio::{select, sync::mpsc, time};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 use tui_textarea::TextArea;
 
 use async_ssh_client::SshSession;
@@ -45,6 +47,21 @@ impl crate::async_ssh_client::ByteProcessor for TerminalState {
     fn process_bytes(&mut self, bytes: &[u8]) {
         TerminalState::process_bytes(self, bytes);
     }
+}
+
+/// A modern, async SSH terminal client
+#[derive(Parser, Debug)]
+#[command(name = "termirs")]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Enable logging to termirs.log file
+    #[arg(short, long)]
+    log: bool,
+
+    /// Set log level (off, error, warn, info, debug, trace)
+    /// This option requires --log to be enabled
+    #[arg(long, value_name = "LEVEL", default_value = "info")]
+    log_level: String,
 }
 
 /// Result summary of SFTP transfer operations
@@ -2161,12 +2178,15 @@ impl<B: Backend + Write> App<B> {
                 AppEvent::Disconnect => {
                     // SSH connection has been disconnected (e.g., user typed 'exit')
                     // Automatically return to the connection list
+                    tracing::info!("SSH connection disconnected");
                     if let AppMode::Connected {
                         current_selected,
                         cancel_token,
+                        name,
                         ..
                     } = &self.mode
                     {
+                        tracing::debug!("Closing connection to '{}'", name);
                         let current_selected = *current_selected;
                         // Cancel the read task
                         cancel_token.cancel();
@@ -2467,17 +2487,63 @@ fn restore_tui() -> std::io::Result<()> {
     Ok(())
 }
 
+fn init_tracing(log_level: &str) -> Result<()> {
+    // Create a file appender that writes to termirs.log in the current directory
+    let file_appender = tracing_appender::rolling::never(".", "termirs.log");
+
+    // Create a non-blocking writer for better performance
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+    // Build the subscriber with environment filter support
+    // Priority: RUST_LOG env var > command line arg > default (info)
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level));
+
+    // Configure the formatter with timestamps and target info
+    let fmt_layer = fmt::layer()
+        .with_writer(non_blocking)
+        .with_target(true)
+        .with_thread_ids(false)
+        .with_line_number(true)
+        .with_ansi(false); // Disable ANSI colors in log file
+
+    // Initialize the global subscriber
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(fmt_layer)
+        .try_init()
+        .map_err(|e| AppError::ConfigError(format!("Failed to initialize tracing: {}", e)))?;
+
+    // Keep the guard alive for the duration of the program
+    // We intentionally leak it here since logging should last the entire program
+    std::mem::forget(_guard);
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Parse command line arguments
+    let args = Args::parse();
+
+    // Initialize tracing if logging is enabled
+    if args.log {
+        init_tracing(&args.log_level)?;
+        tracing::info!("Starting termirs SSH client v{}", env!("CARGO_PKG_VERSION"));
+        tracing::info!("Logging enabled at level: {}", args.log_level);
+    }
+
     init_panic_hook();
 
     // Setup Crossterm terminal
+    tracing::debug!("Initializing terminal backend");
     let stdout = std::io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let terminal = Terminal::new(backend)?;
 
     let mut app = App::new(terminal)?;
     app.init_terminal()?;
+    tracing::info!("Terminal initialized successfully");
 
     // async event channel
     let (tx, mut rx) = mpsc::channel::<AppEvent>(100);
@@ -2514,9 +2580,11 @@ async fn main() -> Result<()> {
     });
 
     // run app loop
+    tracing::info!("Starting main event loop");
     let res = app.run(&mut rx).await;
 
     // app drop restores terminal
+    tracing::info!("Application shutting down");
     drop(app);
 
     res

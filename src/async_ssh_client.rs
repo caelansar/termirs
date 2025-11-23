@@ -12,6 +12,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::sync::{Mutex, OnceCell, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
 
 use russh::client::{self, AuthResult, KeyboardInteractiveAuthResponse};
 use russh::keys::{self, PrivateKeyWithHashAlg, ssh_key};
@@ -152,6 +153,12 @@ impl SshSession {
         timeout: Option<Duration>,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<(client::Handle<SshClient>, Arc<OnceCell<String>>)> {
+        info!(
+            "Initiating SSH connection to {}@{}",
+            connection.username,
+            connection.host_port()
+        );
+
         let config = client::Config {
             keepalive_interval: Some(std::time::Duration::from_secs(30)),
             keepalive_max: 3,
@@ -167,7 +174,9 @@ impl SshSession {
 
         let mut session = {
             let f = async || {
+                debug!("Establishing TCP connection to {}", connection.host_port());
                 let session = client::connect(config, connection.host_port(), ssh_client).await?;
+                info!("TCP connection established to {}", connection.host_port());
                 Ok::<_, AppError>(session)
             };
             cancellable_timeout(timeout.unwrap_or(Duration::from_secs(10)), f, cancel).await?
@@ -183,11 +192,13 @@ impl SshSession {
         connection: &Connection,
     ) -> Result<()> {
         let username = &connection.username;
+        debug!("Starting authentication for user '{}'", username);
         let mut attempted = Vec::new();
         let mut auth_result = session.authenticate_none(username).await?;
 
         loop {
             if auth_result.success() {
+                info!("Authentication successful for user '{}'", username);
                 return Ok(());
             }
 
@@ -202,12 +213,17 @@ impl SshSession {
                     && Self::supports_method(*method, &connection.auth_method)
             }) else {
                 let offered = Self::format_method_list(&methods);
+                error!(
+                    "Authentication failed: no supported method available. Offered: {}",
+                    offered
+                );
                 return Err(AppError::AuthenticationError(format!(
                     "Server does not offer a supported authentication method. Offered: {offered}"
                 )));
             };
 
             attempted.push(next_method);
+            debug!("Attempting authentication with method: {:?}", next_method);
             auth_result = match next_method {
                 MethodKind::Password => {
                     let password = Self::password_from_auth(&connection.auth_method)?;
@@ -304,11 +320,18 @@ impl SshSession {
             ));
         };
 
+        debug!(
+            "Attempting public key authentication with key: {}",
+            private_key_path
+        );
         let key_path = Self::resolve_private_key_path(private_key_path)?;
         let algo = session.best_supported_rsa_hash().await?.flatten();
-        let private_key = keys::load_secret_key(key_path, passphrase.as_deref())
-            .map_err(|e| AppError::AuthenticationError(e.to_string()))?;
+        let private_key = keys::load_secret_key(&key_path, passphrase.as_deref()).map_err(|e| {
+            warn!("Failed to load private key from {:?}: {}", key_path, e);
+            AppError::AuthenticationError(e.to_string())
+        })?;
 
+        debug!("Private key loaded successfully from {:?}", key_path);
         let private_key_with_hash_alg = PrivateKeyWithHashAlg::new(Arc::new(private_key), algo);
         let result = session
             .authenticate_publickey(username, private_key_with_hash_alg)
@@ -320,6 +343,7 @@ impl SshSession {
         session: &mut client::Handle<SshClient>,
         username: &str,
     ) -> Result<AuthResult> {
+        debug!("Attempting auto-load key authentication from standard paths");
         let mut last_error = None;
 
         for key_path in STANDARD_KEY_PATHS {
@@ -330,9 +354,11 @@ impl SshSession {
 
             // Skip if key doesn't exist
             if !expanded_path.exists() {
+                debug!("Key path does not exist: {}", key_path);
                 continue;
             }
 
+            debug!("Trying key: {}", key_path);
             // Try loading key with no passphrase (skip if encrypted)
             let private_key = match keys::load_secret_key(&expanded_path, None) {
                 Ok(key) => key,
@@ -340,6 +366,7 @@ impl SshSession {
                     last_error = Some(format!(
                         "Key at {key_path} requires passphrase or is invalid"
                     ));
+                    debug!("Key at {} requires passphrase or is invalid", key_path);
                     continue;
                 }
             };
@@ -354,14 +381,22 @@ impl SshSession {
                 .authenticate_publickey(username, private_key_with_hash_alg)
                 .await
             {
-                Ok(result) if result.success() => return Ok(result),
+                Ok(result) if result.success() => {
+                    info!(
+                        "Successfully authenticated with auto-loaded key: {}",
+                        key_path
+                    );
+                    return Ok(result);
+                }
                 Ok(_) | Err(_) => {
                     last_error = Some(format!("Authentication failed with key: {key_path}"));
+                    debug!("Authentication failed with key: {}", key_path);
                     continue;
                 }
             }
         }
 
+        error!("Auto-load key authentication failed for all standard paths");
         Err(AppError::AuthenticationError(format!(
             "Auto-load key authentication failed. Tried standard key paths but none worked. {}",
             last_error.unwrap_or_default()
@@ -431,10 +466,13 @@ impl SshSession {
     pub async fn connect(connection: &Connection) -> Result<Self> {
         let (session, server_key) = Self::new_session(connection).await?;
 
+        debug!("Opening SSH session channel");
         let channel = session.channel_open_session().await?;
+        debug!("Requesting PTY");
         channel
             .request_pty(true, "xterm-256color", 80, 120, 0, 0, &[])
             .await?;
+        debug!("Requesting shell");
         channel.request_shell(true).await?;
 
         // Build a writer from the channel upfront to avoid later locking the channel to create it
@@ -442,6 +480,10 @@ impl SshSession {
 
         let (r, w) = channel.split();
 
+        info!(
+            "SSH session established successfully to {}",
+            connection.host_port()
+        );
         Ok(Self {
             session: Arc::new(tokio::sync::Mutex::new(Some(session))),
             r: Arc::new(tokio::sync::Mutex::new(r)),
@@ -515,16 +557,22 @@ impl SshSession {
     }
 
     pub async fn close(&self) -> Result<()> {
+        debug!("Closing SSH session");
         let guard = self.session.lock().await;
         if let Some(session) = guard.as_ref() {
             // If the session is already closed, return early
             if session.is_closed() {
+                debug!("SSH session already closed");
                 return Ok(());
             }
             session
                 .disconnect(Disconnect::ByApplication, "", "")
                 .await
-                .map_err(|e| AppError::SshConnectionError(format!("Failed to disconnect: {e}")))?;
+                .map_err(|e| {
+                    error!("Failed to disconnect SSH session: {}", e);
+                    AppError::SshConnectionError(format!("Failed to disconnect: {e}"))
+                })?;
+            info!("SSH session closed successfully");
         }
         Ok(())
     }
@@ -734,9 +782,15 @@ impl SshSession {
         file_index: usize,
         progress: Option<mpsc::Sender<ScpTransferProgress>>,
     ) -> Result<()> {
-        let local_file = tokio::fs::File::open(expand_tilde(local_path)).await?;
+        info!("Starting SFTP upload: {} -> {}", local_path, remote_path);
+        let local_file = tokio::fs::File::open(expand_tilde(local_path))
+            .await
+            .map_err(|e| {
+                error!("Failed to open local file '{}': {}", local_path, e);
+                e
+            })?;
 
-        Self::sftp_send_file_with_timeout(
+        let result = Self::sftp_send_file_with_timeout(
             channel,
             connection,
             local_file,
@@ -746,7 +800,17 @@ impl SshSession {
             file_index,
             progress,
         )
-        .await
+        .await;
+
+        match &result {
+            Ok(_) => info!(
+                "SFTP upload completed successfully: {} -> {}",
+                local_path, remote_path
+            ),
+            Err(e) => error!("SFTP upload failed for {}: {}", local_path, e),
+        }
+
+        result
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -971,9 +1035,15 @@ impl SshSession {
         file_index: usize,
         progress: Option<mpsc::Sender<ScpTransferProgress>>,
     ) -> Result<()> {
-        let local_file = tokio::fs::File::create(expand_tilde(local_path)).await?;
+        info!("Starting SFTP download: {} -> {}", remote_path, local_path);
+        let local_file = tokio::fs::File::create(expand_tilde(local_path))
+            .await
+            .map_err(|e| {
+                error!("Failed to create local file '{}': {}", local_path, e);
+                e
+            })?;
 
-        Self::sftp_receive_file_with_timeout(
+        let result = Self::sftp_receive_file_with_timeout(
             channel,
             connection,
             remote_path,
@@ -983,7 +1053,17 @@ impl SshSession {
             file_index,
             progress,
         )
-        .await
+        .await;
+
+        match &result {
+            Ok(_) => info!(
+                "SFTP download completed successfully: {} -> {}",
+                remote_path, local_path
+            ),
+            Err(e) => error!("SFTP download failed for {}: {}", remote_path, e),
+        }
+
+        result
     }
 
     /// Start a port forwarding task and return the handle and cancellation token
@@ -994,6 +1074,10 @@ impl SshSession {
         service_host: &str,
         service_port: u16,
     ) -> Result<(JoinHandle<()>, CancellationToken)> {
+        info!(
+            "Setting up port forwarding: {}:{} -> {}:{}",
+            local_addr, local_port, service_host, service_port
+        );
         let (session, _) = Self::new_session(connection).await?;
         let cancel_token = CancellationToken::new();
         let cancel_token_for_task = cancel_token.clone();
@@ -1003,8 +1087,18 @@ impl SshSession {
         let connection = connection.clone();
 
         let local_listener = match TcpListener::bind((local_addr.as_str(), local_port)).await {
-            Ok(listener) => listener,
+            Ok(listener) => {
+                info!(
+                    "Port forwarding listener bound to {}:{}",
+                    local_addr, local_port
+                );
+                listener
+            }
             Err(e) => {
+                error!(
+                    "Failed to bind port forwarding listener to {}:{}: {}",
+                    local_addr, local_port, e
+                );
                 return Err(AppError::PortForwardingError(format!(
                     "Failed to bind to {local_addr}:{local_port}: {e}"
                 )));
@@ -1032,21 +1126,26 @@ impl SshSession {
                                         )
                                         .await
                                     {
-                                        Ok(channel) => break Some(channel),
+                                        Ok(channel) => {
+                                            debug!("Port forwarding channel opened successfully");
+                                            break Some(channel);
+                                        }
                                         Err(e) => {
-                                            eprintln!("Failed to open SSH forwarding channel: {e}");
+                                            warn!("Failed to open SSH forwarding channel: {}", e);
 
                                             let should_recreate = Self::is_port_forwarding_session_error(&session, &e);
 
                                             if should_recreate && attempts < 3 {
+                                                debug!("Attempting to recreate SSH session for port forwarding (attempt {})", attempts + 1);
                                                 match Self::new_session(&connection).await {
                                                     Ok((new_session, _)) => {
+                                                        info!("SSH session recreated successfully for port forwarding");
                                                         session = new_session;
                                                         attempts += 1;
                                                         continue;
                                                     }
                                                     Err(new_err) => {
-                                                        eprintln!("Failed to recreate SSH session for port forwarding: {new_err}");
+                                                        error!("Failed to recreate SSH session for port forwarding: {}", new_err);
                                                     }
                                                 }
                                             }

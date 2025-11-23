@@ -2,6 +2,7 @@ use std::io::Write;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::Backend;
+use tracing::{debug, info};
 
 use super::KeyFlow;
 use crate::error::AppError;
@@ -19,6 +20,7 @@ pub async fn handle_scp_progress_key<B: Backend + Write>(
     {
         match key.code {
             KeyCode::Enter if progress.completed => {
+                info!("SCP transfer completed, returning to file explorer");
                 let mode = return_mode.clone_without_channel();
                 let results = progress.completion_results.clone();
                 let last_success = progress.last_success_destination.clone();
@@ -27,11 +29,13 @@ pub async fn handle_scp_progress_key<B: Backend + Write>(
             }
             KeyCode::Esc => {
                 if progress.completed {
+                    debug!("Closing completed SCP transfer dialog");
                     let mode = return_mode.clone_without_channel();
                     let results = progress.completion_results.clone();
                     let last_success = progress.last_success_destination.clone();
                     restore_after_scp_progress(app, mode, results, last_success).await;
                 } else {
+                    info!("SCP transfer cancelled by user");
                     let mode = return_mode.clone_without_channel();
                     app.info = Some("SCP transfer cancelled".to_string());
                     restore_after_scp_progress(app, mode, None, None).await;

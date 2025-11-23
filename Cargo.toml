@@ -32,6 +32,10 @@ bytes = "1.10.1"
 ratatui-explorer = { git = "https://github.com/caelansar/ratatui-explorer.git" }
 ssh2-config = { git = "https://github.com/caelansar/ssh2-config.git", branch = "develop" }
 arboard = "3"
+clap = { version = "4.5", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "time"] }
+tracing-appender = "0.2"
 
 
 [dev-dependencies]

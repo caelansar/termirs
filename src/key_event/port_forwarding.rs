@@ -2,6 +2,7 @@ use std::io::Write;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::Backend;
+use tracing::{info, error};
 
 use super::KeyFlow;
 use crate::config::manager::{PortForward, PortForwardStatus};
@@ -118,6 +119,7 @@ pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
                         match pf_mut.status {
                             PortForwardStatus::Stopped => {
                                 // Start the port forward
+                                info!("Starting port forward: {}", pf_name);
                                 match app
                                     .port_forwarding_runtime
                                     .start_port_forward(pf_mut, &connection)
@@ -125,6 +127,7 @@ pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
                                 {
                                     Ok(_) => {
                                         pf_mut.status = PortForwardStatus::Running;
+                                        info!("Port forward '{}' started successfully", pf_name);
                                         app.info = Some(format!(
                                             "Port forward '{pf_name}' started successfully"
                                         ));
@@ -132,6 +135,7 @@ pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
                                     }
                                     Err(e) => {
                                         pf_mut.status = PortForwardStatus::Failed(e.to_string());
+                                        error!("Failed to start port forward '{}': {}", pf_name, e);
                                         app.error = Some(AppError::ConfigError(format!(
                                             "Failed to start port forward '{pf_name}': {e}"
                                         )));
@@ -141,9 +145,11 @@ pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
                             }
                             PortForwardStatus::Running => {
                                 // Stop the port forward
+                                info!("Stopping port forward: {}", pf_name);
                                 match app.port_forwarding_runtime.stop_port_forward(&pf_id).await {
                                     Ok(_) => {
                                         pf_mut.status = PortForwardStatus::Stopped;
+                                        info!("Port forward '{}' stopped successfully", pf_name);
                                         app.info = Some(format!(
                                             "Port forward '{pf_name}' stopped successfully"
                                         ));
@@ -151,6 +157,7 @@ pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
                                     }
                                     Err(e) => {
                                         pf_mut.status = PortForwardStatus::Failed(e.to_string());
+                                        error!("Failed to stop port forward '{}': {}", pf_name, e);
                                         app.error = Some(AppError::ConfigError(format!(
                                             "Failed to stop port forward '{pf_name}': {e}"
                                         )));
@@ -160,6 +167,7 @@ pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
                             }
                             PortForwardStatus::Failed(_) => {
                                 // Try to start again after failure
+                                info!("Restarting failed port forward: {}", pf_name);
                                 match app
                                     .port_forwarding_runtime
                                     .start_port_forward(pf_mut, &connection)
@@ -167,6 +175,7 @@ pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
                                 {
                                     Ok(_) => {
                                         pf_mut.status = PortForwardStatus::Running;
+                                        info!("Port forward '{}' restarted successfully", pf_name);
                                         app.info = Some(format!(
                                             "Port forward '{pf_name}' restarted successfully"
                                         ));
@@ -174,6 +183,7 @@ pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
                                     }
                                     Err(e) => {
                                         pf_mut.status = PortForwardStatus::Failed(e.to_string());
+                                        error!("Failed to restart port forward '{}': {}", pf_name, e);
                                         app.error = Some(AppError::ConfigError(format!(
                                             "Failed to restart port forward '{pf_name}': {e}"
                                         )));
