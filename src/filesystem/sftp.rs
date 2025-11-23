@@ -4,6 +4,7 @@ use ratatui_explorer::{FileEntry, FileSystem};
 use russh_sftp::client::SftpSession;
 use std::io::{Error, Result};
 use std::sync::Arc;
+use tracing::{debug, error};
 
 /// A filesystem implementation for SFTP operations using `russh_sftp`.
 #[derive(Clone)]
@@ -20,6 +21,7 @@ impl SftpFileSystem {
 
 impl FileSystem for SftpFileSystem {
     async fn read_dir(&self, path: &str) -> Result<Vec<FileEntry>> {
+        debug!("SFTP read_dir: {}", path);
         let mut entries = Vec::new();
 
         // Normalize the path (remove trailing slashes, handle empty path and root)
@@ -40,6 +42,7 @@ impl FileSystem for SftpFileSystem {
 
         // Read directory from SFTP
         let read_dir = self.session.read_dir(&normalized_path).await.map_err(|e| {
+            error!("SFTP read_dir failed for '{}': {}", normalized_path, e);
             Error::other(format!("SFTP read_dir failed for '{normalized_path}': {e}"))
         })?;
 
@@ -94,6 +97,7 @@ impl FileSystem for SftpFileSystem {
             _ => a.name.cmp(&b.name),
         });
 
+        debug!("SFTP read_dir completed for '{}': {} entries", normalized_path, entries.len());
         Ok(entries)
     }
 
@@ -105,11 +109,15 @@ impl FileSystem for SftpFileSystem {
     }
 
     async fn is_dir(&self, path: &str) -> Result<bool> {
+        debug!("SFTP is_dir check: {}", path);
         let metadata = self
             .session
             .metadata(path)
             .await
-            .map_err(|e| Error::other(format!("SFTP metadata failed: {e}")))?;
+            .map_err(|e| {
+                debug!("SFTP metadata failed for '{}': {}", path, e);
+                Error::other(format!("SFTP metadata failed: {e}"))
+            })?;
 
         Ok(metadata.is_dir())
     }
@@ -146,9 +154,15 @@ impl FileSystem for SftpFileSystem {
     }
 
     async fn delete(&self, path: &str) -> Result<()> {
+        debug!("SFTP deleting file: {}", path);
         self.session
             .remove_file(path)
             .await
-            .map_err(|e| Error::other(format!("SFTP delete failed: {e}")))
+            .map_err(|e| {
+                error!("SFTP delete failed for '{}': {}", path, e);
+                Error::other(format!("SFTP delete failed: {e}"))
+            })?;
+        debug!("SFTP file deleted successfully: {}", path);
+        Ok(())
     }
 }

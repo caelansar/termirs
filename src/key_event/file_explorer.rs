@@ -4,6 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use futures::future::join_all;
 use ratatui::backend::Backend;
 use std::io::Write;
+use tracing::{debug, info, error};
 
 use super::KeyFlow;
 use crate::{
@@ -29,11 +30,14 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
             match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
                     // Perform the deletion
+                    debug!("User confirmed file deletion");
                     let result = match delete_pane {
                         ActivePane::Left => {
+                            info!("Deleting file from left pane");
                             left_explorer.handle(ratatui_explorer::Input::Delete).await
                         }
                         ActivePane::Right => {
+                            info!("Deleting file from right pane");
                             remote_explorer
                                 .handle(ratatui_explorer::Input::Delete)
                                 .await
@@ -41,9 +45,12 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                     };
 
                     if let Err(e) = result {
+                        error!("File deletion failed: {}", e);
                         app.error = Some(crate::error::AppError::SftpError(format!(
                             "Delete error: {e}"
                         )));
+                    } else {
+                        info!("File deletion completed successfully");
                     }
 
                     // Close the confirmation dialog
@@ -489,6 +496,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                         }
                     }
 
+                    info!("File added to copy buffer: {} (direction: {:?})", source_path, direction);
                     copy_buffer.push(CopyOperation {
                         source_path,
                         source_name: current_file.name().to_string(),
@@ -518,6 +526,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                     return KeyFlow::Continue;
                 }
 
+                info!("Initiating file paste operation with {} files", copy_buffer.len());
                 let dest_dir = match active_pane {
                     ActivePane::Left => left_explorer.cwd().to_string_lossy().to_string(),
                     ActivePane::Right => remote_explorer.cwd().to_string_lossy().to_string(),
@@ -531,6 +540,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                 );
 
                 if same_pane {
+                    debug!("Cannot paste in same pane");
                     app.info =
                         Some("Cannot paste in the same pane - press Tab to switch".to_string());
                     app.mark_redraw();

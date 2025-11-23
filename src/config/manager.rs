@@ -6,6 +6,7 @@ use std::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use tracing::{debug, info, warn, error};
 
 use crate::error::{AppError, Result};
 
@@ -314,8 +315,10 @@ impl ConfigManager {
     /// Create a new configuration manager
     pub fn new() -> Result<Self> {
         let config_path = Self::get_config_path()?;
+        info!("Loading configuration from: {:?}", config_path);
         let mut config = Self::load_config_from_path(&config_path)?;
         Self::normalize_settings(&mut config);
+        debug!("Configuration loaded with {} connections", config.connections.len());
 
         Ok(Self {
             config_path,
@@ -361,24 +364,40 @@ impl ConfigManager {
     fn load_config_from_path(config_path: &Path) -> Result<Config> {
         if !config_path.exists() {
             // Return default config if file doesn't exist
+            debug!("Config file does not exist, using defaults: {:?}", config_path);
             return Ok(Config::default());
         }
 
+        debug!("Reading config file from: {:?}", config_path);
         let config_content = fs::read_to_string(config_path)
-            .map_err(|e| AppError::ConfigError(format!("Failed to read config file: {e}")))?;
+            .map_err(|e| {
+                error!("Failed to read config file: {}", e);
+                AppError::ConfigError(format!("Failed to read config file: {e}"))
+            })?;
 
         let config: Config = toml::from_str(&config_content)
-            .map_err(|e| AppError::ConfigError(format!("Failed to parse config file: {e}")))?;
+            .map_err(|e| {
+                error!("Failed to parse config file: {}", e);
+                AppError::ConfigError(format!("Failed to parse config file: {e}"))
+            })?;
 
         Ok(config)
     }
 
     /// Persist current config to disk
     pub fn save(&self) -> Result<()> {
+        debug!("Saving configuration to: {:?}", self.config_path);
         let toml = toml::to_string_pretty(&self.config)
-            .map_err(|e| AppError::ConfigError(format!("Failed to serialize config: {e}")))?;
+            .map_err(|e| {
+                error!("Failed to serialize config: {}", e);
+                AppError::ConfigError(format!("Failed to serialize config: {e}"))
+            })?;
         fs::write(&self.config_path, toml)
-            .map_err(|e| AppError::ConfigError(format!("Failed to write config: {e}")))?;
+            .map_err(|e| {
+                error!("Failed to write config file: {}", e);
+                AppError::ConfigError(format!("Failed to write config: {e}"))
+            })?;
+        info!("Configuration saved successfully");
         Ok(())
     }
 
@@ -406,6 +425,7 @@ impl ConfigManager {
         // Validate the connection before adding
         connection.validate()?;
 
+        info!("Adding new connection: {}", connection.display_name);
         // Best-effort dedup: same host/port/username
         if !self.config.connections.iter().any(|c| {
             c.host == connection.host
@@ -415,6 +435,7 @@ impl ConfigManager {
         }) {
             self.config.connections.push(connection);
         } else {
+            warn!("Connection already exists, refusing to add duplicate");
             return Err(AppError::ConfigError(
                 "Connection already exists".to_string(),
             ));
@@ -427,6 +448,7 @@ impl ConfigManager {
         // Validate the connection before updating
         connection.validate()?;
 
+        info!("Updating connection: {}", connection.display_name);
         // Find and update the connection
         if let Some(existing_conn) = self
             .config
