@@ -2,7 +2,7 @@ use std::io::Write;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::Backend;
-use tracing::{info, error};
+use tracing::{error, info};
 
 use super::KeyFlow;
 use crate::config::manager::{PortForward, PortForwardStatus};
@@ -183,7 +183,10 @@ pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
                                     }
                                     Err(e) => {
                                         pf_mut.status = PortForwardStatus::Failed(e.to_string());
-                                        error!("Failed to restart port forward '{}': {}", pf_name, e);
+                                        error!(
+                                            "Failed to restart port forward '{}': {}",
+                                            pf_name, e
+                                        );
                                         app.error = Some(AppError::ConfigError(format!(
                                             "Failed to restart port forward '{pf_name}': {e}"
                                         )));
@@ -215,19 +218,146 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
     app: &mut App<B>,
     key: KeyEvent,
 ) -> KeyFlow {
+    use crate::config::manager::PortForwardType;
+    use crate::ui::port_forwarding::FocusField;
+
     match key.code {
-        KeyCode::Tab | KeyCode::Down => {
+        KeyCode::Tab => {
             if let AppMode::PortForwardingFormNew { form, .. } = &mut app.mode {
                 form.next();
             } else if let AppMode::PortForwardingFormEdit { form, .. } = &mut app.mode {
                 form.next();
             }
         }
-        KeyCode::BackTab | KeyCode::Up => {
+        KeyCode::BackTab => {
             if let AppMode::PortForwardingFormNew { form, .. } = &mut app.mode {
                 form.prev();
             } else if let AppMode::PortForwardingFormEdit { form, .. } = &mut app.mode {
                 form.prev();
+            }
+        }
+        KeyCode::Down => {
+            // Check if ForwardType is focused
+            let is_forward_type_focused =
+                if let AppMode::PortForwardingFormNew { form, .. } = &app.mode {
+                    form.focus == FocusField::ForwardType
+                } else if let AppMode::PortForwardingFormEdit { form, .. } = &app.mode {
+                    form.focus == FocusField::ForwardType
+                } else {
+                    false
+                };
+
+            if is_forward_type_focused {
+                // Cycle forward through types
+                if let AppMode::PortForwardingFormNew { form, .. } = &mut app.mode {
+                    form.forward_type = match form.forward_type {
+                        PortForwardType::Local => PortForwardType::Remote,
+                        PortForwardType::Remote => PortForwardType::Dynamic,
+                        PortForwardType::Dynamic => PortForwardType::Local,
+                    };
+                } else if let AppMode::PortForwardingFormEdit { form, .. } = &mut app.mode {
+                    form.forward_type = match form.forward_type {
+                        PortForwardType::Local => PortForwardType::Remote,
+                        PortForwardType::Remote => PortForwardType::Dynamic,
+                        PortForwardType::Dynamic => PortForwardType::Local,
+                    };
+                }
+            } else {
+                // Normal navigation
+                if let AppMode::PortForwardingFormNew { form, .. } = &mut app.mode {
+                    form.next();
+                } else if let AppMode::PortForwardingFormEdit { form, .. } = &mut app.mode {
+                    form.next();
+                }
+            }
+        }
+        KeyCode::Up => {
+            // Check if ForwardType is focused
+            let is_forward_type_focused =
+                if let AppMode::PortForwardingFormNew { form, .. } = &app.mode {
+                    form.focus == FocusField::ForwardType
+                } else if let AppMode::PortForwardingFormEdit { form, .. } = &app.mode {
+                    form.focus == FocusField::ForwardType
+                } else {
+                    false
+                };
+
+            if is_forward_type_focused {
+                // Cycle backward through types
+                if let AppMode::PortForwardingFormNew { form, .. } = &mut app.mode {
+                    form.forward_type = match form.forward_type {
+                        PortForwardType::Local => PortForwardType::Dynamic,
+                        PortForwardType::Remote => PortForwardType::Local,
+                        PortForwardType::Dynamic => PortForwardType::Remote,
+                    };
+                } else if let AppMode::PortForwardingFormEdit { form, .. } = &mut app.mode {
+                    form.forward_type = match form.forward_type {
+                        PortForwardType::Local => PortForwardType::Dynamic,
+                        PortForwardType::Remote => PortForwardType::Local,
+                        PortForwardType::Dynamic => PortForwardType::Remote,
+                    };
+                }
+            } else {
+                // Normal navigation
+                if let AppMode::PortForwardingFormNew { form, .. } = &mut app.mode {
+                    form.prev();
+                } else if let AppMode::PortForwardingFormEdit { form, .. } = &mut app.mode {
+                    form.prev();
+                }
+            }
+        }
+        KeyCode::Left => {
+            // Check if ForwardType is focused - cycle backward
+            let is_forward_type_focused =
+                if let AppMode::PortForwardingFormNew { form, .. } = &app.mode {
+                    form.focus == FocusField::ForwardType
+                } else if let AppMode::PortForwardingFormEdit { form, .. } = &app.mode {
+                    form.focus == FocusField::ForwardType
+                } else {
+                    false
+                };
+
+            if is_forward_type_focused {
+                if let AppMode::PortForwardingFormNew { form, .. } = &mut app.mode {
+                    form.forward_type = match form.forward_type {
+                        PortForwardType::Local => PortForwardType::Dynamic,
+                        PortForwardType::Remote => PortForwardType::Local,
+                        PortForwardType::Dynamic => PortForwardType::Remote,
+                    };
+                } else if let AppMode::PortForwardingFormEdit { form, .. } = &mut app.mode {
+                    form.forward_type = match form.forward_type {
+                        PortForwardType::Local => PortForwardType::Dynamic,
+                        PortForwardType::Remote => PortForwardType::Local,
+                        PortForwardType::Dynamic => PortForwardType::Remote,
+                    };
+                }
+            }
+        }
+        KeyCode::Right => {
+            // Check if ForwardType is focused - cycle forward
+            let is_forward_type_focused =
+                if let AppMode::PortForwardingFormNew { form, .. } = &app.mode {
+                    form.focus == FocusField::ForwardType
+                } else if let AppMode::PortForwardingFormEdit { form, .. } = &app.mode {
+                    form.focus == FocusField::ForwardType
+                } else {
+                    false
+                };
+
+            if is_forward_type_focused {
+                if let AppMode::PortForwardingFormNew { form, .. } = &mut app.mode {
+                    form.forward_type = match form.forward_type {
+                        PortForwardType::Local => PortForwardType::Remote,
+                        PortForwardType::Remote => PortForwardType::Dynamic,
+                        PortForwardType::Dynamic => PortForwardType::Local,
+                    };
+                } else if let AppMode::PortForwardingFormEdit { form, .. } = &mut app.mode {
+                    form.forward_type = match form.forward_type {
+                        PortForwardType::Local => PortForwardType::Remote,
+                        PortForwardType::Remote => PortForwardType::Dynamic,
+                        PortForwardType::Dynamic => PortForwardType::Local,
+                    };
+                }
             }
         }
         KeyCode::Enter => {
@@ -310,7 +440,14 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
                 ..
             } = &mut app.mode
             {
-                if form.focus == crate::ui::port_forwarding::FocusField::Connection {
+                if form.focus == FocusField::ForwardType {
+                    // Cycle through forward types with Space
+                    form.forward_type = match form.forward_type {
+                        PortForwardType::Local => PortForwardType::Remote,
+                        PortForwardType::Remote => PortForwardType::Dynamic,
+                        PortForwardType::Dynamic => PortForwardType::Local,
+                    };
+                } else if form.focus == FocusField::Connection {
                     if app.config.connections().is_empty() {
                         app.error = Some(AppError::ConfigError(
                             "No connections available".to_string(),
@@ -328,7 +465,7 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
                         connection_search_query.clear();
                     }
                 } else {
-                    // If not focused on Connection field, pass the key to text input
+                    // If not focused on Connection or ForwardType field, pass the key to text input
                     if let Some(textarea) = form.focused_textarea_mut() {
                         textarea.input(key);
                     }
@@ -342,7 +479,14 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
                 ..
             } = &mut app.mode
             {
-                if form.focus == crate::ui::port_forwarding::FocusField::Connection {
+                if form.focus == FocusField::ForwardType {
+                    // Cycle through forward types with Space
+                    form.forward_type = match form.forward_type {
+                        PortForwardType::Local => PortForwardType::Remote,
+                        PortForwardType::Remote => PortForwardType::Dynamic,
+                        PortForwardType::Dynamic => PortForwardType::Local,
+                    };
+                } else if form.focus == FocusField::Connection {
                     if app.config.connections().is_empty() {
                         app.error = Some(AppError::ConfigError(
                             "No connections available".to_string(),
@@ -360,7 +504,7 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
                         connection_search_query.clear();
                     }
                 } else {
-                    // If not focused on Connection field, pass the key to text input
+                    // If not focused on Connection or ForwardType field, pass the key to text input
                     if let Some(textarea) = form.focused_textarea_mut() {
                         textarea.input(key);
                     }
@@ -562,10 +706,17 @@ async fn save_port_forward<B: Backend + Write>(
         .parse::<u16>()
         .map_err(|_| crate::error::AppError::ValidationError("Invalid local port".to_string()))?;
 
-    let service_port = form
-        .get_service_port_value()
-        .parse::<u16>()
-        .map_err(|_| crate::error::AppError::ValidationError("Invalid service port".to_string()))?;
+    // Parse service_port only if needed (not for Dynamic)
+    let service_port = if matches!(
+        form.forward_type,
+        crate::config::manager::PortForwardType::Dynamic
+    ) {
+        0 // Default value for Dynamic, not used
+    } else {
+        form.get_service_port_value().parse::<u16>().map_err(|_| {
+            crate::error::AppError::ValidationError("Invalid service port".to_string())
+        })?
+    };
 
     let display_name = if form.get_display_name_value().trim().is_empty() {
         None
@@ -573,14 +724,30 @@ async fn save_port_forward<B: Backend + Write>(
         Some(form.get_display_name_value().to_string())
     };
 
+    let remote_bind_addr = if matches!(
+        form.forward_type,
+        crate::config::manager::PortForwardType::Remote
+    ) {
+        let addr = form.get_remote_bind_addr_value().trim();
+        if addr.is_empty() {
+            None
+        } else {
+            Some(addr.to_string())
+        }
+    } else {
+        None
+    };
+
     if is_new {
         // Create a new port forward with a new ID
         let mut port_forward = PortForward::new(
             form.connection_id.clone(),
+            form.forward_type,
             form.get_local_addr_value().to_string(),
             local_port,
             form.get_service_host_value().to_string(),
             service_port,
+            remote_bind_addr,
             display_name,
         );
         // new port forward will be immediately started, so we set the status to running here
@@ -610,10 +777,12 @@ async fn save_port_forward<B: Backend + Write>(
         let port_forward = PortForward {
             id,
             connection_id: form.connection_id.clone(),
+            forward_type: form.forward_type,
             local_addr: form.get_local_addr_value().to_string(),
             local_port,
             service_host: form.get_service_host_value().to_string(),
             service_port,
+            remote_bind_addr,
             display_name,
             created_at: existing.created_at,
             status: existing.status,

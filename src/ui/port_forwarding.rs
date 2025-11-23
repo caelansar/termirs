@@ -8,15 +8,17 @@ use ratatui::widgets::{
 };
 use tui_textarea::TextArea;
 
-use crate::config::manager::{Connection, PortForward, PortForwardStatus};
+use crate::config::manager::{Connection, PortForward, PortForwardStatus, PortForwardType};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum FocusField {
     Connection,
+    ForwardType,
     LocalAddr,
     LocalPort,
     ServiceHost,
     ServicePort,
+    RemoteBind,
     DisplayName,
 }
 
@@ -24,10 +26,12 @@ pub enum FocusField {
 pub struct PortForwardingForm {
     pub id: Option<String>, // Store the ID when editing
     pub connection_id: String,
+    pub forward_type: PortForwardType,
     pub local_addr: TextArea<'static>,
     pub local_port: TextArea<'static>,
     pub service_host: TextArea<'static>,
     pub service_port: TextArea<'static>,
+    pub remote_bind_addr: TextArea<'static>,
     pub display_name: TextArea<'static>,
     pub focus: FocusField,
     pub error: Option<String>,
@@ -51,6 +55,10 @@ impl PortForwardingForm {
         service_port.set_placeholder_text("5432");
         service_port.set_cursor_line_style(Style::default());
 
+        let mut remote_bind_addr = TextArea::default();
+        remote_bind_addr.set_placeholder_text("0.0.0.0 or 127.0.0.1");
+        remote_bind_addr.set_cursor_line_style(Style::default());
+
         let mut display_name = TextArea::default();
         display_name.set_placeholder_text("Enter display name (optional)");
         display_name.set_cursor_line_style(Style::default());
@@ -58,45 +66,91 @@ impl PortForwardingForm {
         Self {
             id: None, // No ID for new port forwards
             connection_id: String::new(),
+            forward_type: PortForwardType::Local,
             local_addr,
             local_port,
             service_host,
             service_port,
+            remote_bind_addr,
             display_name,
-            focus: FocusField::Connection,
+            focus: FocusField::ForwardType,
             error: None,
         }
     }
 
     pub fn next(&mut self) {
-        self.focus = match self.focus {
-            FocusField::Connection => FocusField::LocalAddr,
-            FocusField::LocalAddr => FocusField::LocalPort,
-            FocusField::LocalPort => FocusField::ServiceHost,
-            FocusField::ServiceHost => FocusField::ServicePort,
-            FocusField::ServicePort => FocusField::DisplayName,
-            FocusField::DisplayName => FocusField::Connection,
+        use PortForwardType::*;
+        self.focus = match (self.focus, self.forward_type) {
+            // Start with ForwardType, then Connection
+            (FocusField::ForwardType, _) => FocusField::Connection,
+            (FocusField::Connection, Local) => FocusField::LocalAddr,
+            (FocusField::Connection, Remote) => FocusField::RemoteBind,
+            (FocusField::Connection, Dynamic) => FocusField::LocalAddr,
+
+            // Local forwarding: ForwardType → Connection → LocalAddr → LocalPort → ServiceHost → ServicePort → DisplayName
+            (FocusField::LocalAddr, Local) => FocusField::LocalPort,
+            (FocusField::LocalPort, Local) => FocusField::ServiceHost,
+            (FocusField::ServiceHost, Local) => FocusField::ServicePort,
+            (FocusField::ServicePort, Local) => FocusField::DisplayName,
+
+            // Remote forwarding: ForwardType → Connection → RemoteBind → LocalPort → ServiceHost → ServicePort → DisplayName
+            (FocusField::RemoteBind, Remote) => FocusField::LocalPort,
+            (FocusField::LocalPort, Remote) => FocusField::ServiceHost,
+            (FocusField::ServiceHost, Remote) => FocusField::ServicePort,
+            (FocusField::ServicePort, Remote) => FocusField::DisplayName,
+
+            // Dynamic forwarding: ForwardType → Connection → LocalAddr → LocalPort → DisplayName
+            (FocusField::LocalAddr, Dynamic) => FocusField::LocalPort,
+            (FocusField::LocalPort, Dynamic) => FocusField::DisplayName,
+
+            // Back to ForwardType from DisplayName
+            (FocusField::DisplayName, _) => FocusField::ForwardType,
+
+            // Fallback for unused combinations
+            _ => FocusField::ForwardType,
         };
     }
 
     pub fn prev(&mut self) {
-        self.focus = match self.focus {
-            FocusField::Connection => FocusField::DisplayName,
-            FocusField::LocalAddr => FocusField::Connection,
-            FocusField::LocalPort => FocusField::LocalAddr,
-            FocusField::ServiceHost => FocusField::LocalPort,
-            FocusField::ServicePort => FocusField::ServiceHost,
-            FocusField::DisplayName => FocusField::ServicePort,
+        use PortForwardType::*;
+        self.focus = match (self.focus, self.forward_type) {
+            // ForwardType is first, Connection is second
+            (FocusField::ForwardType, _) => FocusField::DisplayName,
+            (FocusField::Connection, _) => FocusField::ForwardType,
+
+            // Local forwarding (reverse order)
+            (FocusField::LocalAddr, Local) => FocusField::Connection,
+            (FocusField::LocalPort, Local) => FocusField::LocalAddr,
+            (FocusField::ServiceHost, Local) => FocusField::LocalPort,
+            (FocusField::ServicePort, Local) => FocusField::ServiceHost,
+            (FocusField::DisplayName, Local) => FocusField::ServicePort,
+
+            // Remote forwarding (reverse order)
+            (FocusField::RemoteBind, Remote) => FocusField::Connection,
+            (FocusField::LocalPort, Remote) => FocusField::RemoteBind,
+            (FocusField::ServiceHost, Remote) => FocusField::LocalPort,
+            (FocusField::ServicePort, Remote) => FocusField::ServiceHost,
+            (FocusField::DisplayName, Remote) => FocusField::ServicePort,
+
+            // Dynamic forwarding (reverse order)
+            (FocusField::LocalAddr, Dynamic) => FocusField::Connection,
+            (FocusField::LocalPort, Dynamic) => FocusField::LocalAddr,
+            (FocusField::DisplayName, Dynamic) => FocusField::LocalPort,
+
+            // Fallback
+            _ => FocusField::ForwardType,
         };
     }
 
     pub fn focused_textarea_mut(&mut self) -> Option<&mut TextArea<'static>> {
         match self.focus {
-            FocusField::Connection => None, // Handled by dropdown
+            FocusField::Connection => None,  // Handled by dropdown
+            FocusField::ForwardType => None, // Handled by type selector
             FocusField::LocalAddr => Some(&mut self.local_addr),
             FocusField::LocalPort => Some(&mut self.local_port),
             FocusField::ServiceHost => Some(&mut self.service_host),
             FocusField::ServicePort => Some(&mut self.service_port),
+            FocusField::RemoteBind => Some(&mut self.remote_bind_addr),
             FocusField::DisplayName => Some(&mut self.display_name),
         }
     }
@@ -121,6 +175,10 @@ impl PortForwardingForm {
         &self.display_name.lines()[0]
     }
 
+    pub fn get_remote_bind_addr_value(&self) -> &str {
+        &self.remote_bind_addr.lines()[0]
+    }
+
     pub fn validate(&self, connections: &[Connection]) -> Result<(), String> {
         if self.connection_id.trim().is_empty() {
             return Err("Connection is required".into());
@@ -130,28 +188,82 @@ impl PortForwardingForm {
             return Err("Selected connection not found".into());
         }
 
-        if self.get_local_addr_value().trim().is_empty() {
-            return Err("Local address is required".into());
-        }
+        // Validate based on forward type
+        match self.forward_type {
+            PortForwardType::Local => {
+                if self.get_local_addr_value().trim().is_empty() {
+                    return Err("Local address is required".into());
+                }
 
-        if self.get_local_port_value().trim().is_empty() {
-            return Err("Local port is required".into());
-        }
+                if self.get_local_port_value().trim().is_empty() {
+                    return Err("Local port is required".into());
+                }
 
-        if self.get_local_port_value().parse::<u16>().is_err() {
-            return Err("Local port must be a number".into());
-        }
+                if self.get_local_port_value().parse::<u16>().is_err() {
+                    return Err("Local port must be a number".into());
+                }
 
-        if self.get_service_host_value().trim().is_empty() {
-            return Err("Service host is required".into());
-        }
+                if self.get_service_host_value().trim().is_empty() {
+                    return Err("Service host is required".into());
+                }
 
-        if self.get_service_port_value().trim().is_empty() {
-            return Err("Service port is required".into());
-        }
+                if self.get_service_port_value().trim().is_empty() {
+                    return Err("Service port is required".into());
+                }
 
-        if self.get_service_port_value().parse::<u16>().is_err() {
-            return Err("Service port must be a number".into());
+                if self.get_service_port_value().parse::<u16>().is_err() {
+                    return Err("Service port must be a number".into());
+                }
+            }
+            PortForwardType::Remote => {
+                if self.get_local_port_value().trim().is_empty() {
+                    return Err("Remote port is required".into());
+                }
+
+                if self.get_local_port_value().parse::<u16>().is_err() {
+                    return Err("Remote port must be a number".into());
+                }
+
+                if self.get_service_host_value().trim().is_empty() {
+                    return Err("Local service host is required".into());
+                }
+
+                if self.get_service_port_value().trim().is_empty() {
+                    return Err("Local service port is required".into());
+                }
+
+                if self.get_service_port_value().parse::<u16>().is_err() {
+                    return Err("Local service port must be a number".into());
+                }
+
+                // remote_bind_addr is optional, but validate if provided
+                let remote_bind = self.get_remote_bind_addr_value().trim();
+                if !remote_bind.is_empty() {
+                    // Basic validation - could be more sophisticated
+                    if remote_bind != "0.0.0.0"
+                        && remote_bind != "127.0.0.1"
+                        && !remote_bind.contains('.')
+                    {
+                        return Err(
+                            "Remote bind address must be a valid IP (e.g., 0.0.0.0 or 127.0.0.1)"
+                                .into(),
+                        );
+                    }
+                }
+            }
+            PortForwardType::Dynamic => {
+                if self.get_local_addr_value().trim().is_empty() {
+                    return Err("Local address is required".into());
+                }
+
+                if self.get_local_port_value().trim().is_empty() {
+                    return Err("Local port is required".into());
+                }
+
+                if self.get_local_port_value().parse::<u16>().is_err() {
+                    return Err("Local port must be a number".into());
+                }
+            }
         }
 
         Ok(())
@@ -178,6 +290,13 @@ impl PortForwardingForm {
         service_port.set_cursor_line_style(Style::default());
         service_port.insert_str(pf.service_port.to_string());
 
+        let mut remote_bind_addr = TextArea::default();
+        remote_bind_addr.set_placeholder_text("0.0.0.0 or 127.0.0.1");
+        remote_bind_addr.set_cursor_line_style(Style::default());
+        if let Some(addr) = &pf.remote_bind_addr {
+            remote_bind_addr.insert_str(addr);
+        }
+
         let mut display_name = TextArea::default();
         display_name.set_placeholder_text("Enter display name (optional)");
         display_name.set_cursor_line_style(Style::default());
@@ -188,12 +307,14 @@ impl PortForwardingForm {
         Self {
             id: Some(pf.id.clone()), // Preserve the ID when editing
             connection_id: pf.connection_id.clone(),
+            forward_type: pf.forward_type.clone(),
             local_addr,
             local_port,
             service_host,
             service_port,
+            remote_bind_addr,
             display_name,
-            focus: FocusField::Connection,
+            focus: FocusField::ForwardType,
             error: None,
         }
     }
@@ -202,6 +323,7 @@ impl PortForwardingForm {
 #[derive(Clone, Debug)]
 pub struct PortForwardingListItem {
     pub status_icon: String,
+    pub forward_type: String,
     pub display_name: String,
     pub connection_name: String,
     pub local_address: String,
@@ -233,8 +355,15 @@ pub fn draw_port_forwarding_list(
                 PortForwardStatus::Failed(_) => "✗",
             };
 
+            let forward_type = match pf.forward_type {
+                PortForwardType::Local => "Local",
+                PortForwardType::Remote => "Remote",
+                PortForwardType::Dynamic => "Dynamic",
+            };
+
             PortForwardingListItem {
                 status_icon: status_icon.to_string(),
+                forward_type: forward_type.to_string(),
                 display_name: pf.get_display_name(),
                 connection_name: connection.to_string(),
                 local_address: pf.local_address(),
@@ -266,6 +395,10 @@ pub fn draw_port_forwarding_list(
                     .service_address
                     .to_lowercase()
                     .contains(&search_query.to_lowercase())
+                || item
+                    .forward_type
+                    .to_lowercase()
+                    .contains(&search_query.to_lowercase())
         });
     }
 
@@ -289,6 +422,7 @@ pub fn draw_port_forwarding_list(
     // Create table header
     let header = Row::new(vec![
         Cell::from("Status"),
+        Cell::from("Type"),
         Cell::from("Name"),
         Cell::from("Connection"),
         Cell::from("Local"),
@@ -318,6 +452,7 @@ pub fn draw_port_forwarding_list(
                     &item.status_icon,
                     Style::default().fg(status_color),
                 )),
+                Cell::from(item.forward_type.as_str()),
                 Cell::from(item.display_name.as_str()),
                 Cell::from(item.connection_name.as_str()),
                 Cell::from(item.local_address.as_str()),
@@ -333,6 +468,7 @@ pub fn draw_port_forwarding_list(
         rows,
         [
             Constraint::Length(8),  // Status
+            Constraint::Length(8),  // Type
             Constraint::Min(12),    // Name
             Constraint::Min(10),    // Connection
             Constraint::Min(12),    // Local
@@ -456,45 +592,116 @@ pub fn draw_port_forwarding_form_popup(
     // Get inner area for form content
     let inner = popup.inner(Margin::new(1, 1));
 
-    // Create responsive layout based on available space
-    let layout = create_responsive_form_layout(inner);
+    // Build field list based on forward type
+    let mut field_list = vec![];
 
-    // Render form fields based on available layout space
-    let field_configs = [
-        ("Connection", None, form.focus == FocusField::Connection),
-        (
-            "Local Address",
-            Some(&form.local_addr),
-            form.focus == FocusField::LocalAddr,
-        ),
-        (
-            "Local Port",
-            Some(&form.local_port),
-            form.focus == FocusField::LocalPort,
-        ),
-        (
-            "Service Host",
-            Some(&form.service_host),
-            form.focus == FocusField::ServiceHost,
-        ),
-        (
-            "Service Port",
-            Some(&form.service_port),
-            form.focus == FocusField::ServicePort,
-        ),
-        (
-            "Display Name (optional)",
-            Some(&form.display_name),
-            form.focus == FocusField::DisplayName,
-        ),
-    ];
+    // Forward Type
+    field_list.push((
+        "Forward Type",
+        None::<&TextArea>,
+        form.focus == FocusField::ForwardType,
+        FocusField::ForwardType,
+    ));
 
-    for (idx, (label, textarea_opt, focused)) in field_configs.iter().enumerate() {
+    // Connection field
+    field_list.push((
+        "Connection",
+        None::<&TextArea>,
+        form.focus == FocusField::Connection,
+        FocusField::Connection,
+    ));
+
+    // Add fields based on forward type
+    match form.forward_type {
+        PortForwardType::Local => {
+            field_list.push((
+                "Local Address",
+                Some(&form.local_addr),
+                form.focus == FocusField::LocalAddr,
+                FocusField::LocalAddr,
+            ));
+            field_list.push((
+                "Local Port",
+                Some(&form.local_port),
+                form.focus == FocusField::LocalPort,
+                FocusField::LocalPort,
+            ));
+            field_list.push((
+                "Service Host",
+                Some(&form.service_host),
+                form.focus == FocusField::ServiceHost,
+                FocusField::ServiceHost,
+            ));
+            field_list.push((
+                "Service Port",
+                Some(&form.service_port),
+                form.focus == FocusField::ServicePort,
+                FocusField::ServicePort,
+            ));
+        }
+        PortForwardType::Remote => {
+            field_list.push((
+                "Remote Bind Address (optional)",
+                Some(&form.remote_bind_addr),
+                form.focus == FocusField::RemoteBind,
+                FocusField::RemoteBind,
+            ));
+            field_list.push((
+                "Remote Port",
+                Some(&form.local_port),
+                form.focus == FocusField::LocalPort,
+                FocusField::LocalPort,
+            ));
+            field_list.push((
+                "Local Service Host",
+                Some(&form.service_host),
+                form.focus == FocusField::ServiceHost,
+                FocusField::ServiceHost,
+            ));
+            field_list.push((
+                "Local Service Port",
+                Some(&form.service_port),
+                form.focus == FocusField::ServicePort,
+                FocusField::ServicePort,
+            ));
+        }
+        PortForwardType::Dynamic => {
+            field_list.push((
+                "Local Address",
+                Some(&form.local_addr),
+                form.focus == FocusField::LocalAddr,
+                FocusField::LocalAddr,
+            ));
+            field_list.push((
+                "Local Port (SOCKS5)",
+                Some(&form.local_port),
+                form.focus == FocusField::LocalPort,
+                FocusField::LocalPort,
+            ));
+        }
+    }
+
+    // Display Name (always last)
+    field_list.push((
+        "Display Name (optional)",
+        Some(&form.display_name),
+        form.focus == FocusField::DisplayName,
+        FocusField::DisplayName,
+    ));
+
+    // Create responsive layout based on available space and number of fields
+    let layout = create_responsive_form_layout_with_count(inner, field_list.len());
+
+    // Render form fields
+    for (idx, (label, textarea_opt, focused, field_type)) in field_list.iter().enumerate() {
         if idx >= layout.len() {
             break; // Skip if layout doesn't have enough space
         }
 
-        if let Some(textarea) = textarea_opt {
+        if *field_type == FocusField::ForwardType {
+            // Render forward type selector
+            render_forward_type_selector(frame, layout[idx], form, *focused);
+        } else if let Some(textarea) = textarea_opt {
             // Render text area field
             let mut widget = (*textarea).clone();
             let mut field_block = Block::default().borders(Borders::ALL).title(*label);
@@ -513,7 +720,7 @@ pub fn draw_port_forwarding_form_popup(
                 .iter()
                 .find(|c| c.id == form.connection_id)
                 .map(|c| c.display_name.as_str())
-                .unwrap_or("Press Space to Select Connection");
+                .unwrap_or(" Press Space to Select Connection");
 
             let mut field_block = Block::default().borders(Borders::ALL).title("Connection");
 
@@ -528,7 +735,7 @@ pub fn draw_port_forwarding_form_popup(
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default()
+                    Style::default().fg(Color::DarkGray)
                 },
             )))
             .block(field_block);
@@ -538,7 +745,7 @@ pub fn draw_port_forwarding_form_popup(
     }
 
     // Try to show error if space available
-    let error_idx = field_configs.len();
+    let error_idx = field_list.len();
     if let Some(error) = &form.error {
         if error_idx < layout.len() {
             let error_paragraph = Paragraph::new(Line::from(Span::styled(
@@ -552,11 +759,11 @@ pub fn draw_port_forwarding_form_popup(
     // Render the main block first
     frame.render_widget(Paragraph::new("").block(block), popup);
 
-    // Render instructions at the very bottom of the popup, overlapping the border
+    // Render instructions inside the popup, just above the bottom border
     let instructions_area = Rect {
-        x: popup.x + 1,
-        y: popup.y + popup.height - 2, // Position at bottom border line
-        width: popup.width.saturating_sub(2),
+        x: popup.x + 2,
+        y: popup.y + popup.height.saturating_sub(2), // Position just above bottom border
+        width: popup.width.saturating_sub(4),
         height: 1,
     };
     let instructions = create_responsive_instructions(instructions_area.width);
@@ -607,56 +814,104 @@ fn calculate_responsive_popup_size(area: Rect) -> (u16, u16) {
 }
 
 // Create responsive layout based on available space
-fn create_responsive_form_layout(inner: Rect) -> Vec<Rect> {
-    let available_height = inner.height;
-
-    let layout_rects = if available_height < 15 {
-        // Very compact layout: minimize spacing
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(2), // connection
-                Constraint::Length(2), // local address
-                Constraint::Length(2), // local port
-                Constraint::Length(2), // service host
-                Constraint::Length(2), // service port
-                Constraint::Length(2), // display name
-                Constraint::Min(0),    // flexible spacer
-            ])
-            .split(inner)
-    } else if available_height < 20 {
-        // Compact layout: reduce field height slightly
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(2), // connection
-                Constraint::Length(2), // local address
-                Constraint::Length(2), // local port
-                Constraint::Length(2), // service host
-                Constraint::Length(2), // service port
-                Constraint::Length(2), // display name
-                Constraint::Min(0),    // flexible spacer
-                Constraint::Length(1), // error (if any)
-            ])
-            .split(inner)
-    } else {
-        // Normal layout: comfortable spacing
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3), // connection
-                Constraint::Length(3), // local address
-                Constraint::Length(3), // local port
-                Constraint::Length(3), // service host
-                Constraint::Length(3), // service port
-                Constraint::Length(3), // display name
-                Constraint::Min(0),    // flexible spacer
-                Constraint::Length(1), // error (if any)
-            ])
-            .split(inner)
+// Render the forward type selector with horizontal radio buttons
+fn render_forward_type_selector(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    form: &PortForwardingForm,
+    focused: bool,
+) {
+    let marker_fn = |typ: PortForwardType| {
+        if form.forward_type == typ { "✓" } else { " " }
     };
 
-    layout_rects.to_vec()
+    let text = vec![Line::from(vec![
+        Span::styled(
+            "Forward Type: ",
+            if focused {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            },
+        ),
+        Span::styled(
+            format!("[{}] Local →  ", marker_fn(PortForwardType::Local)),
+            if matches!(form.forward_type, PortForwardType::Local) {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            },
+        ),
+        Span::styled(
+            format!("[{}] Remote ←  ", marker_fn(PortForwardType::Remote)),
+            if matches!(form.forward_type, PortForwardType::Remote) {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            },
+        ),
+        Span::styled(
+            format!("[{}] Dynamic ⇄", marker_fn(PortForwardType::Dynamic)),
+            if matches!(form.forward_type, PortForwardType::Dynamic) {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            },
+        ),
+    ])];
+
+    let paragraph = Paragraph::new(text);
+    frame.render_widget(paragraph, area);
+}
+
+// Create responsive form layout with dynamic field count
+fn create_responsive_form_layout_with_count(inner: Rect, field_count: usize) -> Vec<Rect> {
+    let available_height = inner.height;
+
+    // Connection needs 3 lines, ForwardType needs 3 lines (with spacing), others need 2-3 lines
+    // Reserve 2 lines at bottom for error + instructions
+
+    let mut constraints = vec![];
+
+    if available_height < 20 {
+        // Compact mode - Connection gets 3 lines, ForwardType gets 2, others get 2
+        for i in 0..field_count {
+            if i == 0 {
+                // ForwardType field - 2 lines with spacing
+                constraints.push(Constraint::Length(1));
+            } else {
+                constraints.push(Constraint::Length(2));
+            }
+        }
+        constraints.push(Constraint::Min(0)); // spacer
+        constraints.push(Constraint::Length(2)); // error + instructions space
+    } else {
+        // Normal mode - Connection gets 3 lines, ForwardType gets 3 lines, others get 3 lines
+        for i in 0..field_count {
+            if i == 0 {
+                // ForwardType field - 3 lines for better spacing from Connection
+                constraints.push(Constraint::Length(2));
+            } else {
+                constraints.push(Constraint::Length(3));
+            }
+        }
+        constraints.push(Constraint::Min(0)); // spacer
+        constraints.push(Constraint::Length(2)); // error + instructions space
+    }
+
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(inner)
+        .to_vec()
 }
 
 // Create responsive instructions based on available width

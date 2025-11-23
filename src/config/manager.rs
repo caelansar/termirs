@@ -5,8 +5,8 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
-use tracing::{debug, info, warn, error};
 
 use crate::error::{AppError, Result};
 
@@ -107,6 +107,18 @@ pub struct Connection {
     pub public_key: Option<String>,
 }
 
+/// Type of port forwarding
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default, Hash)]
+pub enum PortForwardType {
+    /// Local port forwarding (ssh -L)
+    #[default]
+    Local,
+    /// Remote port forwarding (ssh -R)
+    Remote,
+    /// Dynamic SOCKS5 proxy (ssh -D)
+    Dynamic,
+}
+
 /// Status of a port forwarding session
 #[derive(Clone, Debug, PartialEq, Default, Hash)]
 pub enum PortForwardStatus {
@@ -121,10 +133,16 @@ pub enum PortForwardStatus {
 pub struct PortForward {
     pub id: String,
     pub connection_id: String,
+    #[serde(default)] // Default to Local for backward compatibility
+    pub forward_type: PortForwardType,
     pub local_addr: String,
     pub local_port: u16,
+    #[serde(default)]
     pub service_host: String,
+    #[serde(default)]
     pub service_port: u16,
+    #[serde(default)]
+    pub remote_bind_addr: Option<String>,
     pub display_name: Option<String>,
     pub created_at: DateTime<Utc>,
     #[serde(skip)] // Runtime status, not persisted
@@ -135,19 +153,23 @@ impl PortForward {
     /// Creates a new port forward with the given parameters
     pub fn new(
         connection_id: String,
+        forward_type: PortForwardType,
         local_addr: String,
         local_port: u16,
         service_host: String,
         service_port: u16,
+        remote_bind_addr: Option<String>,
         display_name: Option<String>,
     ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             connection_id,
+            forward_type,
             local_addr,
             local_port,
             service_host,
             service_port,
+            remote_bind_addr,
             display_name,
             created_at: Utc::now(),
             status: PortForwardStatus::Stopped,
@@ -156,34 +178,68 @@ impl PortForward {
 
     /// Validates the port forward parameters
     pub fn validate(&self) -> Result<()> {
-        if self.local_addr.trim().is_empty() {
-            return Err(AppError::ValidationError(
-                "Local address cannot be empty".to_string(),
-            ));
-        }
-
-        if self.local_port == 0 {
-            return Err(AppError::ValidationError(
-                "Local port must be greater than 0".to_string(),
-            ));
-        }
-
-        if self.service_host.trim().is_empty() {
-            return Err(AppError::ValidationError(
-                "Service host cannot be empty".to_string(),
-            ));
-        }
-
-        if self.service_port == 0 {
-            return Err(AppError::ValidationError(
-                "Service port must be greater than 0".to_string(),
-            ));
-        }
-
         if self.connection_id.trim().is_empty() {
             return Err(AppError::ValidationError(
                 "Connection ID cannot be empty".to_string(),
             ));
+        }
+
+        match self.forward_type {
+            PortForwardType::Local => {
+                // Local forwarding: local_addr:local_port -> service_host:service_port
+                if self.local_addr.trim().is_empty() {
+                    return Err(AppError::ValidationError(
+                        "Local address cannot be empty".to_string(),
+                    ));
+                }
+                if self.local_port == 0 {
+                    return Err(AppError::ValidationError(
+                        "Local port must be greater than 0".to_string(),
+                    ));
+                }
+                if self.service_host.trim().is_empty() {
+                    return Err(AppError::ValidationError(
+                        "Service host cannot be empty".to_string(),
+                    ));
+                }
+                if self.service_port == 0 {
+                    return Err(AppError::ValidationError(
+                        "Service port must be greater than 0".to_string(),
+                    ));
+                }
+            }
+            PortForwardType::Remote => {
+                // Remote forwarding: remote_bind_addr:local_port -> service_host:service_port
+                if self.local_port == 0 {
+                    return Err(AppError::ValidationError(
+                        "Remote port must be greater than 0".to_string(),
+                    ));
+                }
+                if self.service_host.trim().is_empty() {
+                    return Err(AppError::ValidationError(
+                        "Local service host cannot be empty".to_string(),
+                    ));
+                }
+                if self.service_port == 0 {
+                    return Err(AppError::ValidationError(
+                        "Local service port must be greater than 0".to_string(),
+                    ));
+                }
+                // remote_bind_addr is optional, defaults to server's localhost
+            }
+            PortForwardType::Dynamic => {
+                // Dynamic SOCKS5: only needs local_addr:local_port
+                if self.local_addr.trim().is_empty() {
+                    return Err(AppError::ValidationError(
+                        "Local address cannot be empty".to_string(),
+                    ));
+                }
+                if self.local_port == 0 {
+                    return Err(AppError::ValidationError(
+                        "Local port must be greater than 0".to_string(),
+                    ));
+                }
+            }
         }
 
         Ok(())
@@ -191,12 +247,26 @@ impl PortForward {
 
     /// Gets the display name or generates a default one
     pub fn get_display_name(&self) -> String {
-        self.display_name.clone().unwrap_or_else(|| {
-            format!(
-                "{}:{} -> {}:{}",
-                self.local_addr, self.local_port, self.service_host, self.service_port
-            )
-        })
+        self.display_name
+            .clone()
+            .unwrap_or_else(|| match self.forward_type {
+                PortForwardType::Local => {
+                    format!(
+                        "{}:{} -> {}:{}",
+                        self.local_addr, self.local_port, self.service_host, self.service_port
+                    )
+                }
+                PortForwardType::Remote => {
+                    let remote_bind = self.remote_bind_addr.as_deref().unwrap_or("127.0.0.1");
+                    format!(
+                        "{}:{} <- {}:{}",
+                        remote_bind, self.local_port, self.service_host, self.service_port
+                    )
+                }
+                PortForwardType::Dynamic => {
+                    format!("SOCKS5 {}:{}", self.local_addr, self.local_port)
+                }
+            })
     }
 
     /// Gets the local address and port as a string
@@ -318,7 +388,10 @@ impl ConfigManager {
         info!("Loading configuration from: {:?}", config_path);
         let mut config = Self::load_config_from_path(&config_path)?;
         Self::normalize_settings(&mut config);
-        debug!("Configuration loaded with {} connections", config.connections.len());
+        debug!(
+            "Configuration loaded with {} connections",
+            config.connections.len()
+        );
 
         Ok(Self {
             config_path,
@@ -364,22 +437,23 @@ impl ConfigManager {
     fn load_config_from_path(config_path: &Path) -> Result<Config> {
         if !config_path.exists() {
             // Return default config if file doesn't exist
-            debug!("Config file does not exist, using defaults: {:?}", config_path);
+            debug!(
+                "Config file does not exist, using defaults: {:?}",
+                config_path
+            );
             return Ok(Config::default());
         }
 
         debug!("Reading config file from: {:?}", config_path);
-        let config_content = fs::read_to_string(config_path)
-            .map_err(|e| {
-                error!("Failed to read config file: {}", e);
-                AppError::ConfigError(format!("Failed to read config file: {e}"))
-            })?;
+        let config_content = fs::read_to_string(config_path).map_err(|e| {
+            error!("Failed to read config file: {}", e);
+            AppError::ConfigError(format!("Failed to read config file: {e}"))
+        })?;
 
-        let config: Config = toml::from_str(&config_content)
-            .map_err(|e| {
-                error!("Failed to parse config file: {}", e);
-                AppError::ConfigError(format!("Failed to parse config file: {e}"))
-            })?;
+        let config: Config = toml::from_str(&config_content).map_err(|e| {
+            error!("Failed to parse config file: {}", e);
+            AppError::ConfigError(format!("Failed to parse config file: {e}"))
+        })?;
 
         Ok(config)
     }
@@ -387,16 +461,14 @@ impl ConfigManager {
     /// Persist current config to disk
     pub fn save(&self) -> Result<()> {
         debug!("Saving configuration to: {:?}", self.config_path);
-        let toml = toml::to_string_pretty(&self.config)
-            .map_err(|e| {
-                error!("Failed to serialize config: {}", e);
-                AppError::ConfigError(format!("Failed to serialize config: {e}"))
-            })?;
-        fs::write(&self.config_path, toml)
-            .map_err(|e| {
-                error!("Failed to write config file: {}", e);
-                AppError::ConfigError(format!("Failed to write config: {e}"))
-            })?;
+        let toml = toml::to_string_pretty(&self.config).map_err(|e| {
+            error!("Failed to serialize config: {}", e);
+            AppError::ConfigError(format!("Failed to serialize config: {e}"))
+        })?;
+        fs::write(&self.config_path, toml).map_err(|e| {
+            error!("Failed to write config file: {}", e);
+            AppError::ConfigError(format!("Failed to write config: {e}"))
+        })?;
         info!("Configuration saved successfully");
         Ok(())
     }
