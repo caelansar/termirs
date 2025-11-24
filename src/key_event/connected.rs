@@ -23,26 +23,46 @@ fn encode_key_event_to_ansi(app_cursor: bool, key: &KeyEvent) -> Option<Vec<u8>>
         KeyCode::Enter => Some(b"\r".to_vec()),
         KeyCode::Backspace => Some(vec![0x7f]),
         KeyCode::Tab => Some(b"\t".to_vec()),
-        KeyCode::Left => Some(if app_cursor {
-            b"\x1bOD".to_vec()
-        } else {
-            b"\x1b[D".to_vec()
-        }),
-        KeyCode::Right => Some(if app_cursor {
-            b"\x1bOC".to_vec()
-        } else {
-            b"\x1b[C".to_vec()
-        }),
-        KeyCode::Up => Some(if app_cursor {
-            b"\x1bOA".to_vec()
-        } else {
-            b"\x1b[A".to_vec()
-        }),
-        KeyCode::Down => Some(if app_cursor {
-            b"\x1bOB".to_vec()
-        } else {
-            b"\x1b[B".to_vec()
-        }),
+        KeyCode::Left => {
+            // Alt+Left for backward-word
+            if key.modifiers.contains(KeyModifiers::ALT) {
+                Some(b"\x1b[1;3D".to_vec())
+            } else if app_cursor {
+                Some(b"\x1bOD".to_vec())
+            } else {
+                Some(b"\x1b[D".to_vec())
+            }
+        }
+        KeyCode::Right => {
+            // Alt+Right for forward-word
+            if key.modifiers.contains(KeyModifiers::ALT) {
+                Some(b"\x1b[1;3C".to_vec())
+            } else if app_cursor {
+                Some(b"\x1bOC".to_vec())
+            } else {
+                Some(b"\x1b[C".to_vec())
+            }
+        }
+        KeyCode::Up => {
+            // Alt+Up for completeness
+            if key.modifiers.contains(KeyModifiers::ALT) {
+                Some(b"\x1b[1;3A".to_vec())
+            } else if app_cursor {
+                Some(b"\x1bOA".to_vec())
+            } else {
+                Some(b"\x1b[A".to_vec())
+            }
+        }
+        KeyCode::Down => {
+            // Alt+Down for completeness
+            if key.modifiers.contains(KeyModifiers::ALT) {
+                Some(b"\x1b[1;3B".to_vec())
+            } else if app_cursor {
+                Some(b"\x1bOB".to_vec())
+            } else {
+                Some(b"\x1b[B".to_vec())
+            }
+        }
         KeyCode::Home => Some(if app_cursor {
             b"\x1bOH".to_vec()
         } else {
