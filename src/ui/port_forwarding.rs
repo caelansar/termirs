@@ -734,6 +734,8 @@ pub fn draw_port_forwarding_form_popup(
                     Style::default()
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD)
+                } else if !form.connection_id.is_empty() {
+                    Style::default()
                 } else {
                     Style::default().fg(Color::DarkGray)
                 },
