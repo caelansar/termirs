@@ -4,7 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use futures::future::join_all;
 use ratatui::backend::Backend;
 use std::io::Write;
-use tracing::{debug, info, error};
+use tracing::{debug, error, info};
 
 use super::KeyFlow;
 use crate::{
@@ -496,7 +496,10 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                         }
                     }
 
-                    info!("File added to copy buffer: {} (direction: {:?})", source_path, direction);
+                    info!(
+                        "File added to copy buffer: {} (direction: {:?})",
+                        source_path, direction
+                    );
                     copy_buffer.push(CopyOperation {
                         source_path,
                         source_name: current_file.name().to_string(),
@@ -526,7 +529,10 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                     return KeyFlow::Continue;
                 }
 
-                info!("Initiating file paste operation with {} files", copy_buffer.len());
+                info!(
+                    "Initiating file paste operation with {} files",
+                    copy_buffer.len()
+                );
                 let dest_dir = match active_pane {
                     ActivePane::Left => left_explorer.cwd().to_string_lossy().to_string(),
                     ActivePane::Right => remote_explorer.cwd().to_string_lossy().to_string(),
