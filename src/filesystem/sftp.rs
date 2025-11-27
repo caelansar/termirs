@@ -97,7 +97,11 @@ impl FileSystem for SftpFileSystem {
             _ => a.name.cmp(&b.name),
         });
 
-        debug!("SFTP read_dir completed for '{}': {} entries", normalized_path, entries.len());
+        debug!(
+            "SFTP read_dir completed for '{}': {} entries",
+            normalized_path,
+            entries.len()
+        );
         Ok(entries)
     }
 
@@ -110,14 +114,10 @@ impl FileSystem for SftpFileSystem {
 
     async fn is_dir(&self, path: &str) -> Result<bool> {
         debug!("SFTP is_dir check: {}", path);
-        let metadata = self
-            .session
-            .metadata(path)
-            .await
-            .map_err(|e| {
-                debug!("SFTP metadata failed for '{}': {}", path, e);
-                Error::other(format!("SFTP metadata failed: {e}"))
-            })?;
+        let metadata = self.session.metadata(path).await.map_err(|e| {
+            debug!("SFTP metadata failed for '{}': {}", path, e);
+            Error::other(format!("SFTP metadata failed: {e}"))
+        })?;
 
         Ok(metadata.is_dir())
     }
@@ -155,13 +155,10 @@ impl FileSystem for SftpFileSystem {
 
     async fn delete(&self, path: &str) -> Result<()> {
         debug!("SFTP deleting file: {}", path);
-        self.session
-            .remove_file(path)
-            .await
-            .map_err(|e| {
-                error!("SFTP delete failed for '{}': {}", path, e);
-                Error::other(format!("SFTP delete failed: {e}"))
-            })?;
+        self.session.remove_file(path).await.map_err(|e| {
+            error!("SFTP delete failed for '{}': {}", path, e);
+            Error::other(format!("SFTP delete failed: {e}"))
+        })?;
         debug!("SFTP file deleted successfully: {}", path);
         Ok(())
     }
