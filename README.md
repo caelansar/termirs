@@ -144,6 +144,37 @@ The SSH config parser supports `Include` directives, allowing you to organize yo
 #### Keyboard Interactive
 Automatically handled when the server requires interactive authentication.
 
+### Port Forwarding
+#### Local Port Forwarding
+Forward a remote service (e.g., PostgreSQL on a server) to your local machine:
+- Forward Type: Local
+- Local Address: 127.0.0.1
+- Local Port: 8080 (on your computer)
+- Service Host: remote.host (e.g., database VM)
+- Service Port: 5432 (PostgreSQL default)
+
+When started, connections to `localhost:8080` on your computer are securely forwarded through SSH to `remote.host:5432` on the remote server.
+
+
+#### Remote Port Forwarding
+Expose a local web server running on port 3000 to the remote server's port 8080:
+- Forward Type: Remote
+- Local Port: 8080 (port on remote server)
+- Remote Bind Address: 0.0.0.0 (listen on all interfaces) or 127.0.0.1 (localhost only)
+- Service Host: localhost
+- Service Port: 3000
+
+When started, anyone connecting to `remote_server:8080` will be forwarded to your local `localhost:3000`.
+
+#### Dynamic SOCKS5 Forwarding
+Create a SOCKS5 proxy on port 1080:
+- Forward Type: Dynamic
+- Local Address: 127.0.0.1
+- Local Port: 1080
+
+Configure your browser or applications to use `127.0.0.1:1080` as SOCKS5 proxy. All traffic will be tunneled through the SSH connection.
+
+
 ### Configuration
 
 TermiRs stores configuration in `~/.config/termirs/config.toml`. The file includes:
@@ -173,6 +204,7 @@ password = "encrypted-password-data"
 [[port_forwards]]
 id = "port-forward-uuid"
 connection_id = "uuid-string"
+forward_type = "Local"
 display_name = "Local Web Server"
 local_addr = "127.0.0.1"
 local_port = 8080
