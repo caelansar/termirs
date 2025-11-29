@@ -135,7 +135,7 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
                 app.go_to_delete_confirmation(connection_name, connection_id, current_selected);
             }
         }
-        KeyCode::Esc | KeyCode::Char('q') => {
+        KeyCode::Char('q') => {
             return KeyFlow::Quit;
         }
         _ => {}

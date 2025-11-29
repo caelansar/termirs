@@ -311,7 +311,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
         }
 
         // Handle quit
-        if key.code == KeyCode::Char('q') || key.code == KeyCode::Esc {
+        if key.code == KeyCode::Char('q') {
             // Return to connection list
             let return_to_idx = *return_to;
             app.go_to_connection_list_with_selected(return_to_idx);

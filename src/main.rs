@@ -1808,7 +1808,10 @@ impl<B: Backend + Write> App<B> {
             // wait for an event (asynchronous)
             let ev = match rx.recv().await {
                 Some(e) => e,
-                None => break, // exit if channel is closed
+                None => {
+                    tracing::warn!("App event channel closed");
+                    break; // exit if channel is closed
+                }
             };
 
             match ev {
@@ -2581,7 +2584,10 @@ async fn main() -> Result<()> {
 
     // run app loop
     tracing::info!("Starting main event loop");
-    let res = app.run(&mut rx).await;
+    let res = app
+        .run(&mut rx)
+        .await
+        .inspect_err(|e| tracing::error!("Error in main event loop: {}", e));
 
     // app drop restores terminal
     tracing::info!("Application shutting down");
