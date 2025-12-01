@@ -7,9 +7,10 @@ use std::io::Write;
 use tracing::{debug, error, info};
 
 use super::KeyFlow;
+use crate::ui::file_explorer::filter_connection_indices;
 use crate::{
-    ActivePane, App, AppMode, CopyDirection, CopyOperation, FileExplorerPane,
-    ui::file_explorer::filter_connection_indices,
+    ActivePane, App, AppMode, CopyDirection, CopyOperation, FileExplorerPane, ScpFileProgress,
+    ScpFileResult, ScpProgress, ScpResult, ScpTransferSpec,
 };
 
 /// Handle key events in file explorer mode
@@ -605,7 +606,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                             }
                         };
 
-                    transfer_specs.push(crate::ScpTransferSpec {
+                    transfer_specs.push(ScpTransferSpec {
                         mode,
                         local_path,
                         remote_path,
@@ -646,12 +647,11 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                     let (result_sender, result_receiver) = tokio::sync::mpsc::channel(1);
                     let (progress_sender, progress_receiver) = tokio::sync::mpsc::channel(64);
 
-                    let progress_items: Vec<crate::ScpFileProgress> = transfer_specs
+                    let progress_items: Vec<ScpFileProgress> = transfer_specs
                         .iter()
-                        .map(crate::ScpFileProgress::from_spec)
+                        .map(ScpFileProgress::from_spec)
                         .collect();
-                    let mut progress =
-                        crate::ScpProgress::new(connection_name.clone(), progress_items);
+                    let mut progress = ScpProgress::new(connection_name.clone(), progress_items);
 
                     for (idx, spec) in transfer_specs.iter().enumerate() {
                         if matches!(spec.mode, crate::ui::ScpMode::Send) {
@@ -788,7 +788,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                                 let success = transfer_result.is_ok();
                                 let error = transfer_result.err().map(|e| e.to_string());
 
-                                crate::ScpFileResult {
+                                ScpFileResult {
                                     mode: spec.mode,
                                     local_path: spec.local_path,
                                     remote_path: spec.remote_path,
@@ -810,7 +810,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                                 Ok(file_result) => results.push(file_result),
                                 Err(e) => {
                                     let _ = result_sender
-                                        .send(crate::ScpResult::Error {
+                                        .send(ScpResult::Error {
                                             error: format!("Transfer task failed to complete: {e}"),
                                         })
                                         .await;
@@ -819,9 +819,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                             }
                         }
 
-                        let _ = result_sender
-                            .send(crate::ScpResult::Completed(results))
-                            .await;
+                        let _ = result_sender.send(ScpResult::Completed(results)).await;
                     });
                 }
             }

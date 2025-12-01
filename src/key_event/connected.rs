@@ -4,7 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::Backend;
 
 use super::KeyFlow;
-use crate::{App, AppMode};
+use crate::app::{App, AppMode};
 
 /// Helper function to scroll to bottom if needed
 async fn ensure_scroll_to_bottom(

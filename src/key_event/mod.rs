@@ -4,8 +4,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent,
 use ratatui::prelude::Backend;
 
 use crate::error::AppError;
+use crate::terminal::{MouseClickClass, SelectionEndpoint, make_selection_endpoint};
 use crate::ui::TerminalState;
-use crate::{App, AppMode, MouseClickClass, SelectionEndpoint, make_selection_endpoint};
+use crate::{App, AppMode};
 
 pub mod connected;
 pub mod connection_list;

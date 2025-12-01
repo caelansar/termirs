@@ -21,9 +21,9 @@ use russh_sftp::client::rawsession::RawSftpSession;
 use russh_sftp::protocol::{FileAttributes, OpenFlags, StatusCode};
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::ScpTransferProgress;
 use crate::config::manager::{AuthMethod, Connection, PortForward, PortForwardType};
 use crate::error::{AppError, Result};
+use crate::transfer::ScpTransferProgress;
 
 const STANDARD_KEY_PATHS: &[&str] = &[
     "~/.ssh/id_rsa",
@@ -559,7 +559,7 @@ impl SshSession {
         }
     }
 
-    pub async fn read_loop<B: ByteProcessor>(
+    pub(crate) async fn read_loop<B: ByteProcessor>(
         &mut self,
         processor: Arc<tokio::sync::Mutex<B>>,
         cancel: tokio_util::sync::CancellationToken,
@@ -633,7 +633,7 @@ impl SshSession {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn sftp_send_file_with_timeout(
+    pub(crate) async fn sftp_send_file_with_timeout(
         channel: Option<Channel<client::Msg>>,
         connection: &Connection,
         mut from: impl HostFile,
@@ -858,7 +858,7 @@ impl SshSession {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn sftp_receive_file_with_timeout(
+    pub(crate) async fn sftp_receive_file_with_timeout(
         channel: Option<Channel<client::Msg>>,
         connection: &Connection,
         from: &str,

@@ -3,6 +3,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph};
 
+use crate::ScpProgress;
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ScpMode {
     Send,
@@ -10,11 +12,7 @@ pub enum ScpMode {
 }
 
 // SCP Progress popup renderer
-pub fn draw_scp_progress_popup(
-    area: Rect,
-    progress: &crate::ScpProgress,
-    frame: &mut ratatui::Frame<'_>,
-) {
+pub fn draw_scp_progress_popup(area: Rect, progress: &ScpProgress, frame: &mut ratatui::Frame<'_>) {
     let file_count = progress.files.len().max(1);
     let popup_w = (area.width as f32 * 0.45) as u16;
     let ideal_height = 4 + (file_count as u16) * 3;

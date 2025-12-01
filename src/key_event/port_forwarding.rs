@@ -5,10 +5,10 @@ use ratatui::prelude::Backend;
 use tracing::{error, info};
 
 use super::KeyFlow;
+use crate::app::{App, AppMode};
 use crate::config::manager::{PortForward, PortForwardStatus};
 use crate::error::AppError;
 use crate::ui::{PortForwardingForm, file_explorer::filter_connection_indices};
-use crate::{App, AppMode};
 
 pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
     app: &mut App<B>,
@@ -131,7 +131,7 @@ pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
                                         app.info = Some(format!(
                                             "Port forward '{pf_name}' started successfully"
                                         ));
-                                        app.needs_redraw = true;
+                                        app.mark_redraw();
                                     }
                                     Err(e) => {
                                         pf_mut.status = PortForwardStatus::Failed(e.to_string());
@@ -139,7 +139,7 @@ pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
                                         app.error = Some(AppError::ConfigError(format!(
                                             "Failed to start port forward '{pf_name}': {e}"
                                         )));
-                                        app.needs_redraw = true;
+                                        app.mark_redraw();
                                     }
                                 }
                             }
@@ -153,7 +153,7 @@ pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
                                         app.info = Some(format!(
                                             "Port forward '{pf_name}' stopped successfully"
                                         ));
-                                        app.needs_redraw = true;
+                                        app.mark_redraw();
                                     }
                                     Err(e) => {
                                         pf_mut.status = PortForwardStatus::Failed(e.to_string());
@@ -161,7 +161,7 @@ pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
                                         app.error = Some(AppError::ConfigError(format!(
                                             "Failed to stop port forward '{pf_name}': {e}"
                                         )));
-                                        app.needs_redraw = true;
+                                        app.mark_redraw();
                                     }
                                 }
                             }
@@ -179,7 +179,7 @@ pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
                                         app.info = Some(format!(
                                             "Port forward '{pf_name}' restarted successfully"
                                         ));
-                                        app.needs_redraw = true;
+                                        app.mark_redraw();
                                     }
                                     Err(e) => {
                                         pf_mut.status = PortForwardStatus::Failed(e.to_string());
@@ -190,7 +190,7 @@ pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
                                         app.error = Some(AppError::ConfigError(format!(
                                             "Failed to restart port forward '{pf_name}': {e}"
                                         )));
-                                        app.needs_redraw = true;
+                                        app.mark_redraw();
                                     }
                                 }
                             }

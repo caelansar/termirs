@@ -10,10 +10,9 @@ use ratatui::{
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use crate::{
-    ActivePane, CopyOperation, FileExplorerPane, LeftExplorer, config::manager::Connection,
-    filesystem::SftpFileSystem,
-};
+use crate::config::manager::Connection;
+use crate::filesystem::SftpFileSystem;
+use crate::{ActivePane, CopyOperation, FileExplorerPane, LeftExplorer};
 
 /// Draw the dual-pane file explorer interface.
 #[allow(clippy::too_many_arguments)]
