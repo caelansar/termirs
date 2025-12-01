@@ -164,20 +164,9 @@ impl client::Handler for SshClient {
 
 pub struct SshSession {
     session: Arc<tokio::sync::Mutex<Option<client::Handle<SshClient>>>>,
-    r: Arc<tokio::sync::Mutex<russh::ChannelReadHalf>>,
-    w: Arc<russh::ChannelWriteHalf<client::Msg>>,
+    r: Option<russh::ChannelReadHalf>,
+    w: russh::ChannelWriteHalf<client::Msg>,
     server_key: Arc<OnceCell<String>>,
-}
-
-impl Clone for SshSession {
-    fn clone(&self) -> Self {
-        Self {
-            session: Arc::clone(&self.session),
-            r: Arc::clone(&self.r),
-            w: Arc::clone(&self.w),
-            server_key: Arc::clone(&self.server_key),
-        }
-    }
 }
 
 impl SshSession {
@@ -530,8 +519,8 @@ impl SshSession {
         );
         Ok(Self {
             session: Arc::new(tokio::sync::Mutex::new(Some(session))),
-            r: Arc::new(tokio::sync::Mutex::new(r)),
-            w: Arc::new(w),
+            r: Some(r),
+            w,
             server_key,
         })
     }
@@ -559,30 +548,33 @@ impl SshSession {
         }
     }
 
+    /// Take the reader from this session. Returns `None` if already taken.
+    /// The reader should be passed to `read_loop` in a separate task.
+    pub fn take_reader(&mut self) -> Option<russh::ChannelReadHalf> {
+        self.r.take()
+    }
+
+    /// Read loop that processes incoming SSH channel messages.
+    /// Takes ownership of the reader and uses stream-based iteration with cancellation support.
     pub(crate) async fn read_loop<B: ByteProcessor>(
-        &mut self,
+        reader: russh::ChannelReadHalf,
         processor: Arc<tokio::sync::Mutex<B>>,
         cancel: tokio_util::sync::CancellationToken,
         event_tx: Option<tokio::sync::mpsc::Sender<crate::AppEvent>>,
     ) {
-        loop {
-            let msg_opt = {
-                let mut ch = self.r.lock().await;
-                // Add cancellation and timeout support
-                tokio::select! {
-                    _ = cancel.cancelled() => {
-                        // Task was cancelled, exit cleanly
-                        break;
-                    }
-                    result = tokio::time::timeout(Duration::from_millis(100), ch.wait()) => {
-                        match result {
-                            Ok(msg) => msg,
-                            Err(_) => continue, // Timeout, continue loop with small delay
-                        }
-                    }
-                }
-            };
-            let Some(msg) = msg_opt else { break };
+        use futures::stream::{self, StreamExt};
+
+        // Create a stream from the reader using unfold
+        let msg_stream =
+            stream::unfold(
+                reader,
+                |mut r| async move { r.wait().await.map(|msg| (msg, r)) },
+            );
+
+        // Take messages until cancellation
+        let mut msg_stream = std::pin::pin!(msg_stream.take_until(cancel.cancelled()));
+
+        while let Some(msg) = msg_stream.next().await {
             match msg {
                 ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
                     let mut guard = processor.lock().await;
@@ -2852,9 +2844,9 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
             "tester".to_string(),
             AuthMethod::Password("testerpass".to_string()),
         );
-        let client = SshSession::connect(&conn).await.unwrap();
+        let mut client = SshSession::connect(&conn).await.unwrap();
 
-        let mut client_clone = client.clone();
+        let reader = client.take_reader().expect("reader already taken");
         let cancel_token = tokio_util::sync::CancellationToken::new();
         let cancel_clone = cancel_token.clone();
         let processor = Arc::new(tokio::sync::Mutex::new(
@@ -2862,13 +2854,13 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
         ));
         let reader_processor = processor.clone();
         let read_handle = tokio::spawn(async move {
-            client_clone
-                .read_loop(
-                    reader_processor,
-                    cancel_clone,
-                    None, // No event sender for test
-                )
-                .await;
+            SshSession::read_loop(
+                reader,
+                reader_processor,
+                cancel_clone,
+                None, // No event sender for test
+            )
+            .await;
         });
 
         // make sure the read_loop is started before writing
@@ -2931,9 +2923,9 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
                 passphrase: None,
             },
         );
-        let client = SshSession::connect(&conn).await.unwrap();
+        let mut client = SshSession::connect(&conn).await.unwrap();
 
-        let mut client_clone = client.clone();
+        let reader = client.take_reader().expect("reader already taken");
         let cancel_token = tokio_util::sync::CancellationToken::new();
         let cancel_clone = cancel_token.clone();
         let processor = Arc::new(tokio::sync::Mutex::new(
@@ -2941,13 +2933,13 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
         ));
         let reader_processor = processor.clone();
         let read_handle = tokio::spawn(async move {
-            client_clone
-                .read_loop(
-                    reader_processor,
-                    cancel_clone,
-                    None, // No event sender for test
-                )
-                .await;
+            SshSession::read_loop(
+                reader,
+                reader_processor,
+                cancel_clone,
+                None, // No event sender for test
+            )
+            .await;
         });
 
         // make sure the read_loop is started before writing
@@ -3027,9 +3019,9 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
         );
 
         // Test connection
-        let client = SshSession::connect(&conn).await.unwrap();
+        let mut client = SshSession::connect(&conn).await.unwrap();
 
-        let mut client_clone = client.clone();
+        let reader = client.take_reader().expect("reader already taken");
         let cancel_token = tokio_util::sync::CancellationToken::new();
         let cancel_clone = cancel_token.clone();
         let processor = Arc::new(tokio::sync::Mutex::new(
@@ -3037,9 +3029,7 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
         ));
         let reader_processor = processor.clone();
         let read_handle = tokio::spawn(async move {
-            client_clone
-                .read_loop(reader_processor, cancel_clone, None)
-                .await;
+            SshSession::read_loop(reader, reader_processor, cancel_clone, None).await;
         });
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;

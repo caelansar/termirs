@@ -191,59 +191,6 @@ pub enum ScpReturnMode {
     },
 }
 
-impl ScpReturnMode {
-    /// Clone the return mode while dropping non-cloneable channel handles.
-    pub fn clone_without_channel(&self) -> Self {
-        match self {
-            ScpReturnMode::ConnectionList { current_selected } => ScpReturnMode::ConnectionList {
-                current_selected: *current_selected,
-            },
-            ScpReturnMode::Connected {
-                name,
-                client,
-                state,
-                current_selected,
-                cancel_token,
-            } => ScpReturnMode::Connected {
-                name: name.clone(),
-                client: client.clone(),
-                state: state.clone(),
-                current_selected: *current_selected,
-                cancel_token: cancel_token.clone(),
-            },
-            ScpReturnMode::FileExplorer {
-                connection_name,
-                left_pane,
-                left_explorer,
-                left_sftp,
-                remote_explorer,
-                active_pane,
-                copy_buffer,
-                return_to,
-                sftp_session,
-                ssh_connection,
-                search_mode,
-                search_query,
-                ..
-            } => ScpReturnMode::FileExplorer {
-                connection_name: connection_name.clone(),
-                left_pane: left_pane.clone(),
-                left_explorer: left_explorer.clone(),
-                left_sftp: left_sftp.clone(), // Keep the left SFTP session for SSH-to-SSH transfers
-                remote_explorer: remote_explorer.clone(),
-                sftp_session: sftp_session.clone(),
-                ssh_connection: ssh_connection.clone(),
-                channel: None,
-                active_pane: *active_pane,
-                copy_buffer: copy_buffer.clone(),
-                return_to: *return_to,
-                search_mode: *search_mode,
-                search_query: search_query.clone(),
-            },
-        }
-    }
-}
-
 /// Track where a connection was initiated from
 #[derive(Clone)]
 #[allow(dead_code)]
@@ -295,7 +242,7 @@ pub enum AppMode {
         progress: ScpProgress,
         receiver: mpsc::Receiver<ScpResult>,
         progress_updates: mpsc::Receiver<ScpTransferProgress>,
-        return_mode: ScpReturnMode,
+        return_mode: Option<ScpReturnMode>,
     },
     DeleteConfirmation {
         connection_name: String,
@@ -736,7 +683,7 @@ impl<B: Backend + Write> App<B> {
             progress,
             receiver,
             progress_updates,
-            return_mode,
+            return_mode: Some(return_mode),
         };
         self.needs_redraw = true; // Mode change requires redraw
     }
@@ -1071,11 +1018,12 @@ impl<B: Backend + Write> App<B> {
             } => *current_selected,
             AppMode::Connecting { return_to, .. } => *return_to,
             AppMode::ScpProgress { return_mode, .. } => match return_mode {
-                ScpReturnMode::ConnectionList { current_selected } => *current_selected,
-                ScpReturnMode::Connected {
+                Some(ScpReturnMode::ConnectionList { current_selected }) => *current_selected,
+                Some(ScpReturnMode::Connected {
                     current_selected, ..
-                } => *current_selected,
-                ScpReturnMode::FileExplorer { return_to, .. } => *return_to,
+                }) => *current_selected,
+                Some(ScpReturnMode::FileExplorer { return_to, .. }) => *return_to,
+                None => 0,
             },
             AppMode::FileExplorer { return_to, .. } => *return_to,
             AppMode::FormNew { .. } => 0,
@@ -1232,7 +1180,7 @@ impl<B: Backend + Write> App<B> {
                 AppMode::ScpProgress { return_mode, .. } => {
                     // Render appropriate background based on return mode
                     match return_mode {
-                        ScpReturnMode::ConnectionList { current_selected } => {
+                        Some(ScpReturnMode::ConnectionList { current_selected }) => {
                             let conns = self.config.connections();
                             draw_connection_list(
                                 size,
@@ -1244,7 +1192,7 @@ impl<B: Backend + Write> App<B> {
                                 false,
                             );
                         }
-                        ScpReturnMode::Connected { name, state, .. } => {
+                        Some(ScpReturnMode::Connected { name, state, .. }) => {
                             let inner = rect_with_top_margin(size, 1);
                             new_viewport = inner;
                             if let Ok(mut guard) = state.try_lock() {
@@ -1261,7 +1209,7 @@ impl<B: Backend + Write> App<B> {
                                 draw_terminal(size, &mut guard, name, f, selection);
                             }
                         }
-                        ScpReturnMode::FileExplorer {
+                        Some(ScpReturnMode::FileExplorer {
                             connection_name,
                             left_pane,
                             left_explorer,
@@ -1271,7 +1219,7 @@ impl<B: Backend + Write> App<B> {
                             search_mode,
                             search_query,
                             ..
-                        } => {
+                        }) => {
                             draw_file_explorer(
                                 f,
                                 size,
@@ -1285,6 +1233,7 @@ impl<B: Backend + Write> App<B> {
                                 search_query,
                             );
                         }
+                        None => {}
                     }
                 }
                 AppMode::DeleteConfirmation {
@@ -1726,51 +1675,36 @@ impl<B: Backend + Write> App<B> {
                             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
                             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
                                 if !progress.completed {
-                                    // Clone the return_mode before we change self.mode
-                                    let return_mode = return_mode.clone_without_channel();
+                                    // Take ownership of return_mode before we change self.mode
+                                    if let Some(return_mode) = return_mode.take() {
+                                        self.set_error(AppError::SshConnectionError(
+                                            "SCP transfer task disconnected unexpectedly"
+                                                .to_string(),
+                                        ));
 
-                                    self.set_error(AppError::SshConnectionError(
-                                        "SCP transfer task disconnected unexpectedly".to_string(),
-                                    ));
-
-                                    // Return to the appropriate mode
-                                    match return_mode {
-                                        ScpReturnMode::ConnectionList { current_selected } => {
-                                            self.go_to_connection_list_with_selected(
-                                                current_selected,
-                                            );
-                                        }
-                                        ScpReturnMode::Connected {
-                                            name,
-                                            client,
-                                            state,
-                                            current_selected,
-                                            cancel_token,
-                                        } => {
-                                            self.go_to_connected(
+                                        // Return to the appropriate mode
+                                        match return_mode {
+                                            ScpReturnMode::ConnectionList { current_selected } => {
+                                                self.go_to_connection_list_with_selected(
+                                                    current_selected,
+                                                );
+                                            }
+                                            ScpReturnMode::Connected {
                                                 name,
                                                 client,
                                                 state,
                                                 current_selected,
                                                 cancel_token,
-                                            );
-                                        }
-                                        ScpReturnMode::FileExplorer {
-                                            connection_name,
-                                            left_pane,
-                                            left_explorer,
-                                            left_sftp,
-                                            remote_explorer,
-                                            sftp_session,
-                                            ssh_connection,
-                                            channel,
-                                            active_pane,
-                                            copy_buffer,
-                                            return_to,
-                                            search_mode,
-                                            search_query,
-                                        } => {
-                                            self.mode = AppMode::FileExplorer {
+                                            } => {
+                                                self.go_to_connected(
+                                                    name,
+                                                    client,
+                                                    state,
+                                                    current_selected,
+                                                    cancel_token,
+                                                );
+                                            }
+                                            ScpReturnMode::FileExplorer {
                                                 connection_name,
                                                 left_pane,
                                                 left_explorer,
@@ -1784,14 +1718,30 @@ impl<B: Backend + Write> App<B> {
                                                 return_to,
                                                 search_mode,
                                                 search_query,
-                                                showing_source_selector: false,
-                                                selector_selected: 0,
-                                                selector_search_mode: false,
-                                                selector_search_query: String::new(),
-                                                showing_delete_confirmation: false,
-                                                delete_file_name: String::new(),
-                                                delete_pane: ActivePane::Left,
-                                            };
+                                            } => {
+                                                self.mode = AppMode::FileExplorer {
+                                                    connection_name,
+                                                    left_pane,
+                                                    left_explorer,
+                                                    left_sftp,
+                                                    remote_explorer,
+                                                    sftp_session,
+                                                    ssh_connection,
+                                                    channel,
+                                                    active_pane,
+                                                    copy_buffer,
+                                                    return_to,
+                                                    search_mode,
+                                                    search_query,
+                                                    showing_source_selector: false,
+                                                    selector_selected: 0,
+                                                    selector_search_mode: false,
+                                                    selector_search_query: String::new(),
+                                                    showing_delete_confirmation: false,
+                                                    delete_file_name: String::new(),
+                                                    delete_pane: ActivePane::Left,
+                                                };
+                                            }
                                         }
                                     }
                                 }
@@ -1816,7 +1766,7 @@ impl<B: Backend + Write> App<B> {
                         match receiver.try_recv() {
                             Ok(result) => {
                                 match result {
-                                    Ok(client) => {
+                                    Ok(mut client) => {
                                         // Connection successful - extract data and transition to Connected mode
                                         let conn = connection.clone();
                                         let return_to = *return_to;
@@ -1858,15 +1808,20 @@ impl<B: Backend + Write> App<B> {
                                             TerminalState::new_with_scrollback(30, 100, scrollback),
                                         ));
                                         let app_reader = state.clone();
-                                        let mut client_clone = client.clone();
+                                        let reader =
+                                            client.take_reader().expect("reader already taken");
                                         let cancel_token =
                                             tokio_util::sync::CancellationToken::new();
                                         let cancel_for_task = cancel_token.clone();
                                         let event_tx = self.event_tx.clone();
                                         tokio::spawn(async move {
-                                            client_clone
-                                                .read_loop(app_reader, cancel_for_task, event_tx)
-                                                .await;
+                                            SshSession::read_loop(
+                                                reader,
+                                                app_reader,
+                                                cancel_for_task,
+                                                event_tx,
+                                            )
+                                            .await;
                                         });
 
                                         let _ = self.config.touch_last_used(&conn.id);

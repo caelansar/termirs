@@ -180,8 +180,8 @@ async fn handle_connecting_key<B: Backend + Write>(app: &mut App<B>, key: KeyEve
 }
 
 pub async fn handle_mouse_event<B: Backend + Write>(app: &mut App<B>, event: MouseEvent) {
-    let (client, state) = match &app.mode {
-        AppMode::Connected { client, state, .. } => (client.clone(), state.clone()),
+    let state = match &app.mode {
+        AppMode::Connected { state, .. } => state.clone(),
         _ => return,
     };
 
@@ -344,9 +344,11 @@ pub async fn handle_mouse_event<B: Backend + Write>(app: &mut App<B>, event: Mou
 
                 let repeat = delta.unsigned_abs() as usize;
                 for _ in 0..repeat {
-                    if let Err(e) = client.write_all(seq).await {
-                        app.error = Some(e);
-                        break;
+                    if let AppMode::Connected { client, .. } = &app.mode {
+                        if let Err(e) = client.write_all(seq).await {
+                            app.error = Some(e);
+                            break;
+                        }
                     }
                 }
             } else {
