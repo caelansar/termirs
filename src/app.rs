@@ -193,7 +193,6 @@ pub enum ScpReturnMode {
 
 /// Track where a connection was initiated from
 #[derive(Clone)]
-#[allow(dead_code)]
 pub enum ConnectingSource {
     FormNew {
         auto_auth: bool,
@@ -786,8 +785,9 @@ impl<B: Backend + Write> App<B> {
         // Use current directory as it's more reliable than HOME which might be on a slow network mount
         let local_start_dir = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
-            .or_else(|_| std::env::var("HOME"))
-            .unwrap_or_else(|_| "/tmp".to_string());
+            .ok()
+            .or_else(|| dirs::home_dir().map(|p| p.to_string_lossy().to_string()))
+            .unwrap_or_else(|| "/tmp".to_string());
 
         let local_explorer = ratatui_explorer::FileExplorer::with_fs(
             Arc::new(ratatui_explorer::LocalFileSystem),
@@ -869,8 +869,9 @@ impl<B: Backend + Write> App<B> {
             // Create local explorer
             let local_start_dir = std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
-                .or_else(|_| std::env::var("HOME"))
-                .unwrap_or_else(|_| "/tmp".to_string());
+                .ok()
+                .or_else(|| dirs::home_dir().map(|p| p.to_string_lossy().to_string()))
+                .unwrap_or_else(|| "/tmp".to_string());
 
             match ratatui_explorer::FileExplorer::with_fs(
                 Arc::new(ratatui_explorer::LocalFileSystem),

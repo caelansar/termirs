@@ -15,10 +15,10 @@ pub struct SshConfigHost {
 
 /// Open SSH config from default location (~/.ssh/config)
 fn open_default_ssh_config() -> Result<std::fs::File> {
-    let home_dir = std::env::var("HOME")
-        .map_err(|_| AppError::ConfigError("HOME environment variable not set".to_string()))?;
+    let home_dir = dirs::home_dir()
+        .ok_or_else(|| AppError::ConfigError("Could not determine home directory".to_string()))?;
 
-    let config_path = PathBuf::from(&home_dir).join(".ssh").join("config");
+    let config_path = home_dir.join(".ssh").join("config");
 
     if !config_path.exists() {
         return Err(AppError::ConfigError(

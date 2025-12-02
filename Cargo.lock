@@ -4242,6 +4242,7 @@ dependencies = [
  "chrono",
  "clap",
  "crossterm",
+ "dirs",
  "futures",
  "rand 0.8.5",
  "ratatui",

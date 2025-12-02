@@ -23,7 +23,6 @@ pub struct TerminalState {
 }
 
 impl TerminalState {
-    #[allow(dead_code)]
     pub fn new(rows: u16, cols: u16) -> Self {
         Self::new_with_scrollback(rows, cols, DEFAULT_TERMINAL_SCROLLBACK_LINES)
     }

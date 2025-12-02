@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::convert::TryFrom;
-use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -448,15 +447,15 @@ impl SshSession {
 
     fn resolve_private_key_path(private_key_path: &str) -> Result<PathBuf> {
         if let Some(stripped) = private_key_path.strip_prefix("~/") {
-            let home = env::var_os("HOME").ok_or_else(|| {
-                AppError::SshConnectionError("HOME environment variable is not set".to_string())
+            let home = dirs::home_dir().ok_or_else(|| {
+                AppError::SshConnectionError("Could not determine home directory".to_string())
             })?;
-            Ok(PathBuf::from(home).join(stripped))
+            Ok(home.join(stripped))
         } else if private_key_path == "~" {
-            let home = env::var_os("HOME").ok_or_else(|| {
-                AppError::SshConnectionError("HOME environment variable is not set".to_string())
+            let home = dirs::home_dir().ok_or_else(|| {
+                AppError::SshConnectionError("Could not determine home directory".to_string())
             })?;
-            Ok(PathBuf::from(home))
+            Ok(home)
         } else {
             Ok(PathBuf::from(private_key_path))
         }
@@ -1919,12 +1918,12 @@ where
 
 pub fn expand_tilde(input: &str) -> PathBuf {
     if let Some(stripped) = input.strip_prefix("~/") {
-        if let Ok(home) = env::var("HOME") {
-            return PathBuf::from(home).join(stripped);
+        if let Some(home) = dirs::home_dir() {
+            return home.join(stripped);
         }
     } else if input == "~" {
-        if let Ok(home) = env::var("HOME") {
-            return PathBuf::from(home);
+        if let Some(home) = dirs::home_dir() {
+            return home;
         }
     }
 
