@@ -42,6 +42,8 @@ jobs:
             target: aarch64-unknown-linux-musl
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v3
