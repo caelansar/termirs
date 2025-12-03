@@ -341,6 +341,9 @@ impl<B: Backend + Write> Drop for App<B> {
         use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 
         disable_raw_mode().ok();
+        #[cfg(target_os = "windows")]
+        execute!(self.terminal.backend_mut(), LeaveAlternateScreen,).ok();
+        #[cfg(not(target_os = "windows"))]
         execute!(
             self.terminal.backend_mut(),
             DisableBracketedPaste,
@@ -378,18 +381,42 @@ impl<B: Backend + Write> App<B> {
     }
 
     pub fn init_terminal(&mut self) -> Result<()> {
-        use crossterm::event::{DisableMouseCapture, EnableBracketedPaste};
-        use crossterm::execute;
+        use crossterm::ExecutableCommand;
+        use crossterm::event::DisableMouseCapture;
         use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
 
         enable_raw_mode().inspect_err(|e| tracing::error!("Error enabling raw mode: {}", e))?;
-        execute!(
-            self.terminal.backend_mut(),
-            EnterAlternateScreen,
-            EnableBracketedPaste,
-            DisableMouseCapture
-        )
-        .inspect_err(|e| tracing::error!("Error executing terminal commands: {}", e))?;
+        self.terminal
+            .backend_mut()
+            .execute(EnterAlternateScreen)
+            .inspect_err(|e| {
+                tracing::error!(
+                    "Error executing EnterAlternateScreen terminal command: {}",
+                    e
+                )
+            })?;
+
+        #[cfg(not(target_os = "windows"))]
+        self.terminal
+            .backend_mut()
+            .execute(crossterm::event::EnableBracketedPaste)
+            .inspect_err(|e| {
+                tracing::error!(
+                    "Error executing EnableBracketedPaste terminal command: {}",
+                    e
+                )
+            })?;
+
+        #[cfg(not(target_os = "windows"))]
+        self.terminal
+            .backend_mut()
+            .execute(DisableMouseCapture)
+            .inspect_err(|e| {
+                tracing::error!(
+                    "Error executing DisableMouseCapture terminal command: {}",
+                    e
+                )
+            })?;
 
         self.mouse_capture_enabled = false;
         self.terminal_viewport = Rect::default();
@@ -408,6 +435,9 @@ impl<B: Backend + Write> App<B> {
     }
 
     fn set_mouse_capture(&mut self, enable: bool) -> Result<()> {
+        #[cfg(target_os = "windows")]
+        return Ok(());
+
         use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
         use crossterm::execute;
 
