@@ -382,13 +382,14 @@ impl<B: Backend + Write> App<B> {
         use crossterm::execute;
         use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
 
-        enable_raw_mode()?;
+        enable_raw_mode().inspect_err(|e| tracing::error!("Error enabling raw mode: {}", e))?;
         execute!(
             self.terminal.backend_mut(),
             EnterAlternateScreen,
             EnableBracketedPaste,
             DisableMouseCapture
-        )?;
+        )
+        .inspect_err(|e| tracing::error!("Error executing terminal commands: {}", e))?;
 
         self.mouse_capture_enabled = false;
         self.terminal_viewport = Rect::default();
