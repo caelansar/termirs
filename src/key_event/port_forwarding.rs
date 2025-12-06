@@ -205,7 +205,7 @@ pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
                 app.info = Some("No port forwards available".to_string());
             }
         }
-        KeyCode::Esc => {
+        KeyCode::Char('q') => {
             // Return to connection list
             app.go_to_connection_list_with_selected(app.current_selected());
         }

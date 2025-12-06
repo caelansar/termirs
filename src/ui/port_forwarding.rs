@@ -527,7 +527,7 @@ pub fn draw_port_forwarding_list(
             .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])
             .split(footer_area);
 
-        let hint_text = "Enter: Start/Stop   N: New   E: Edit   D: Delete   Esc: Back   /: Search";
+        let hint_text = "Enter: Start/Stop   N: New   E: Edit   D: Delete   Q: Back   /: Search";
 
         let left = Paragraph::new(Line::from(Span::styled(
             hint_text,
