@@ -133,6 +133,16 @@ pub async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: Key
         cancel_token,
     } = &mut app.mode
     {
+        // Check if in search mode first
+        let search_active = {
+            let guard = state.lock().await;
+            guard.search.active
+        };
+
+        if search_active {
+            return handle_search_key(state, key).await;
+        }
+
         // Determine interactive mode (full-screen alt buffer or application cursor)
         let guard = state.lock().await;
         let (in_alt, app_cursor) = (
@@ -156,6 +166,11 @@ pub async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: Key
         }
 
         match key.code {
+            // Enter search mode with Ctrl+/
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let mut guard = state.lock().await;
+                guard.search.enter();
+            }
             KeyCode::Esc => {
                 let guard = state.lock().await;
                 let (in_alt, app_cursor) = (
@@ -232,6 +247,68 @@ pub async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: Key
             }
         }
     }
+    KeyFlow::Continue
+}
+
+/// Handle key events while in search mode
+async fn handle_search_key(
+    state: &std::sync::Arc<tokio::sync::Mutex<crate::ui::TerminalState>>,
+    key: KeyEvent,
+) -> KeyFlow {
+    let mut guard = state.lock().await;
+
+    // Check if we're in input mode or navigation mode
+    if guard.search.is_inputting() {
+        // INPUT MODE: typing the search query
+        match key.code {
+            // Exit search mode completely
+            KeyCode::Esc => {
+                guard.search.exit();
+            }
+            // Confirm query and enter navigation mode
+            KeyCode::Enter => {
+                guard.search.confirm();
+            }
+            // Delete last character
+            KeyCode::Backspace => {
+                guard.search.pop_char();
+            }
+            // Add character to search query (including n, p, q, etc.)
+            KeyCode::Char(ch) => {
+                guard.search.push_char(ch);
+            }
+            _ => {}
+        }
+    } else {
+        // NAVIGATION MODE: navigating between matches
+        match key.code {
+            // Exit search mode completely
+            KeyCode::Esc | KeyCode::Char('q') => {
+                guard.search.exit();
+            }
+            // Go back to input mode to edit query
+            KeyCode::Enter | KeyCode::Char('i') | KeyCode::Char('/') => {
+                guard.search.edit();
+            }
+            // Navigate to next match
+            KeyCode::Char('n') => {
+                guard.search.next_match();
+                guard.scroll_to_current_match();
+            }
+            // Navigate to previous match (N or p or P)
+            KeyCode::Char('N') | KeyCode::Char('p') | KeyCode::Char('P') => {
+                guard.search.prev_match();
+                guard.scroll_to_current_match();
+            }
+            // Delete last character and go back to input mode
+            KeyCode::Backspace => {
+                guard.search.pop_char();
+                guard.search.edit();
+            }
+            _ => {}
+        }
+    }
+
     KeyFlow::Continue
 }
 

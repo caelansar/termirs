@@ -2,8 +2,12 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
 use std::time::Instant;
 
+use grep_matcher::Matcher;
+use grep_regex::RegexMatcher;
+use grep_searcher::Searcher;
+use grep_searcher::sinks::UTF8;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Widget};
 use ratatui::{buffer::Buffer, style::Style as RatStyle};
@@ -11,9 +15,150 @@ use vt100::{Color as VtColor, Parser};
 
 use crate::config::manager::DEFAULT_TERMINAL_SCROLLBACK_LINES;
 
+/// Represents a single search match position in the terminal
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SearchMatch {
+    pub row: usize,     // Absolute row (including scrollback)
+    pub start_col: u16, // Start column
+    pub end_col: u16,   // End column (exclusive)
+}
+
+/// Search state for terminal content
+#[derive(Clone)]
+pub struct TerminalSearch {
+    pub query: String,
+    pub active: bool,
+    pub inputting: bool, // true = typing query, false = navigation mode
+    pub matches: Vec<SearchMatch>,
+    pub current_idx: usize,
+    pub max_scrollback: usize, // cached max scrollback for coordinate conversion
+    dirty: bool,
+    last_query: String,
+}
+
+impl Default for TerminalSearch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TerminalSearch {
+    pub fn new() -> Self {
+        Self {
+            query: String::new(),
+            active: false,
+            inputting: false,
+            matches: Vec::new(),
+            current_idx: 0,
+            max_scrollback: 0,
+            dirty: true,
+            last_query: String::new(),
+        }
+    }
+
+    /// Enter search mode (starts in input phase)
+    pub fn enter(&mut self) {
+        self.active = true;
+        self.inputting = true;
+        self.query.clear();
+        self.matches.clear();
+        self.current_idx = 0;
+        self.dirty = true;
+        self.last_query.clear();
+    }
+
+    /// Exit search mode completely
+    pub fn exit(&mut self) {
+        self.active = false;
+        self.inputting = false;
+        self.query.clear();
+        self.matches.clear();
+        self.current_idx = 0;
+        self.dirty = true;
+        self.last_query.clear();
+    }
+
+    /// Confirm query and enter navigation mode
+    pub fn confirm(&mut self) {
+        self.inputting = false;
+    }
+
+    /// Go back to input mode (e.g., to edit query)
+    pub fn edit(&mut self) {
+        self.inputting = true;
+    }
+
+    /// Check if in input phase
+    pub fn is_inputting(&self) -> bool {
+        self.active && self.inputting
+    }
+
+    /// Check if in navigation phase
+    pub fn is_navigating(&self) -> bool {
+        self.active && !self.inputting
+    }
+
+    /// Mark search as dirty (needs recomputation)
+    pub fn mark_dirty(&mut self) {
+        if self.active && !self.query.is_empty() {
+            self.dirty = true;
+        }
+    }
+
+    /// Check if search needs recomputation
+    pub fn needs_update(&self) -> bool {
+        self.active && self.dirty
+    }
+
+    /// Navigate to next match
+    pub fn next_match(&mut self) {
+        if !self.matches.is_empty() {
+            self.current_idx = (self.current_idx + 1) % self.matches.len();
+        }
+    }
+
+    /// Navigate to previous match
+    pub fn prev_match(&mut self) {
+        if !self.matches.is_empty() {
+            self.current_idx = if self.current_idx == 0 {
+                self.matches.len() - 1
+            } else {
+                self.current_idx - 1
+            };
+        }
+    }
+
+    /// Get current match if any
+    pub fn current_match(&self) -> Option<&SearchMatch> {
+        self.matches.get(self.current_idx)
+    }
+
+    /// Update query and mark dirty if changed
+    pub fn set_query(&mut self, query: String) {
+        if query != self.query {
+            self.query = query;
+            self.dirty = true;
+        }
+    }
+
+    /// Append character to query
+    pub fn push_char(&mut self, ch: char) {
+        self.query.push(ch);
+        self.dirty = true;
+    }
+
+    /// Remove last character from query
+    pub fn pop_char(&mut self) {
+        if self.query.pop().is_some() {
+            self.dirty = true;
+        }
+    }
+}
+
 pub struct TerminalState {
     pub parser: Parser,
     pub last_change: Instant,
+    pub search: TerminalSearch,
     cached_lines: Vec<Line<'static>>,
     row_hashes: Vec<u64>,
     cached_height: u16,
@@ -32,6 +177,7 @@ impl TerminalState {
         Self {
             parser: Parser::new(rows, cols, limit),
             last_change: Instant::now(),
+            search: TerminalSearch::new(),
             cached_lines: Vec::new(),
             row_hashes: Vec::new(),
             cached_height: 0,
@@ -51,6 +197,7 @@ impl TerminalState {
         self.parser.process(data);
         self.last_change = Instant::now();
         self.invalidate_cache();
+        self.search.mark_dirty();
     }
 
     pub fn scroll_by(&mut self, delta_lines: i32) {
@@ -115,6 +262,138 @@ impl TerminalState {
         self.rebuild_cache();
         &self.cached_lines
     }
+
+    /// Run search on terminal content and update matches
+    /// Searches ALL content including scrollback history
+    pub fn update_search(&mut self) {
+        if !self.search.needs_update() {
+            return;
+        }
+
+        self.search.matches.clear();
+        self.search.dirty = false;
+
+        if self.search.query.is_empty() {
+            self.search.last_query.clear();
+            return;
+        }
+
+        // Build regex matcher - escape special characters to treat as literal search
+        let escaped_query = escape_regex_special_chars(&self.search.query);
+        let matcher = match RegexMatcher::new_line_matcher(&escaped_query) {
+            Ok(m) => m,
+            Err(_) => {
+                // If even escaped pattern fails, give up
+                return;
+            }
+        };
+
+        let (height, width) = self.parser.screen().size();
+
+        // Save current scrollback position
+        let original_scrollback = self.parser.screen().scrollback();
+
+        // Find the maximum scrollback (total scrollback buffer length)
+        self.parser.screen_mut().set_scrollback(usize::MAX);
+        let max_scrollback = self.parser.screen().scrollback();
+
+        // Calculate total rows: scrollback buffer + visible screen
+        let total_rows = max_scrollback + height as usize;
+
+        // Search through ALL content by iterating with different scrollback positions
+        // We'll search from oldest (top) to newest (bottom)
+        for abs_row in 0..total_rows {
+            // Calculate which scrollback position and view row we need
+            let (scrollback_pos, view_row) = if abs_row < max_scrollback {
+                // This row is in scrollback history
+                // To see row abs_row, we need scrollback = max_scrollback - abs_row
+                // and view_row = 0
+                let sb = max_scrollback - abs_row;
+                (sb, 0u16)
+            } else {
+                // This row is in the current screen
+                // scrollback = 0, view_row = abs_row - max_scrollback
+                (0, (abs_row - max_scrollback) as u16)
+            };
+
+            // Set scrollback to access this row
+            self.parser.screen_mut().set_scrollback(scrollback_pos);
+
+            let row_text = extract_visible_row_text(self.parser.screen(), view_row, width);
+            if row_text.trim().is_empty() {
+                continue;
+            }
+
+            // Search this row using grep_searcher
+            let mut row_matches: Vec<(u16, u16)> = Vec::new();
+            let _ = Searcher::new().search_slice(
+                &matcher,
+                row_text.as_bytes(),
+                UTF8(|_line_num, line| {
+                    let mut start = 0;
+                    while let Ok(Some(mat)) = matcher.find(line[start..].as_bytes()) {
+                        let match_start = start + mat.start();
+                        let match_end = start + mat.end();
+                        row_matches.push((match_start as u16, match_end as u16));
+                        start = match_start + 1;
+                        if start >= line.len() {
+                            break;
+                        }
+                    }
+                    Ok(true)
+                }),
+            );
+
+            // Add matches with absolute row index
+            for (start_col, end_col) in row_matches {
+                self.search.matches.push(SearchMatch {
+                    row: abs_row,
+                    start_col,
+                    end_col,
+                });
+            }
+        }
+
+        // Restore original scrollback position
+        self.parser.screen_mut().set_scrollback(original_scrollback);
+
+        // Preserve current index if valid, otherwise reset
+        if self.search.current_idx >= self.search.matches.len() {
+            self.search.current_idx = 0;
+        }
+
+        // Store max_scrollback for later use in coordinate conversion
+        self.search.max_scrollback = max_scrollback;
+
+        self.search.last_query = self.search.query.clone();
+    }
+
+    /// Scroll to make current match visible
+    pub fn scroll_to_current_match(&mut self) {
+        if let Some(mat) = self.search.current_match().cloned() {
+            let max_scrollback = self.search.max_scrollback;
+
+            // Calculate the scrollback position needed to show this match
+            // Match at absolute row `mat.row` should be visible in the viewport
+            if mat.row < max_scrollback {
+                // Match is in scrollback history
+                // To show row mat.row at the top of the screen:
+                // scrollback = max_scrollback - mat.row
+                let target_scrollback = max_scrollback - mat.row;
+                self.parser.screen_mut().set_scrollback(target_scrollback);
+            } else {
+                // Match is in current screen area
+                // Make sure we're scrolled to bottom to see it
+                self.parser.screen_mut().set_scrollback(0);
+            }
+            self.invalidate_cache();
+        }
+    }
+
+    /// Get the maximum scrollback value (for coordinate calculations)
+    pub fn get_max_scrollback(&self) -> usize {
+        self.search.max_scrollback
+    }
 }
 
 fn map_color(c: VtColor) -> Color {
@@ -123,6 +402,45 @@ fn map_color(c: VtColor) -> Color {
         VtColor::Idx(n) => Color::Indexed(n),
         VtColor::Rgb(r, g, b) => Color::Rgb(r, g, b),
     }
+}
+
+/// Escape regex special characters to treat pattern as literal
+fn escape_regex_special_chars(pattern: &str) -> String {
+    let mut escaped = String::with_capacity(pattern.len() * 2);
+    for ch in pattern.chars() {
+        match ch {
+            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$' => {
+                escaped.push('\\');
+                escaped.push(ch);
+            }
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+/// Extract text content from a visible terminal row
+fn extract_visible_row_text(screen: &vt100::Screen, row: u16, width: u16) -> String {
+    let mut text = String::with_capacity(width as usize);
+
+    for col in 0..width {
+        if let Some(cell) = screen.cell(row, col) {
+            // Skip wide character continuation cells
+            if cell.is_wide_continuation() {
+                continue;
+            }
+            let contents = cell.contents();
+            if contents.is_empty() {
+                text.push(' ');
+            } else {
+                text.push_str(contents);
+            }
+        } else {
+            text.push(' ');
+        }
+    }
+
+    text
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -140,11 +458,52 @@ pub fn draw_terminal(
     frame: &mut ratatui::Frame<'_>,
     selection: Option<TerminalSelection>,
 ) {
-    // Render the block separately
-    let term_block = Block::default()
+    // Update search matches if needed
+    state.update_search();
+
+    // Build title based on search state
+    let (title, title_style) = if state.search.active {
+        let search = &state.search;
+        let title_text = if search.is_inputting() {
+            if search.query.is_empty() {
+                " SEARCHING: _ ".to_string()
+            } else {
+                format!(" SEARCHING: {}_ ", search.query)
+            }
+        } else {
+            // Navigation mode
+            if search.matches.is_empty() {
+                format!(" SEARCHING: {} (no matches) ", search.query)
+            } else {
+                format!(
+                    " SEARCHING: {} ({}/{}) ",
+                    search.query,
+                    search.current_idx + 1,
+                    search.matches.len()
+                )
+            }
+        };
+        let style = Style::default()
+            .fg(Color::White)
+            .bg(Color::Yellow)
+            .add_modifier(Modifier::BOLD);
+        (title_text, style)
+    } else {
+        (
+            format!("Connected to {name}"),
+            Style::default().fg(Color::Cyan),
+        )
+    };
+
+    // Render the block with appropriate title
+    let mut term_block = Block::default()
         .borders(Borders::TOP)
-        .title(format!("Connected to {name}"))
-        .fg(Color::Cyan);
+        .title(Span::styled(title, title_style));
+    if state.search.active {
+        term_block = term_block.border_style(Style::default().fg(Color::Yellow));
+    } else {
+        term_block = term_block.border_style(Style::default().fg(Color::Cyan));
+    }
 
     frame.render_widget(&term_block, area);
 
@@ -161,15 +520,71 @@ pub fn draw_terminal(
     let widget = CachedTerminalWidget { lines };
     frame.render_widget(widget.bg(Color::Red), inner);
 
+    // Highlight search matches
+    if state.search.active && !state.search.matches.is_empty() {
+        highlight_search_matches(frame.buffer_mut(), inner, state);
+    }
+
     if let Some(selection) = selection {
         highlight_selection(frame.buffer_mut(), inner, selection);
     }
 
-    if !hide_cursor {
+    if !hide_cursor && !state.search.active {
         // Use inner area coordinates (already accounts for borders)
         let cursor_x = inner.x + cur_col;
         let cursor_y = inner.y + cur_row;
         frame.set_cursor_position((cursor_x, cursor_y));
+    }
+}
+
+/// Highlight search matches in the terminal buffer
+fn highlight_search_matches(buf: &mut Buffer, area: Rect, state: &TerminalState) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let current_match_idx = state.search.current_idx;
+    let max_scrollback = state.search.max_scrollback;
+    let current_scrollback = state.parser.screen().scrollback();
+    let height = area.height as usize;
+
+    // Calculate the range of absolute rows visible in the current view
+    // When scrollback = S, we see rows from (max_scrollback - S) to (max_scrollback - S + height - 1)
+    let view_start_abs = max_scrollback.saturating_sub(current_scrollback);
+    let view_end_abs = view_start_abs + height;
+
+    for (idx, mat) in state.search.matches.iter().enumerate() {
+        // Check if this match is in the current view
+        if mat.row < view_start_abs || mat.row >= view_end_abs {
+            continue;
+        }
+
+        // Convert absolute row to view row
+        let view_row = (mat.row - view_start_abs) as u16;
+        let y = area.y + view_row;
+
+        // Clamp columns to area bounds
+        let start_col = mat.start_col.min(area.width.saturating_sub(1));
+        let end_col = mat.end_col.min(area.width);
+
+        if start_col >= end_col {
+            continue;
+        }
+
+        // Use different highlight for current match vs other matches
+        let highlight_color = if idx == current_match_idx {
+            Color::LightGreen // Current match - bright green
+        } else {
+            Color::Yellow // Other matches - yellow
+        };
+
+        for col in start_col..end_col {
+            let x = area.x + col;
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_bg(highlight_color);
+                cell.set_fg(Color::Black);
+            }
+        }
     }
 }
 
