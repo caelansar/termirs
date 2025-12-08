@@ -16,6 +16,7 @@ A modern, async SSH terminal client built with Rust and [Ratatui](https://ratatu
 - **File Transfer**: SFTP support for secure file uploads with progress tracking
 - **File Explorer**: Dual-pane SFTP browser with copy/paste transfers
 - **Terminal Emulation**: Full VT100 terminal emulation with color support and scrollback
+- **Cross Platforms**: Support MacOs, Linux and Windows
 
 ### 🔒 Security Features
 - **Password Encryption**: All passwords are encrypted at rest using AES-256-GCM with system-specific keys
