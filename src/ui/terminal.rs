@@ -3,7 +3,7 @@ use std::hash::Hasher;
 use std::time::Instant;
 
 use grep_matcher::Matcher;
-use grep_regex::RegexMatcher;
+use grep_regex::RegexMatcherBuilder;
 use grep_searcher::Searcher;
 use grep_searcher::sinks::UTF8;
 use ratatui::layout::Rect;
@@ -280,7 +280,11 @@ impl TerminalState {
 
         // Build regex matcher - escape special characters to treat as literal search
         let escaped_query = escape_regex_special_chars(&self.search.query);
-        let matcher = match RegexMatcher::new_line_matcher(&escaped_query) {
+        let matcher = match RegexMatcherBuilder::new()
+            .case_smart(true)
+            .line_terminator(Some(b'\n'))
+            .build(&escaped_query)
+        {
             Ok(m) => m,
             Err(_) => {
                 // If even escaped pattern fails, give up
