@@ -32,6 +32,7 @@ pub struct TerminalSearch {
     pub matches: Vec<SearchMatch>,
     pub current_idx: usize,
     pub max_scrollback: usize, // cached max scrollback for coordinate conversion
+    pub needs_initial_scroll: bool, // true when search is confirmed and needs auto-scroll check
     dirty: bool,
     last_query: String,
 }
@@ -51,6 +52,7 @@ impl TerminalSearch {
             matches: Vec::new(),
             current_idx: 0,
             max_scrollback: 0,
+            needs_initial_scroll: false,
             dirty: true,
             last_query: String::new(),
         }
@@ -63,6 +65,7 @@ impl TerminalSearch {
         self.query.clear();
         self.matches.clear();
         self.current_idx = 0;
+        self.needs_initial_scroll = false;
         self.dirty = true;
         self.last_query.clear();
     }
@@ -74,6 +77,7 @@ impl TerminalSearch {
         self.query.clear();
         self.matches.clear();
         self.current_idx = 0;
+        self.needs_initial_scroll = false;
         self.dirty = true;
         self.last_query.clear();
     }
@@ -81,6 +85,7 @@ impl TerminalSearch {
     /// Confirm query and enter navigation mode
     pub fn confirm(&mut self) {
         self.inputting = false;
+        self.needs_initial_scroll = true;
     }
 
     /// Go back to input mode (e.g., to edit query)
@@ -394,6 +399,28 @@ impl TerminalState {
         }
     }
 
+    /// Check if any search match is visible in the current viewport
+    pub fn has_visible_match(&self) -> bool {
+        if self.search.matches.is_empty() {
+            return false;
+        }
+
+        let max_scrollback = self.search.max_scrollback;
+        let current_scrollback = self.parser.screen().scrollback();
+        let height = self.parser.screen().size().0 as usize;
+
+        // Calculate the range of absolute rows visible in the current view
+        // When scrollback = S, we see rows from (max_scrollback - S) to (max_scrollback - S + height - 1)
+        let view_start_abs = max_scrollback.saturating_sub(current_scrollback);
+        let view_end_abs = view_start_abs + height;
+
+        // Check if any match falls within the visible range
+        self.search
+            .matches
+            .iter()
+            .any(|mat| mat.row >= view_start_abs && mat.row < view_end_abs)
+    }
+
     /// Get the maximum scrollback value (for coordinate calculations)
     pub fn get_max_scrollback(&self) -> usize {
         self.search.max_scrollback
@@ -464,6 +491,14 @@ pub fn draw_terminal(
 ) {
     // Update search matches if needed
     state.update_search();
+
+    // Auto-scroll to first match if search was just confirmed and no matches are visible
+    if state.search.needs_initial_scroll && !state.search.matches.is_empty() {
+        if !state.has_visible_match() {
+            state.scroll_to_current_match();
+        }
+        state.search.needs_initial_scroll = false;
+    }
 
     // Build title based on search state
     let (title, title_style) = if state.search.active {
