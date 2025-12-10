@@ -283,12 +283,11 @@ impl TerminalState {
             return;
         }
 
-        // Build regex matcher - escape special characters to treat as literal search
-        let escaped_query = escape_regex_special_chars(&self.search.query);
+        // Build regex matcher
         let matcher = match RegexMatcherBuilder::new()
             .case_smart(true)
             .line_terminator(Some(b'\n'))
-            .build(&escaped_query)
+            .build(&self.search.query)
         {
             Ok(m) => m,
             Err(_) => {
@@ -435,21 +434,6 @@ fn map_color(c: VtColor) -> Color {
     }
 }
 
-/// Escape regex special characters to treat pattern as literal
-fn escape_regex_special_chars(pattern: &str) -> String {
-    let mut escaped = String::with_capacity(pattern.len() * 2);
-    for ch in pattern.chars() {
-        match ch {
-            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$' => {
-                escaped.push('\\');
-                escaped.push(ch);
-            }
-            _ => escaped.push(ch),
-        }
-    }
-    escaped
-}
-
 /// Extract text content from a visible terminal row
 fn extract_visible_row_text(screen: &vt100::Screen, row: u16, width: u16) -> String {
     let mut text = String::with_capacity(width as usize);
@@ -592,7 +576,12 @@ fn highlight_search_matches(buf: &mut Buffer, area: Rect, state: &TerminalState)
     let view_start_abs = max_scrollback.saturating_sub(current_scrollback);
     let view_end_abs = view_start_abs + height;
 
+    // First pass: render all non-current matches with Yellow
     for (idx, mat) in state.search.matches.iter().enumerate() {
+        if idx == current_match_idx {
+            continue; // Skip current match in first pass
+        }
+
         // Check if this match is in the current view
         if mat.row < view_start_abs || mat.row >= view_end_abs {
             continue;
@@ -610,18 +599,33 @@ fn highlight_search_matches(buf: &mut Buffer, area: Rect, state: &TerminalState)
             continue;
         }
 
-        // Use different highlight for current match vs other matches
-        let highlight_color = if idx == current_match_idx {
-            Color::LightGreen // Current match - bright green
-        } else {
-            Color::Yellow // Other matches - yellow
-        };
-
         for col in start_col..end_col {
             let x = area.x + col;
             if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.set_bg(highlight_color);
+                cell.set_bg(Color::Yellow);
                 cell.set_fg(Color::Black);
+            }
+        }
+    }
+
+    // Second pass: render current match with LightGreen (ensures it overrides Yellow)
+    if let Some(mat) = state.search.matches.get(current_match_idx) {
+        // Check if current match is in the current view
+        if mat.row >= view_start_abs && mat.row < view_end_abs {
+            let view_row = (mat.row - view_start_abs) as u16;
+            let y = area.y + view_row;
+
+            let start_col = mat.start_col.min(area.width.saturating_sub(1));
+            let end_col = mat.end_col.min(area.width);
+
+            if start_col < end_col {
+                for col in start_col..end_col {
+                    let x = area.x + col;
+                    if let Some(cell) = buf.cell_mut((x, y)) {
+                        cell.set_bg(Color::LightGreen);
+                        cell.set_fg(Color::Black);
+                    }
+                }
             }
         }
     }
