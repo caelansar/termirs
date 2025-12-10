@@ -160,6 +160,55 @@ impl TerminalSearch {
     }
 }
 
+/// Find all matches of a pattern in multi-line text.
+///
+/// Returns a vector of (line_index, start_col, end_col) for each match.
+/// Uses smart case matching (case-insensitive if pattern is all lowercase).
+///
+/// # Arguments
+/// * `text` - The multi-line text to search in
+/// * `pattern` - The regex pattern to search for
+///
+/// # Returns
+/// A vector of (line_index, start_col, end_col) tuples where line_index is 0-based
+pub fn find_matches_in_text(text: &str, pattern: &str) -> Vec<(usize, u16, u16)> {
+    if pattern.is_empty() || text.is_empty() {
+        return Vec::new();
+    }
+
+    let matcher = match RegexMatcherBuilder::new()
+        .case_smart(true)
+        .line_terminator(Some(b'\n'))
+        .build(pattern)
+    {
+        Ok(m) => m,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut matches = Vec::new();
+    let _ = Searcher::new().search_slice(
+        &matcher,
+        text.as_bytes(),
+        UTF8(|line_num, line| {
+            // line_num is 1-based, convert to 0-based
+            let line_idx = (line_num as usize).saturating_sub(1);
+            let mut start = 0;
+            while let Ok(Some(mat)) = matcher.find(line[start..].as_bytes()) {
+                let match_start = start + mat.start();
+                let match_end = start + mat.end();
+                matches.push((line_idx, match_start as u16, match_end as u16));
+                start = match_start + 1;
+                if start >= line.len() {
+                    break;
+                }
+            }
+            Ok(true)
+        }),
+    );
+
+    matches
+}
+
 pub struct TerminalState {
     pub parser: Parser,
     pub last_change: Instant,
@@ -271,6 +320,15 @@ impl TerminalState {
     /// Run search on terminal content and update matches
     /// Searches ALL content including scrollback history
     pub fn update_search(&mut self) {
+        self.update_search_with_finder(find_matches_in_text);
+    }
+
+    /// Run search on terminal content using a custom match finder function
+    /// This allows for dependency injection in tests
+    fn update_search_with_finder<F>(&mut self, find_matches: F)
+    where
+        F: Fn(&str, &str) -> Vec<(usize, u16, u16)>,
+    {
         if !self.search.needs_update() {
             return;
         }
@@ -282,19 +340,6 @@ impl TerminalState {
             self.search.last_query.clear();
             return;
         }
-
-        // Build regex matcher
-        let matcher = match RegexMatcherBuilder::new()
-            .case_smart(true)
-            .line_terminator(Some(b'\n'))
-            .build(&self.search.query)
-        {
-            Ok(m) => m,
-            Err(_) => {
-                // If even escaped pattern fails, give up
-                return;
-            }
-        };
 
         let (height, width) = self.parser.screen().size();
 
@@ -308,19 +353,19 @@ impl TerminalState {
         // Calculate total rows: scrollback buffer + visible screen
         let total_rows = max_scrollback + height as usize;
 
-        // Search through ALL content by iterating with different scrollback positions
-        // We'll search from oldest (top) to newest (bottom)
+        // Collect all row texts with their absolute row indices
+        // This allows us to search the entire content at once
+        let mut row_texts: Vec<String> = Vec::with_capacity(total_rows);
+        let mut abs_row_map: Vec<usize> = Vec::with_capacity(total_rows);
+
         for abs_row in 0..total_rows {
             // Calculate which scrollback position and view row we need
             let (scrollback_pos, view_row) = if abs_row < max_scrollback {
                 // This row is in scrollback history
-                // To see row abs_row, we need scrollback = max_scrollback - abs_row
-                // and view_row = 0
                 let sb = max_scrollback - abs_row;
                 (sb, 0u16)
             } else {
                 // This row is in the current screen
-                // scrollback = 0, view_row = abs_row - max_scrollback
                 (0, (abs_row - max_scrollback) as u16)
             };
 
@@ -328,32 +373,22 @@ impl TerminalState {
             self.parser.screen_mut().set_scrollback(scrollback_pos);
 
             let row_text = extract_visible_row_text(self.parser.screen(), view_row, width);
-            if row_text.trim().is_empty() {
-                continue;
+            if !row_text.trim().is_empty() {
+                row_texts.push(row_text);
+                abs_row_map.push(abs_row);
             }
+        }
 
-            // Search this row using grep_searcher
-            let mut row_matches: Vec<(u16, u16)> = Vec::new();
-            let _ = Searcher::new().search_slice(
-                &matcher,
-                row_text.as_bytes(),
-                UTF8(|_line_num, line| {
-                    let mut start = 0;
-                    while let Ok(Some(mat)) = matcher.find(line[start..].as_bytes()) {
-                        let match_start = start + mat.start();
-                        let match_end = start + mat.end();
-                        row_matches.push((match_start as u16, match_end as u16));
-                        start = match_start + 1;
-                        if start >= line.len() {
-                            break;
-                        }
-                    }
-                    Ok(true)
-                }),
-            );
+        // Restore original scrollback position
+        self.parser.screen_mut().set_scrollback(original_scrollback);
 
-            // Add matches with absolute row index
-            for (start_col, end_col) in row_matches {
+        // Build the complete text with newlines and search once
+        let full_text = row_texts.join("\n");
+        let all_matches = find_matches(&full_text, &self.search.query);
+
+        // Map line indices back to absolute row indices
+        for (line_idx, start_col, end_col) in all_matches {
+            if let Some(&abs_row) = abs_row_map.get(line_idx) {
                 self.search.matches.push(SearchMatch {
                     row: abs_row,
                     start_col,
@@ -361,9 +396,6 @@ impl TerminalState {
                 });
             }
         }
-
-        // Restore original scrollback position
-        self.parser.screen_mut().set_scrollback(original_scrollback);
 
         // Preserve current index if valid, otherwise reset
         if self.search.current_idx >= self.search.matches.len() {
@@ -860,5 +892,142 @@ mod tests {
             idle_duration,
             idle_duration / iterations
         );
+    }
+
+    #[test]
+    fn test_find_matches_in_text_single_match() {
+        let text = "hello world";
+        let matches = find_matches_in_text(text, "world");
+        // (line_idx, start_col, end_col)
+        assert_eq!(matches, vec![(0, 6, 11)]);
+    }
+
+    #[test]
+    fn test_find_matches_in_text_multiline() {
+        let text = "hello world\nwow hello world";
+        let matches = find_matches_in_text(text, "world");
+        // Line 0: "hello world" -> match at 6-11
+        // Line 1: "wow hello world" -> match at 10-15
+        assert_eq!(matches, vec![(0, 6, 11), (1, 10, 15)]);
+    }
+
+    #[test]
+    fn test_find_matches_in_text_multiple_matches() {
+        let text = "foo bar foo baz foo";
+        let matches = find_matches_in_text(text, "foo");
+        assert_eq!(matches, vec![(0, 0, 3), (0, 8, 11), (0, 16, 19)]);
+    }
+
+    #[test]
+    fn test_find_matches_in_text_no_matches() {
+        let text = "hello world";
+        let matches = find_matches_in_text(text, "xyz");
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_find_matches_in_text_empty_pattern() {
+        let text = "hello world";
+        let matches = find_matches_in_text(text, "");
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_find_matches_in_text_empty_text() {
+        let matches = find_matches_in_text("", "pattern");
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_find_matches_in_text_case_insensitive() {
+        // Smart case: lowercase pattern should match case-insensitively
+        let text = "Hello HELLO hello";
+        let matches = find_matches_in_text(text, "hello");
+        assert_eq!(matches, vec![(0, 0, 5), (0, 6, 11), (0, 12, 17)]);
+    }
+
+    #[test]
+    fn test_find_matches_in_text_case_sensitive_with_uppercase() {
+        // Smart case: pattern with uppercase should match case-sensitively
+        let text = "Hello HELLO hello";
+        let matches = find_matches_in_text(text, "Hello");
+        assert_eq!(matches, vec![(0, 0, 5)]);
+    }
+
+    #[test]
+    fn test_find_matches_in_text_regex_pattern() {
+        let text = "foo123 bar456 baz789";
+        let matches = find_matches_in_text(text, r"\d+");
+        // The implementation finds overlapping matches by advancing 1 byte after each match
+        assert_eq!(
+            matches,
+            vec![
+                (0, 3, 6),
+                (0, 4, 6),
+                (0, 5, 6),
+                (0, 10, 13),
+                (0, 11, 13),
+                (0, 12, 13),
+                (0, 17, 20),
+                (0, 18, 20),
+                (0, 19, 20)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_find_matches_in_text_overlapping_potential() {
+        // Pattern "aa" in "aaaa" - should find non-overlapping matches
+        let text = "aaaa";
+        let matches = find_matches_in_text(text, "aa");
+        // With start = match_start + 1, we get overlapping positions
+        assert_eq!(matches, vec![(0, 0, 2), (0, 1, 3), (0, 2, 4)]);
+    }
+
+    #[test]
+    fn test_find_matches_in_text_special_chars() {
+        let text = "path/to/file.rs";
+        let matches = find_matches_in_text(text, r"\.rs");
+        assert_eq!(matches, vec![(0, 12, 15)]);
+    }
+
+    #[test]
+    fn test_find_matches_in_text_invalid_regex() {
+        let text = "hello world";
+        // Invalid regex pattern should return empty
+        let matches = find_matches_in_text(text, "[invalid");
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_find_matches_in_text_word_boundary() {
+        let text = "the them there";
+        let matches = find_matches_in_text(text, r"\bthe\b");
+        assert_eq!(matches, vec![(0, 0, 3)]);
+    }
+
+    #[test]
+    fn test_find_matches_in_text_at_boundaries() {
+        // Test matching at start and end of text
+        let text = "foo bar foo";
+        let matches = find_matches_in_text(text, "foo");
+        assert_eq!(matches, vec![(0, 0, 3), (0, 8, 11)]);
+    }
+
+    #[test]
+    fn test_find_matches_in_text_whole_text() {
+        let text = "exact";
+        let matches = find_matches_in_text(text, "exact");
+        assert_eq!(matches, vec![(0, 0, 5)]);
+    }
+
+    #[test]
+    fn test_find_matches_in_text_multiline_multiple_matches() {
+        let text = "foo bar\nbaz foo\nfoo end";
+        let matches = find_matches_in_text(text, "foo");
+        // Line 0: "foo bar" -> match at 0-3
+        // Line 1: "baz foo" -> match at 4-7
+        // Line 2: "foo end" -> match at 0-3
+        assert_eq!(matches, vec![(0, 0, 3), (1, 4, 7), (2, 0, 3)]);
     }
 }
