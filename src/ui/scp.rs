@@ -160,6 +160,7 @@ pub fn draw_scp_progress_popup(area: Rect, progress: &ScpProgress, frame: &mut r
     }
 
     if let Some(time_area) = layout.last().copied() {
+        // Determine elapsed time - freeze when all files hit 100% or when completed
         let elapsed = if progress.completed {
             if let Some(results) = &progress.completion_results {
                 let mut max_time = progress.start_time.elapsed();
@@ -170,12 +171,16 @@ pub fn draw_scp_progress_popup(area: Rect, progress: &ScpProgress, frame: &mut r
             } else {
                 progress.start_time.elapsed()
             }
+        } else if let Some(done_at) = progress.all_files_done_at {
+            // Freeze elapsed time when all files reached 100% (before ScpResult arrives)
+            done_at.duration_since(progress.start_time)
         } else {
             progress.start_time.elapsed()
         };
 
         let mut elapsed_text = format!("Elapsed: {:.1}s", elapsed.as_secs_f32());
-        if progress.completed {
+        // Show completion hint when all files are done or fully completed
+        if progress.completed || progress.all_files_done_at.is_some() {
             elapsed_text.push_str("  •  Press Enter or Esc to close");
         }
         let time_info = Paragraph::new(Line::from(Span::styled(

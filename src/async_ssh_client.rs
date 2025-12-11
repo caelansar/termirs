@@ -1008,7 +1008,7 @@ impl SshSession {
                         process_read_result(result)?;
 
                         // Batch process additional completed results without blocking
-                        // Use zero-timeout to check for immediately available results
+                        // Use now_or_never to poll for immediately available results
                         // This significantly reduces loop overhead when multiple reads complete simultaneously
                         while let Some(Some(res)) = read_futures.next().now_or_never() {
                             process_read_result(res)?;

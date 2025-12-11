@@ -18,8 +18,11 @@ pub async fn handle_scp_progress_key<B: Backend + Write>(
         ..
     } = &mut app.mode
     {
+        // Allow closing when fully completed OR when all files have reached 100%
+        let can_close = progress.completed || progress.all_files_done_at.is_some();
+
         match key.code {
-            KeyCode::Enter if progress.completed => {
+            KeyCode::Enter if can_close => {
                 info!("SCP transfer completed, returning to file explorer");
                 if let Some(mode) = return_mode.take() {
                     let results = progress.completion_results.clone();
@@ -30,7 +33,7 @@ pub async fn handle_scp_progress_key<B: Backend + Write>(
             }
             KeyCode::Esc => {
                 if let Some(mode) = return_mode.take() {
-                    if progress.completed {
+                    if can_close {
                         debug!("Closing completed SCP transfer dialog");
                         let results = progress.completion_results.clone();
                         let last_success = progress.last_success_destination.clone();

@@ -80,6 +80,8 @@ pub struct ScpProgress {
     pub completed: bool,
     pub completion_results: Option<Vec<ScpFileResult>>,
     pub last_success_destination: Option<String>,
+    /// Tracks when all files reached 100% transfer
+    pub all_files_done_at: Option<std::time::Instant>,
 }
 
 #[derive(Clone, Debug)]
@@ -99,7 +101,15 @@ impl ScpProgress {
             completed: false,
             completion_results: None,
             last_success_destination: None,
+            all_files_done_at: None,
         }
+    }
+
+    /// Check if all files have finished transferring (100% or failed)
+    pub fn all_files_finished(&self) -> bool {
+        self.files
+            .iter()
+            .all(|f| matches!(f.state, TransferState::Completed | TransferState::Failed(_)))
     }
 
     pub fn update_progress(&mut self, update: ScpTransferProgress) {
@@ -124,6 +134,11 @@ impl ScpProgress {
                     file.state = TransferState::InProgress;
                 }
             }
+        }
+
+        // Track when all files reach 100% (to freeze elapsed time display)
+        if self.all_files_done_at.is_none() && self.all_files_finished() {
+            self.all_files_done_at = Some(std::time::Instant::now());
         }
     }
 
