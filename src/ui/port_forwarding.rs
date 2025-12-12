@@ -37,6 +37,12 @@ pub struct PortForwardingForm {
     pub error: Option<String>,
 }
 
+impl Default for PortForwardingForm {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PortForwardingForm {
     pub fn new() -> Self {
         let mut local_addr = TextArea::default();
@@ -307,7 +313,7 @@ impl PortForwardingForm {
         Self {
             id: Some(pf.id.clone()), // Preserve the ID when editing
             connection_id: pf.connection_id.clone(),
-            forward_type: pf.forward_type.clone(),
+            forward_type: pf.forward_type,
             local_addr,
             local_port,
             service_host,
@@ -748,14 +754,14 @@ pub fn draw_port_forwarding_form_popup(
 
     // Try to show error if space available
     let error_idx = field_list.len();
-    if let Some(error) = &form.error {
-        if error_idx < layout.len() {
-            let error_paragraph = Paragraph::new(Line::from(Span::styled(
-                error,
-                Style::default().fg(Color::Red),
-            )));
-            frame.render_widget(error_paragraph, layout[error_idx]);
-        }
+    if let Some(error) = &form.error
+        && error_idx < layout.len()
+    {
+        let error_paragraph = Paragraph::new(Line::from(Span::styled(
+            error,
+            Style::default().fg(Color::Red),
+        )));
+        frame.render_widget(error_paragraph, layout[error_idx]);
     }
 
     // Render the main block first

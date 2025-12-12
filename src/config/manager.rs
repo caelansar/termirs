@@ -151,6 +151,7 @@ pub struct PortForward {
 
 impl PortForward {
     /// Creates a new port forward with the given parameters
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         connection_id: String,
         forward_type: PortForwardType,

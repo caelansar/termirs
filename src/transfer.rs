@@ -113,26 +113,26 @@ impl ScpProgress {
     }
 
     pub fn update_progress(&mut self, update: ScpTransferProgress) {
-        if let Some(file) = self.files.get_mut(update.file_index) {
-            if matches!(
+        if let Some(file) = self.files.get_mut(update.file_index)
+            && matches!(
                 file.state,
                 TransferState::Pending | TransferState::InProgress
-            ) {
-                file.transferred_bytes = update.transferred_bytes;
-                if update.total_bytes.is_some() {
-                    file.total_bytes = update.total_bytes;
-                }
+            )
+        {
+            file.transferred_bytes = update.transferred_bytes;
+            if update.total_bytes.is_some() {
+                file.total_bytes = update.total_bytes;
+            }
 
-                // Check if transfer is complete (100%)
-                if let Some(total) = file.total_bytes {
-                    if file.transferred_bytes >= total && total > 0 {
-                        file.state = TransferState::Completed;
-                    } else {
-                        file.state = TransferState::InProgress;
-                    }
+            // Check if transfer is complete (100%)
+            if let Some(total) = file.total_bytes {
+                if file.transferred_bytes >= total && total > 0 {
+                    file.state = TransferState::Completed;
                 } else {
                     file.state = TransferState::InProgress;
                 }
+            } else {
+                file.state = TransferState::InProgress;
             }
         }
 

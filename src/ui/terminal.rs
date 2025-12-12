@@ -193,7 +193,7 @@ pub fn find_matches_in_text(text: &str, pattern: &str) -> Vec<(usize, u16, u16)>
             // line_num is 1-based, convert to 0-based
             let line_idx = (line_num as usize).saturating_sub(1);
             let mut start = 0;
-            while let Ok(Some(mat)) = matcher.find(line[start..].as_bytes()) {
+            while let Ok(Some(mat)) = matcher.find(&line.as_bytes()[start..]) {
                 let match_start = start + mat.start();
                 let match_end = start + mat.end();
                 matches.push((line_idx, match_start as u16, match_end as u16));

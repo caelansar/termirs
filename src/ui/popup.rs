@@ -353,14 +353,14 @@ fn draw_connection_form_popup_with_mode(
 
     // Try to show error if space available
     let error_idx = field_configs.len();
-    if let Some(error) = &form.error {
-        if error_idx < layout.len() {
-            let error_paragraph = Paragraph::new(Line::from(Span::styled(
-                error,
-                Style::default().fg(Color::Red),
-            )));
-            frame.render_widget(error_paragraph, layout[error_idx]);
-        }
+    if let Some(error) = &form.error
+        && error_idx < layout.len()
+    {
+        let error_paragraph = Paragraph::new(Line::from(Span::styled(
+            error,
+            Style::default().fg(Color::Red),
+        )));
+        frame.render_widget(error_paragraph, layout[error_idx]);
     }
 
     // Render the main block first

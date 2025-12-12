@@ -157,10 +157,10 @@ pub async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: Key
             if guard.parser.screen().scrollback() > 0 {
                 guard.scroll_to_bottom();
             }
-            if let Some(seq) = encode_key_event_to_ansi(app_cursor, &key) {
-                if let Err(e) = client.write_all(&seq).await {
-                    app.error = Some(e);
-                }
+            if let Some(seq) = encode_key_event_to_ansi(app_cursor, &key)
+                && let Err(e) = client.write_all(&seq).await
+            {
+                app.error = Some(e);
             }
             return KeyFlow::Continue;
         }

@@ -27,49 +27,48 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
         remote_explorer,
         ..
     } = &mut app.mode
+        && *showing_delete_confirmation
     {
-        if *showing_delete_confirmation {
-            match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
-                    // Perform the deletion
-                    debug!("User confirmed file deletion");
-                    let result = match delete_pane {
-                        ActivePane::Left => {
-                            info!("Deleting file from left pane");
-                            left_explorer.handle(ratatui_explorer::Input::Delete).await
-                        }
-                        ActivePane::Right => {
-                            info!("Deleting file from right pane");
-                            remote_explorer
-                                .handle(ratatui_explorer::Input::Delete)
-                                .await
-                        }
-                    };
-
-                    if let Err(e) = result {
-                        error!("File deletion failed: {}", e);
-                        app.error = Some(crate::error::AppError::SftpError(format!(
-                            "Delete error: {e}"
-                        )));
-                    } else {
-                        info!("File deletion completed successfully");
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                // Perform the deletion
+                debug!("User confirmed file deletion");
+                let result = match delete_pane {
+                    ActivePane::Left => {
+                        info!("Deleting file from left pane");
+                        left_explorer.handle(ratatui_explorer::Input::Delete).await
                     }
+                    ActivePane::Right => {
+                        info!("Deleting file from right pane");
+                        remote_explorer
+                            .handle(ratatui_explorer::Input::Delete)
+                            .await
+                    }
+                };
 
-                    // Close the confirmation dialog
-                    *showing_delete_confirmation = false;
-                    app.mark_redraw();
-                    return KeyFlow::Continue;
+                if let Err(e) = result {
+                    error!("File deletion failed: {}", e);
+                    app.error = Some(crate::error::AppError::SftpError(format!(
+                        "Delete error: {e}"
+                    )));
+                } else {
+                    info!("File deletion completed successfully");
                 }
-                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                    // Cancel deletion
-                    *showing_delete_confirmation = false;
-                    app.mark_redraw();
-                    return KeyFlow::Continue;
-                }
-                _ => {
-                    // Ignore other keys when dialog is showing
-                    return KeyFlow::Continue;
-                }
+
+                // Close the confirmation dialog
+                *showing_delete_confirmation = false;
+                app.mark_redraw();
+                return KeyFlow::Continue;
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                // Cancel deletion
+                *showing_delete_confirmation = false;
+                app.mark_redraw();
+                return KeyFlow::Continue;
+            }
+            _ => {
+                // Ignore other keys when dialog is showing
+                return KeyFlow::Continue;
             }
         }
     }
@@ -83,136 +82,135 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
         ssh_connection,
         ..
     } = &mut app.mode
+        && *showing_source_selector
     {
-        if *showing_source_selector {
-            let local_offset = 1;
-            let mut filtered_indices = filter_connection_indices(
-                app.config.connections(),
-                Some(ssh_connection.id.as_str()),
-                selector_search_query.as_str(),
-            );
-            let mut total_items = filtered_indices.len() + local_offset;
-            if *selector_selected >= total_items {
-                *selector_selected = total_items.saturating_sub(1);
-            }
+        let local_offset = 1;
+        let mut filtered_indices = filter_connection_indices(
+            app.config.connections(),
+            Some(ssh_connection.id.as_str()),
+            selector_search_query.as_str(),
+        );
+        let mut total_items = filtered_indices.len() + local_offset;
+        if *selector_selected >= total_items {
+            *selector_selected = total_items.saturating_sub(1);
+        }
 
-            if *selector_search_mode {
-                match key.code {
-                    KeyCode::Char(c) => {
-                        selector_search_query.push(c);
-                        filtered_indices = filter_connection_indices(
-                            app.config.connections(),
-                            Some(ssh_connection.id.as_str()),
-                            selector_search_query.as_str(),
-                        );
-                        total_items = filtered_indices.len() + local_offset;
-                        if selector_search_query.is_empty() {
-                            *selector_selected =
-                                (*selector_selected).min(total_items.saturating_sub(1));
-                        } else if filtered_indices.is_empty() {
-                            *selector_selected = 0;
-                        } else {
-                            *selector_selected = local_offset;
-                        }
-                        app.mark_redraw();
-                        return KeyFlow::Continue;
-                    }
-                    KeyCode::Backspace => {
-                        selector_search_query.pop();
-                        filtered_indices = filter_connection_indices(
-                            app.config.connections(),
-                            Some(ssh_connection.id.as_str()),
-                            selector_search_query.as_str(),
-                        );
-                        total_items = filtered_indices.len() + local_offset;
-                        if selector_search_query.is_empty() {
-                            *selector_selected =
-                                (*selector_selected).min(total_items.saturating_sub(1));
-                        } else if filtered_indices.is_empty() {
-                            *selector_selected = 0;
-                        } else {
-                            *selector_selected = local_offset;
-                        }
-                        app.mark_redraw();
-                        return KeyFlow::Continue;
-                    }
-                    KeyCode::Esc => {
-                        if !selector_search_query.is_empty() {
-                            selector_search_query.clear();
-                            filtered_indices = filter_connection_indices(
-                                app.config.connections(),
-                                Some(ssh_connection.id.as_str()),
-                                selector_search_query.as_str(),
-                            );
-                            total_items = filtered_indices.len() + local_offset;
-                            *selector_selected =
-                                (*selector_selected).min(total_items.saturating_sub(1));
-                        } else {
-                            *selector_search_mode = false;
-                        }
-                        app.mark_redraw();
-                        return KeyFlow::Continue;
-                    }
-                    _ => {}
-                }
-            }
-
+        if *selector_search_mode {
             match key.code {
-                KeyCode::Char('/') => {
-                    *selector_search_mode = true;
-                    app.mark_redraw();
-                    return KeyFlow::Continue;
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    if *selector_selected > 0 {
-                        *selector_selected -= 1;
-                    } else {
-                        *selector_selected = total_items.saturating_sub(1);
-                    }
-                    app.mark_redraw();
-                    return KeyFlow::Continue;
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if *selector_selected < total_items.saturating_sub(1) {
-                        *selector_selected += 1;
-                    } else {
+                KeyCode::Char(c) => {
+                    selector_search_query.push(c);
+                    filtered_indices = filter_connection_indices(
+                        app.config.connections(),
+                        Some(ssh_connection.id.as_str()),
+                        selector_search_query.as_str(),
+                    );
+                    total_items = filtered_indices.len() + local_offset;
+                    if selector_search_query.is_empty() {
+                        *selector_selected =
+                            (*selector_selected).min(total_items.saturating_sub(1));
+                    } else if filtered_indices.is_empty() {
                         *selector_selected = 0;
+                    } else {
+                        *selector_selected = local_offset;
                     }
                     app.mark_redraw();
                     return KeyFlow::Continue;
                 }
-                KeyCode::Enter => {
-                    let selected_idx = (*selector_selected).min(total_items.saturating_sub(1));
-                    let selection = if selected_idx < local_offset {
-                        None
+                KeyCode::Backspace => {
+                    selector_search_query.pop();
+                    filtered_indices = filter_connection_indices(
+                        app.config.connections(),
+                        Some(ssh_connection.id.as_str()),
+                        selector_search_query.as_str(),
+                    );
+                    total_items = filtered_indices.len() + local_offset;
+                    if selector_search_query.is_empty() {
+                        *selector_selected =
+                            (*selector_selected).min(total_items.saturating_sub(1));
+                    } else if filtered_indices.is_empty() {
+                        *selector_selected = 0;
                     } else {
-                        filtered_indices
-                            .get(selected_idx - local_offset)
-                            .and_then(|conn_idx| app.config.connections().get(*conn_idx).cloned())
-                    };
-
-                    *showing_source_selector = false;
-                    *selector_search_mode = false;
-                    selector_search_query.clear();
-
-                    if let Some(conn) = selection {
-                        app.switch_left_pane_to_ssh(conn).await;
-                    } else {
-                        app.switch_left_pane_to_local().await;
+                        *selector_selected = local_offset;
                     }
-
                     app.mark_redraw();
                     return KeyFlow::Continue;
                 }
                 KeyCode::Esc => {
-                    *showing_source_selector = false;
-                    *selector_search_mode = false;
-                    selector_search_query.clear();
+                    if !selector_search_query.is_empty() {
+                        selector_search_query.clear();
+                        filtered_indices = filter_connection_indices(
+                            app.config.connections(),
+                            Some(ssh_connection.id.as_str()),
+                            selector_search_query.as_str(),
+                        );
+                        total_items = filtered_indices.len() + local_offset;
+                        *selector_selected =
+                            (*selector_selected).min(total_items.saturating_sub(1));
+                    } else {
+                        *selector_search_mode = false;
+                    }
                     app.mark_redraw();
                     return KeyFlow::Continue;
                 }
-                _ => return KeyFlow::Continue,
+                _ => {}
             }
+        }
+
+        match key.code {
+            KeyCode::Char('/') => {
+                *selector_search_mode = true;
+                app.mark_redraw();
+                return KeyFlow::Continue;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if *selector_selected > 0 {
+                    *selector_selected -= 1;
+                } else {
+                    *selector_selected = total_items.saturating_sub(1);
+                }
+                app.mark_redraw();
+                return KeyFlow::Continue;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if *selector_selected < total_items.saturating_sub(1) {
+                    *selector_selected += 1;
+                } else {
+                    *selector_selected = 0;
+                }
+                app.mark_redraw();
+                return KeyFlow::Continue;
+            }
+            KeyCode::Enter => {
+                let selected_idx = (*selector_selected).min(total_items.saturating_sub(1));
+                let selection = if selected_idx < local_offset {
+                    None
+                } else {
+                    filtered_indices
+                        .get(selected_idx - local_offset)
+                        .and_then(|conn_idx| app.config.connections().get(*conn_idx).cloned())
+                };
+
+                *showing_source_selector = false;
+                *selector_search_mode = false;
+                selector_search_query.clear();
+
+                if let Some(conn) = selection {
+                    app.switch_left_pane_to_ssh(conn).await;
+                } else {
+                    app.switch_left_pane_to_local().await;
+                }
+
+                app.mark_redraw();
+                return KeyFlow::Continue;
+            }
+            KeyCode::Esc => {
+                *showing_source_selector = false;
+                *selector_search_mode = false;
+                selector_search_query.clear();
+                app.mark_redraw();
+                return KeyFlow::Continue;
+            }
+            _ => return KeyFlow::Continue,
         }
     }
 
@@ -487,15 +485,13 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                     // }
                 } else {
                     if let Some(existing_direction) = copy_buffer.first().map(|item| item.direction)
+                        && existing_direction != direction
                     {
-                        if existing_direction != direction {
-                            app.info = Some(
-                                "Selected files must all come from the same source pane"
-                                    .to_string(),
-                            );
-                            app.mark_redraw();
-                            return KeyFlow::Continue;
-                        }
+                        app.info = Some(
+                            "Selected files must all come from the same source pane".to_string(),
+                        );
+                        app.mark_redraw();
+                        return KeyFlow::Continue;
                     }
 
                     info!(
@@ -655,14 +651,12 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                     let mut progress = ScpProgress::new(connection_name.clone(), progress_items);
 
                     for (idx, spec) in transfer_specs.iter().enumerate() {
-                        if matches!(spec.mode, crate::ui::ScpMode::Send) {
-                            if let Ok(metadata) =
+                        if matches!(spec.mode, crate::ui::ScpMode::Send)
+                            && let Ok(metadata) =
                                 tokio::fs::metadata(crate::expand_tilde(&spec.local_path)).await
-                            {
-                                if let Some(file_progress) = progress.files.get_mut(idx) {
-                                    file_progress.total_bytes = Some(metadata.len());
-                                }
-                            }
+                            && let Some(file_progress) = progress.files.get_mut(idx)
+                        {
+                            file_progress.total_bytes = Some(metadata.len());
                         }
                     }
 

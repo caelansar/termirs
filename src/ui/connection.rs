@@ -32,6 +32,12 @@ pub struct ConnectionForm {
     pub error: Option<String>,
 }
 
+impl Default for ConnectionForm {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConnectionForm {
     pub fn new() -> Self {
         let mut host = TextArea::default();

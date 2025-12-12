@@ -944,10 +944,10 @@ impl<B: Backend + Write> App<B> {
             }
 
             // Check if already using this connection
-            if let FileExplorerPane::RemoteSsh { connection, .. } = left_pane {
-                if connection.id == conn.id {
-                    return;
-                }
+            if let FileExplorerPane::RemoteSsh { connection, .. } = left_pane
+                && connection.id == conn.id
+            {
+                return;
             }
 
             // Switch left pane to SSH connection
@@ -1440,21 +1440,20 @@ impl<B: Backend + Write> App<B> {
                 connection_search_query,
                 ..
             } = &mut self.mode
+                && *select_connection_mode
             {
-                if *select_connection_mode {
-                    let connections = self.config.connections();
-                    crate::ui::draw_connection_selector_popup(
-                        f,
-                        size,
-                        connections,
-                        *connection_selected,
-                        None,
-                        false,
-                        " Choose Connection ",
-                        *connection_search_mode,
-                        connection_search_query.as_str(),
-                    );
-                }
+                let connections = self.config.connections();
+                crate::ui::draw_connection_selector_popup(
+                    f,
+                    size,
+                    connections,
+                    *connection_selected,
+                    None,
+                    false,
+                    " Choose Connection ",
+                    *connection_search_mode,
+                    connection_search_query.as_str(),
+                );
             }
             if let AppMode::PortForwardingFormEdit {
                 select_connection_mode,
@@ -1463,21 +1462,20 @@ impl<B: Backend + Write> App<B> {
                 connection_search_query,
                 ..
             } = &mut self.mode
+                && *select_connection_mode
             {
-                if *select_connection_mode {
-                    let connections = self.config.connections();
-                    crate::ui::draw_connection_selector_popup(
-                        f,
-                        size,
-                        connections,
-                        *connection_selected,
-                        None,
-                        false,
-                        " Choose Connection ",
-                        *connection_search_mode,
-                        connection_search_query.as_str(),
-                    );
-                }
+                let connections = self.config.connections();
+                crate::ui::draw_connection_selector_popup(
+                    f,
+                    size,
+                    connections,
+                    *connection_selected,
+                    None,
+                    false,
+                    " Choose Connection ",
+                    *connection_search_mode,
+                    connection_search_query.as_str(),
+                );
             }
 
             // Overlay SCP progress popup if in SCP progress mode
@@ -1577,33 +1575,33 @@ impl<B: Backend + Write> App<B> {
 
             match ev {
                 AppEvent::Tick => {
-                    if self.selection_dragging {
-                        if let Some(auto) = self.selection_auto_scroll {
-                            let state_arc = if let AppMode::Connected { state, .. } = &self.mode {
-                                Some(state.clone())
+                    if self.selection_dragging
+                        && let Some(auto) = self.selection_auto_scroll
+                    {
+                        let state_arc = if let AppMode::Connected { state, .. } = &self.mode {
+                            Some(state.clone())
+                        } else {
+                            None
+                        };
+                        if let Some(state_arc) = state_arc {
+                            let mut guard = state_arc.lock().await;
+                            let delta = match auto.direction {
+                                SelectionScrollDirection::Up => 1,
+                                SelectionScrollDirection::Down => -1,
+                            };
+                            guard.scroll_by(delta);
+                            let (height, width) = guard.parser.screen().size();
+                            let endpoint = if height > 0 && width > 0 {
+                                let target_row = auto.view_row.min(height.saturating_sub(1));
+                                let target_col = auto.view_col.min(width.saturating_sub(1));
+                                make_selection_endpoint(&guard, target_row, target_col)
                             } else {
                                 None
                             };
-                            if let Some(state_arc) = state_arc {
-                                let mut guard = state_arc.lock().await;
-                                let delta = match auto.direction {
-                                    SelectionScrollDirection::Up => 1,
-                                    SelectionScrollDirection::Down => -1,
-                                };
-                                guard.scroll_by(delta);
-                                let (height, width) = guard.parser.screen().size();
-                                let endpoint = if height > 0 && width > 0 {
-                                    let target_row = auto.view_row.min(height.saturating_sub(1));
-                                    let target_col = auto.view_col.min(width.saturating_sub(1));
-                                    make_selection_endpoint(&guard, target_row, target_col)
-                                } else {
-                                    None
-                                };
-                                self.mark_redraw();
-                                drop(guard);
-                                if let Some(endpoint) = endpoint {
-                                    self.update_selection(endpoint);
-                                }
+                            self.mark_redraw();
+                            drop(guard);
+                            if let Some(endpoint) = endpoint {
+                                self.update_selection(endpoint);
                             }
                         }
                     }
@@ -1804,19 +1802,16 @@ impl<B: Backend + Write> App<B> {
                                         let return_to = *return_to;
 
                                         // Save the server key if it was received
-                                        if conn.public_key.is_none() {
-                                            if let Some(server_key) = client.get_server_key() {
-                                                if let Some(stored_conn) = self
-                                                    .config
-                                                    .connections_mut()
-                                                    .iter_mut()
-                                                    .find(|c| c.id == conn.id)
-                                                {
-                                                    stored_conn.public_key =
-                                                        Some(server_key.to_string());
-                                                    let _ = self.config.save();
-                                                }
-                                            }
+                                        if conn.public_key.is_none()
+                                            && let Some(server_key) = client.get_server_key()
+                                            && let Some(stored_conn) = self
+                                                .config
+                                                .connections_mut()
+                                                .iter_mut()
+                                                .find(|c| c.id == conn.id)
+                                        {
+                                            stored_conn.public_key = Some(server_key.to_string());
+                                            let _ = self.config.save();
                                         }
 
                                         // Handle based on source

@@ -93,10 +93,10 @@ pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
             }
         }
         KeyCode::Char('j') | KeyCode::Down => {
-            if let AppMode::PortForwardingList { selected, .. } = &mut app.mode {
-                if len != 0 {
-                    *selected = (*selected + 1) % len;
-                }
+            if let AppMode::PortForwardingList { selected, .. } = &mut app.mode
+                && len != 0
+            {
+                *selected = (*selected + 1) % len;
             }
         }
         KeyCode::Enter => {
@@ -520,10 +520,10 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
                 if let Some(textarea) = form.focused_textarea_mut() {
                     textarea.input(key);
                 }
-            } else if let AppMode::PortForwardingFormEdit { form, .. } = &mut app.mode {
-                if let Some(textarea) = form.focused_textarea_mut() {
-                    textarea.input(key);
-                }
+            } else if let AppMode::PortForwardingFormEdit { form, .. } = &mut app.mode
+                && let Some(textarea) = form.focused_textarea_mut()
+            {
+                textarea.input(key);
             }
         }
     }
@@ -589,14 +589,14 @@ pub async fn handle_port_forwarding_form_connection_select_key<B: Backend + Writ
                 }
 
                 let idx = (*selector.connection_selected).min(total_items.saturating_sub(1));
-                if let Some(conn_idx) = filtered_indices.get(idx) {
-                    if let Some(connection) = connections.get(*conn_idx) {
-                        selector.form.connection_id = connection.id.clone();
-                        selector.form.next();
-                        *selector.select_connection_mode = false;
-                        *selector.search_mode = false;
-                        selector.search_query.clear();
-                    }
+                if let Some(conn_idx) = filtered_indices.get(idx)
+                    && let Some(connection) = connections.get(*conn_idx)
+                {
+                    selector.form.connection_id = connection.id.clone();
+                    selector.form.next();
+                    *selector.select_connection_mode = false;
+                    *selector.search_mode = false;
+                    selector.search_query.clear();
                 }
                 app.mark_redraw();
             }
@@ -634,15 +634,15 @@ pub async fn handle_port_forwarding_form_connection_select_key<B: Backend + Writ
             }
 
             let idx = (*selector.connection_selected).min(total_items.saturating_sub(1));
-            if let Some(conn_idx) = filtered_indices.get(idx) {
-                if let Some(connection) = connections.get(*conn_idx) {
-                    selector.form.connection_id = connection.id.clone();
-                    selector.form.next();
-                    *selector.select_connection_mode = false;
-                    *selector.search_mode = false;
-                    selector.search_query.clear();
-                    app.mark_redraw();
-                }
+            if let Some(conn_idx) = filtered_indices.get(idx)
+                && let Some(connection) = connections.get(*conn_idx)
+            {
+                selector.form.connection_id = connection.id.clone();
+                selector.form.next();
+                *selector.select_connection_mode = false;
+                *selector.search_mode = false;
+                selector.search_query.clear();
+                app.mark_redraw();
             }
         }
         KeyCode::Esc => {

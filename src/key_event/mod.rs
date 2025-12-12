@@ -139,40 +139,39 @@ pub async fn handle_paste_event<B: Backend + Write>(app: &mut App<B>, data: &str
 
 /// Handle key events while connecting to SSH
 async fn handle_connecting_key<B: Backend + Write>(app: &mut App<B>, key: KeyEvent) -> KeyFlow {
-    if key.code == KeyCode::Esc {
-        if let AppMode::Connecting {
+    if key.code == KeyCode::Esc
+        && let AppMode::Connecting {
             cancel_token,
             return_from,
             return_to,
             ..
         } = &mut app.mode
-        {
-            // Cancel the connection task
-            cancel_token.cancel();
+    {
+        // Cancel the connection task
+        cancel_token.cancel();
 
-            // Clone the data we need before changing mode
-            let return_from = return_from.clone();
-            let return_to = *return_to;
+        // Clone the data we need before changing mode
+        let return_from = return_from.clone();
+        let return_to = *return_to;
 
-            // Return to the appropriate mode
-            match return_from {
-                crate::ConnectingSource::FormNew { auto_auth, form } => {
-                    app.mode = AppMode::FormNew {
-                        auto_auth,
-                        form,
-                        current_selected: return_to,
-                    };
-                }
-                crate::ConnectingSource::FormEdit { form, original } => {
-                    app.mode = AppMode::FormEdit {
-                        form,
-                        original,
-                        current_selected: return_to,
-                    };
-                }
-                crate::ConnectingSource::ConnectionList => {
-                    app.go_to_connection_list_with_selected(return_to);
-                }
+        // Return to the appropriate mode
+        match return_from {
+            crate::ConnectingSource::FormNew { auto_auth, form } => {
+                app.mode = AppMode::FormNew {
+                    auto_auth,
+                    form,
+                    current_selected: return_to,
+                };
+            }
+            crate::ConnectingSource::FormEdit { form, original } => {
+                app.mode = AppMode::FormEdit {
+                    form,
+                    original,
+                    current_selected: return_to,
+                };
+            }
+            crate::ConnectingSource::ConnectionList => {
+                app.go_to_connection_list_with_selected(return_to);
             }
         }
     }
@@ -344,11 +343,11 @@ pub async fn handle_mouse_event<B: Backend + Write>(app: &mut App<B>, event: Mou
 
                 let repeat = delta.unsigned_abs() as usize;
                 for _ in 0..repeat {
-                    if let AppMode::Connected { client, .. } = &app.mode {
-                        if let Err(e) = client.write_all(seq).await {
-                            app.error = Some(e);
-                            break;
-                        }
+                    if let AppMode::Connected { client, .. } = &app.mode
+                        && let Err(e) = client.write_all(seq).await
+                    {
+                        app.error = Some(e);
+                        break;
                     }
                 }
             } else {
@@ -473,11 +472,11 @@ fn char_info_at(screen: &vt100::Screen, row: u16, column: u16, width: u16) -> Ch
 
 fn resolve_base_col(screen: &vt100::Screen, row: u16, mut col: u16) -> u16 {
     while col > 0 {
-        if let Some(cell) = screen.cell(row, col) {
-            if cell.is_wide_continuation() {
-                col -= 1;
-                continue;
-            }
+        if let Some(cell) = screen.cell(row, col)
+            && cell.is_wide_continuation()
+        {
+            col -= 1;
+            continue;
         }
         break;
     }
