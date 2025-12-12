@@ -50,6 +50,47 @@ impl HostFile for tokio::fs::File {
     }
 }
 
+pub(crate) trait ProgressReporter {
+    fn report_progress(&self, transferred_bytes: u64);
+    fn set_total_bytes(&self, total_bytes: Option<u64>);
+}
+
+pub(crate) struct TxProgressReporter {
+    progress: Option<mpsc::Sender<ScpTransferProgress>>,
+    file_index: usize,
+    total_bytes: std::cell::Cell<Option<u64>>,
+}
+
+impl TxProgressReporter {
+    pub(crate) fn new(
+        progress: Option<mpsc::Sender<ScpTransferProgress>>,
+        file_index: usize,
+        total_bytes: Option<u64>,
+    ) -> Self {
+        Self {
+            progress,
+            file_index,
+            total_bytes: std::cell::Cell::new(total_bytes),
+        }
+    }
+}
+
+impl ProgressReporter for TxProgressReporter {
+    fn report_progress(&self, transferred_bytes: u64) {
+        if let Some(progress) = &self.progress {
+            let _ = progress.try_send(ScpTransferProgress {
+                file_index: self.file_index,
+                transferred_bytes,
+                total_bytes: self.total_bytes.get(),
+            });
+        }
+    }
+
+    fn set_total_bytes(&self, total_bytes: Option<u64>) {
+        self.total_bytes.set(total_bytes);
+    }
+}
+
 /// Buffer pool for efficient memory reuse during SFTP transfers
 struct BufferPool {
     pool: Arc<tokio::sync::Mutex<VecDeque<BytesMut>>>,
@@ -217,6 +258,34 @@ impl SshSession {
         Self::authenticate_session(&mut session, connection).await?;
 
         Ok((session, server_key))
+    }
+
+    async fn setup_sftp_session(
+        channel: Option<Channel<client::Msg>>,
+        connection: &Connection,
+        timeout: Option<Duration>,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<RawSftpSession> {
+        let channel = match channel {
+            Some(channel) => channel,
+            None => {
+                let (session, _server_key) =
+                    Self::new_session_with_timeout(connection, timeout, cancel).await?;
+
+                session.channel_open_session().await?
+            }
+        };
+        channel.request_subsystem(true, "sftp").await?;
+
+        // Create RawSftpSession for better performance
+        let sftp = RawSftpSession::new(channel.into_stream());
+
+        // Initialize the SFTP session
+        sftp.init()
+            .await
+            .map_err(|e| AppError::SftpError(format!("Failed to initialize SFTP: {e}")))?;
+
+        Ok(sftp)
     }
 
     async fn authenticate_session(
@@ -623,7 +692,6 @@ impl SshSession {
         self.server_key.get().map(|s| s.as_str())
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn sftp_send_file_with_timeout(
         channel: Option<Channel<client::Msg>>,
         connection: &Connection,
@@ -631,37 +699,11 @@ impl SshSession {
         to: &str,
         timeout: Option<Duration>,
         cancel: &tokio_util::sync::CancellationToken,
-        file_index: usize,
-        progress: Option<mpsc::Sender<ScpTransferProgress>>,
+        progress_reporter: impl ProgressReporter,
     ) -> Result<()> {
-        let channel = if let Some(channel) = channel {
-            channel
-        } else {
-            let (session, _server_key) =
-                Self::new_session_with_timeout(connection, timeout, cancel).await?;
+        let sftp = Self::setup_sftp_session(channel, connection, timeout, cancel).await?;
 
-            session.channel_open_session().await?
-        };
-        channel.request_subsystem(true, "sftp").await?;
-
-        // Create RawSftpSession for better performance
-        let sftp = RawSftpSession::new(channel.into_stream());
-
-        // Initialize the SFTP session
-        sftp.init()
-            .await
-            .map_err(|e| AppError::SftpError(format!("Failed to initialize SFTP: {e}")))?;
-
-        // Open local file and get its size
-        let file_size = from.file_size().await?;
-
-        if let Some(progress_tx) = &progress {
-            let _ = progress_tx.try_send(ScpTransferProgress {
-                file_index,
-                transferred_bytes: 0,
-                total_bytes: Some(file_size),
-            });
-        }
+        progress_reporter.report_progress(0);
 
         // Open remote file using RawSftpSession
         let remote_handle = sftp
@@ -755,13 +797,7 @@ impl SshSession {
 
                             bytes_written += chunk_size;
 
-                            if let Some(progress_tx) = &progress {
-                                let _ = progress_tx.try_send(ScpTransferProgress {
-                                    file_index,
-                                    transferred_bytes: bytes_written,
-                                    total_bytes: Some(file_size),
-                                });
-                            }
+                            progress_reporter.report_progress(bytes_written);
                         }
                     }
                 }
@@ -780,13 +816,7 @@ impl SshSession {
 
                             bytes_written += chunk_size;
 
-                            if let Some(progress_tx) = &progress {
-                                let _ = progress_tx.try_send(ScpTransferProgress {
-                                    file_index,
-                                    transferred_bytes: bytes_written,
-                                    total_bytes: Some(file_size),
-                                });
-                            }
+                            progress_reporter.report_progress(bytes_written);
                         }
                     }
                 }
@@ -798,13 +828,7 @@ impl SshSession {
             .await
             .map_err(|e| AppError::SftpError(format!("Failed to close remote file: {e}")))?;
 
-        if let Some(progress_tx) = &progress {
-            let _ = progress_tx.try_send(ScpTransferProgress {
-                file_index,
-                transferred_bytes: bytes_written,
-                total_bytes: Some(file_size),
-            });
-        }
+        progress_reporter.report_progress(bytes_written);
 
         Ok(())
     }
@@ -825,6 +849,11 @@ impl SshSession {
                 e
             })?;
 
+        // Open local file and get its size
+        let file_size = local_file.file_size().await;
+
+        let progress_reporter = TxProgressReporter::new(progress, file_index, file_size.ok());
+
         let result = Self::sftp_send_file_with_timeout(
             channel,
             connection,
@@ -832,8 +861,7 @@ impl SshSession {
             remote_path,
             None,
             &tokio_util::sync::CancellationToken::new(),
-            file_index,
-            progress,
+            progress_reporter,
         )
         .await;
 
@@ -848,7 +876,6 @@ impl SshSession {
         result
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn sftp_receive_file_with_timeout(
         channel: Option<Channel<client::Msg>>,
         connection: &Connection,
@@ -856,40 +883,14 @@ impl SshSession {
         to: impl HostFile,
         timeout: Option<Duration>,
         cancel: &tokio_util::sync::CancellationToken,
-        file_index: usize,
-        progress: Option<mpsc::Sender<ScpTransferProgress>>,
+        progress_reporter: impl ProgressReporter,
     ) -> Result<()> {
-        let channel = if let Some(ch) = channel {
-            ch
-        } else {
-            let (session, _server_key) =
-                Self::new_session_with_timeout(connection, timeout, cancel).await?;
-            session.channel_open_session().await?
-        };
-        channel.request_subsystem(true, "sftp").await?;
+        let sftp = Self::setup_sftp_session(channel, connection, timeout, cancel).await?;
 
-        // Create RawSftpSession for better performance
-        let sftp = RawSftpSession::new(channel.into_stream());
-
-        // Initialize the SFTP session
-        sftp.init()
-            .await
-            .map_err(|e| AppError::SftpError(format!("Failed to initialize SFTP: {e}")))?;
-
-        let mut file_size = None;
-
-        if let Some(progress_tx) = &progress {
-            file_size = match sftp.stat(from).await {
-                Ok(attrs) => Some(attrs.attrs.len()),
-                Err(_) => None,
-            };
-
-            let _ = progress_tx.try_send(ScpTransferProgress {
-                file_index,
-                transferred_bytes: 0,
-                total_bytes: file_size,
-            });
-        }
+        // Query remote file size for progress reporting
+        let file_size = sftp.stat(from).await.ok().map(|attrs| attrs.attrs.len());
+        progress_reporter.set_total_bytes(file_size);
+        progress_reporter.report_progress(0);
 
         // Open remote file for reading
         let remote_handle = sftp
@@ -1030,13 +1031,7 @@ impl SshSession {
                 next_write_offset += data.len() as u64;
                 bytes_read += data.len() as u64;
 
-                if let Some(progress_tx) = &progress {
-                    let _ = progress_tx.try_send(ScpTransferProgress {
-                        file_index,
-                        transferred_bytes: bytes_read,
-                        total_bytes: file_size,
-                    });
-                }
+                progress_reporter.report_progress(bytes_read);
             }
         }
 
@@ -1051,13 +1046,7 @@ impl SshSession {
             .await
             .map_err(|e| AppError::SftpError(format!("Failed to close remote file: {e}")))?;
 
-        if let Some(progress_tx) = &progress {
-            let _ = progress_tx.try_send(ScpTransferProgress {
-                file_index,
-                transferred_bytes: bytes_read,
-                total_bytes: file_size,
-            });
-        }
+        // progress_reporter.report_progress(bytes_read);
 
         Ok(())
     }
@@ -1078,6 +1067,7 @@ impl SshSession {
                 e
             })?;
 
+        let progress_reporter = TxProgressReporter::new(progress, file_index, None);
         let result = Self::sftp_receive_file_with_timeout(
             channel,
             connection,
@@ -1085,8 +1075,7 @@ impl SshSession {
             local_file,
             None,
             &tokio_util::sync::CancellationToken::new(),
-            file_index,
-            progress,
+            progress_reporter,
         )
         .await;
 
@@ -2475,9 +2464,17 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
                         None
                     }
                 }
+                17 => {
+                    // SSH_FXP_STAT
+                    if let Ok((request_id, path)) = Self::parse_stat_request(&packet[1..]) {
+                        Self::handle_stat(request_id, &path, sftp_root).await
+                    } else {
+                        None
+                    }
+                }
                 _ => {
                     // Unsupported operation
-                    None
+                    unimplemented!("Unsupported SFTP packet type: {packet_type}");
                 }
             }
         }
@@ -2774,6 +2771,53 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
             // Empty language tag
             response.extend_from_slice(&0u32.to_be_bytes());
             Some(response)
+        }
+
+        fn parse_stat_request(data: &[u8]) -> std::result::Result<(u32, String), ()> {
+            if data.len() < 4 {
+                return Err(());
+            }
+            let request_id = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+            let mut pos = 4;
+
+            if data.len() < pos + 4 {
+                return Err(());
+            }
+            let path_len =
+                u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+                    as usize;
+            pos += 4;
+
+            if data.len() < pos + path_len {
+                return Err(());
+            }
+            let path = String::from_utf8_lossy(&data[pos..pos + path_len]).to_string();
+
+            Ok((request_id, path))
+        }
+
+        async fn handle_stat(
+            request_id: u32,
+            path: &str,
+            sftp_root: &std::path::Path,
+        ) -> Option<Vec<u8>> {
+            let file_path = sftp_root.join(path);
+
+            match tokio::fs::metadata(&file_path).await {
+                Ok(metadata) => {
+                    let size = metadata.len();
+                    println!("Remote file size: {:?}", size);
+                    let mut response = Vec::new();
+                    response.push(105); // SSH_FXP_ATTRS
+                    response.extend_from_slice(&request_id.to_be_bytes());
+                    // flags: SSH_FILEXFER_ATTR_SIZE (0x00000001)
+                    response.extend_from_slice(&1u32.to_be_bytes());
+                    // size (u64)
+                    response.extend_from_slice(&size.to_be_bytes());
+                    Some(response)
+                }
+                Err(_) => Self::create_error_response(request_id, 2), // SSH_FX_NO_SUCH_FILE
+            }
         }
     }
 

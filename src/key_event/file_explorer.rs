@@ -7,6 +7,7 @@ use std::io::Write;
 use tracing::{debug, error, info};
 
 use super::KeyFlow;
+use crate::async_ssh_client::HostFile;
 use crate::ui::file_explorer::filter_connection_indices;
 use crate::{
     ActivePane, App, AppMode, CopyDirection, CopyOperation, FileExplorerPane, ScpFileProgress,
@@ -711,6 +712,9 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                                             if let Some((left_sftp_session, _left_conn)) = left_sftp_clone {
                                                 match crate::filesystem::sftp_file::open_for_read(left_sftp_session.clone(), &spec.local_path).await {
                                                     Ok(sftp_file) => {
+                                                        let file_size = sftp_file.file_size().await;
+                                                        let progress_reporter = crate::async_ssh_client::TxProgressReporter::new(Some(progress_tx.clone()), index, file_size.ok());
+
                                                         crate::async_ssh_client::SshSession::sftp_send_file_with_timeout(
                                                             None,
                                                             &ssh_connection,
@@ -718,8 +722,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                                                             &spec.remote_path,
                                                             None,
                                                             &tokio_util::sync::CancellationToken::new(),
-                                                            index,
-                                                            Some(progress_tx.clone()),
+                                                            progress_reporter,
                                                         )
                                                         .await
                                                     }
@@ -736,6 +739,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                                             if let Some((left_sftp_session, _left_conn)) = left_sftp_clone {
                                                 match crate::filesystem::sftp_file::open_for_write(left_sftp_session.clone(), &spec.local_path).await {
                                                     Ok(sftp_file) => {
+                                                        let progress_reporter = crate::async_ssh_client::TxProgressReporter::new(Some(progress_tx.clone()), index, None);
                                                         crate::async_ssh_client::SshSession::sftp_receive_file_with_timeout(
                                                             None,
                                                             &ssh_connection,
@@ -743,8 +747,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                                                             sftp_file,
                                                             None,
                                                             &tokio_util::sync::CancellationToken::new(),
-                                                            index,
-                                                            Some(progress_tx.clone()),
+                                                            progress_reporter,
                                                         )
                                                         .await
                                                     }
