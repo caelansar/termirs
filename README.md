@@ -67,49 +67,62 @@ cargo build --release --locked
 ### Keyboard Shortcuts
 
 #### Connection List
-- `↑/↓` or `j/k`: Navigate connections
-- `Enter`: Connect to selected connection
-- `n`: Create new connection
-- `e`: Edit selected connection
-- `d`: Delete selected connection
-- `i`: Open file explorer
-- `p`: Open port forwarding management
-- `/`: Search connections
-- `q`: Quit application
+
+| Key            | Action                          |
+| -------------- | ------------------------------- |
+| `↑/↓` or `j/k` | Navigate connections            |
+| `Enter`        | Connect to selected connection  |
+| `n`            | Create new connection           |
+| `e`            | Edit selected connection        |
+| `d`            | Delete selected connection      |
+| `i`            | Open file explorer              |
+| `p`            | Open port forwarding management |
+| `/`            | Search connections              |
+| `q`            | Quit application                |
 
 #### New Connection Form
-- `Tab/Shift+Tab`: Navigate between fields
-- `Ctrl+L`: Load connection details from `~/.ssh/config` (enter hostname first)
-- `Enter`: Save and connect
-- `Esc`: Cancel and return to connection list
+
+| Key             | Action                                                              |
+| --------------- | ------------------------------------------------------------------- |
+| `Tab/Shift+Tab` | Navigate between fields                                             |
+| `Ctrl+L`        | Load connection details from `~/.ssh/config` (enter hostname first) |
+| `Enter`         | Save and connect                                                    |
+| `Esc`           | Cancel and return to connection list                                |
 
 #### Connected Terminal
-- `Page Up/Down` or `Ctrl+b/Ctrl+f`: Scroll terminal history
-- `Esc`: Disconnect and return to connection list
 
-#### File Transfer (SFTP)
-- `↑/↓`: Switch between local and remote path fields
-- `Enter`: Start file transfer
-- `Esc`: Cancel and return to connection list
+| Key                               | Action                                          |
+| --------------------------------- | ----------------------------------------------- |
+| `Page Up/Down` or `Ctrl+b/Ctrl+f` | Scroll terminal history                         |
+| `Ctrl+F`                          | Search terminal history                         |
+| `Esc`                             | Disconnect and return to connection list        |
+| `n`                               | Navigate next matched item (in search mode)     |
+| `p`                               | Navigate previous matched item (in search mode) |
 
 #### File Explorer (SFTP)
-- `Tab`: Swap active pane between local and remote directories
-- `j/k` or `↓/↑`: Move selection within the active pane
-- `Enter` or `→`: Enter directories
-- `Backspace` or `←`: Go up one directory level
-- `c`: Copy highlighted file or folder into the transfer clipboard
-- `v`: Paste into the destination pane to start an async transfer
-- `r`: Refresh the current pane listing
-- `Esc`: Cancel file explorer and return to connection list
+
+| Key                | Action                                                      |
+| ------------------ | ----------------------------------------------------------- |
+| `Tab`              | Swap active pane between local and remote directories       |
+| `j/k` or `↓/↑`     | Move selection within the active pane                       |
+| `Enter` or `→`     | Enter directories                                           |
+| `Backspace` or `←` | Go up one directory level                                   |
+| `c`                | Copy highlighted file or folder into the transfer clipboard |
+| `v`                | Paste into the destination pane to start an async transfer  |
+| `r`                | Refresh the current pane listing                            |
+| `Esc`              | Cancel file explorer and return to connection list          |
 
 #### Port Forwarding Management
-- `↑/↓` or `j/k`: Navigate port forwarding rules
-- `n`: Create new port forwarding rule
-- `e`: Edit selected port forwarding rule
-- `d`: Delete selected port forwarding rule
-- `Enter`: Start/stop selected port forwarding rule
-- `/`: Search port forwarding rules
-- `Esc`: Return to connection list
+
+| Key            | Action                                   |
+| -------------- | ---------------------------------------- |
+| `↑/↓` or `j/k` | Navigate port forwarding rules           |
+| `n`            | Create new port forwarding rule          |
+| `e`            | Edit selected port forwarding rule       |
+| `d`            | Delete selected port forwarding rule     |
+| `Enter`        | Start/stop selected port forwarding rule |
+| `/`            | Search port forwarding rules             |
+| `Esc`          | Return to connection list                |
 
 ### Authentication Methods
 
