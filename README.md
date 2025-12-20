@@ -105,8 +105,9 @@ cargo build --release --locked
 | ------------------ | ----------------------------------------------------------- |
 | `Tab`              | Swap active pane between local and remote directories       |
 | `j/k` or `↓/↑`     | Move selection within the active pane                       |
-| `Enter` or `→`     | Enter directories                                           |
-| `Backspace` or `←` | Go up one directory level                                   |
+| `Enter` or `l`     | Enter directories                                           |
+| `Backspace` or `h` | Go up one directory level                                   |
+| `H`                | Toggle whether hidden files should be shown                 |
 | `c`                | Copy highlighted file or folder into the transfer clipboard |
 | `v`                | Paste into the destination pane to start an async transfer  |
 | `r`                | Refresh the current pane listing                            |

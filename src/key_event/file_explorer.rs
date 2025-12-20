@@ -352,7 +352,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
             }
 
             // Navigation: Enter directory
-            KeyCode::Right | KeyCode::Enter => {
+            KeyCode::Right | KeyCode::Enter | KeyCode::Char('l') => {
                 let result = match active_pane {
                     ActivePane::Left => left_explorer.handle(ratatui_explorer::Input::Right).await,
                     ActivePane::Right => {
@@ -373,7 +373,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
             }
 
             // Navigation: Go to parent directory
-            KeyCode::Left | KeyCode::Backspace => {
+            KeyCode::Left | KeyCode::Backspace | KeyCode::Char('h') => {
                 let result = match active_pane {
                     ActivePane::Left => left_explorer.handle(ratatui_explorer::Input::Left).await,
                     ActivePane::Right => {
@@ -822,7 +822,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
             }
 
             // Toggle hidden files
-            KeyCode::Char('h') => {
+            KeyCode::Char('H') => {
                 let result = match active_pane {
                     ActivePane::Left => {
                         let show_hidden = !left_explorer.show_hidden();
