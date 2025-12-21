@@ -53,12 +53,26 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
             let selected_idx = app.current_selected();
             if let Some(conn) = app.config.connections().get(selected_idx).cloned() {
                 let _ = app.config.touch_last_used(&conn.id);
-                match app.go_to_file_explorer(conn, selected_idx).await {
-                    Ok(_) => {}
-                    Err(e) => {
-                        app.error = Some(e);
-                    }
-                }
+                let return_from = crate::ConnectingSource::ConnectionList {
+                    file_explorer: true,
+                };
+                let (cancel_token, receiver) =
+                    crate::async_ssh_client::SshSession::initiate_connection(conn.clone());
+                let connection_name = conn.display_name.clone();
+                app.go_to_connecting(
+                    conn,
+                    connection_name,
+                    selected_idx,
+                    return_from,
+                    cancel_token,
+                    receiver,
+                );
+                // match app.go_to_file_explorer(conn, selected_idx).await {
+                //     Ok(_) => {}
+                //     Err(e) => {
+                //         app.error = Some(e);
+                //     }
+                // }
             }
         }
         KeyCode::Char('p') | KeyCode::Char('P') => {
@@ -109,7 +123,9 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
                 let (cancel_token, receiver) =
                     crate::async_ssh_client::SshSession::initiate_connection(conn.clone());
                 let connection_name = conn.display_name.clone();
-                let return_from = crate::ConnectingSource::ConnectionList;
+                let return_from = crate::ConnectingSource::ConnectionList {
+                    file_explorer: false,
+                };
                 app.go_to_connecting(
                     conn,
                     connection_name,

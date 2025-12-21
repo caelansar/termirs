@@ -1,6 +1,6 @@
 //! SFTP filesystem implementation.
 
-use ratatui_explorer::{FileEntry, FileSystem};
+use ratatui_explorer::{FileEntry, FilePermissions, FileSystem};
 use russh_sftp::client::SftpSession;
 use std::io::{Error, Result};
 use std::sync::Arc;
@@ -76,6 +76,27 @@ impl FileSystem for SftpFileSystem {
             // Get file size from metadata
             let size = if !is_dir { entry.metadata().size } else { None };
 
+            // Get modified time from SFTP metadata
+            let modified = entry.metadata().modified().ok();
+
+            // Check if it's a symlink
+            let is_symlink = entry.file_type().is_symlink();
+
+            // Get permissions and convert to ratatui_explorer::FilePermissions
+            let sftp_perms = entry.metadata().permissions();
+            let permissions = Some(FilePermissions {
+                user_read: sftp_perms.owner_read,
+                user_write: sftp_perms.owner_write,
+                user_execute: sftp_perms.owner_exec,
+                group_read: sftp_perms.group_read,
+                group_write: sftp_perms.group_write,
+                group_execute: sftp_perms.group_exec,
+                others_read: sftp_perms.other_read,
+                others_write: sftp_perms.other_write,
+                others_execute: sftp_perms.other_exec,
+                is_symlink,
+            });
+
             entries.push(FileEntry {
                 name: if is_dir {
                     format!("{filename}/")
@@ -86,7 +107,8 @@ impl FileSystem for SftpFileSystem {
                 is_dir,
                 is_hidden,
                 size,
-                modified: None, // SFTP metadata could provide this, but we'll skip for now
+                modified,
+                permissions,
             });
         }
 

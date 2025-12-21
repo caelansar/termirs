@@ -24,6 +24,8 @@ pub struct AppSettings {
     pub connection_timeout: u64,
     #[serde(default = "default_terminal_scrollback_lines")]
     pub terminal_scrollback_lines: usize,
+    #[serde(default)]
+    pub have_nerd_font: bool,
 }
 
 impl Default for AppSettings {
@@ -32,6 +34,7 @@ impl Default for AppSettings {
             default_port: 22,
             connection_timeout: 20,
             terminal_scrollback_lines: DEFAULT_TERMINAL_SCROLLBACK_LINES,
+            have_nerd_font: false,
         }
     }
 }
@@ -385,7 +388,7 @@ pub struct ConfigManager {
 impl ConfigManager {
     /// Create a new configuration manager
     pub fn new() -> Result<Self> {
-        let config_path = Self::get_config_path()?;
+        let config_path: PathBuf = Self::get_config_path()?;
         info!("Loading configuration from: {:?}", config_path);
         let mut config = Self::load_config_from_path(&config_path)?;
         Self::normalize_settings(&mut config);
@@ -402,6 +405,10 @@ impl ConfigManager {
 
     pub fn default_port(&self) -> u16 {
         self.config.settings.default_port
+    }
+
+    pub fn have_nerd_font(&self) -> bool {
+        self.config.settings.have_nerd_font
     }
 
     /// Create a configuration manager with a custom config path (useful for testing)

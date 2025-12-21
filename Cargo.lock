@@ -3528,7 +3528,7 @@ dependencies = [
 [[package]]
 name = "ratatui-explorer"
 version = "0.2.1"
-source = "git+https://github.com/caelansar/ratatui-explorer.git#2364da73f74f8ea2c8c1f7e6833dd3a0c3f69f9d"
+source = "git+https://github.com/caelansar/ratatui-explorer.git#cfde874dabc227b3a36f2b9c61a72c0edd3c4ab2"
 dependencies = [
  "educe",
  "ratatui",

@@ -27,6 +27,7 @@ pub fn draw_file_explorer(
     copy_buffer: &[CopyOperation],
     search_mode: bool,
     search_query: &str,
+    use_icons: bool,
 ) {
     // Main layout: header, content, footer (and optional search input)
     let constraints = if search_mode {
@@ -76,6 +77,7 @@ pub fn draw_file_explorer(
                 explorer,
                 matches!(active_pane, ActivePane::Left),
                 copy_buffer,
+                use_icons,
             );
         }
         LeftExplorer::Remote(explorer) => {
@@ -86,6 +88,7 @@ pub fn draw_file_explorer(
                 explorer,
                 matches!(active_pane, ActivePane::Left),
                 copy_buffer,
+                use_icons,
             );
         }
     }
@@ -98,6 +101,7 @@ pub fn draw_file_explorer(
         remote_explorer,
         matches!(active_pane, ActivePane::Right),
         copy_buffer,
+        use_icons,
     );
 
     // Render search input if in search mode
@@ -155,6 +159,7 @@ fn draw_pane<F: ratatui_explorer::FileSystem>(
     explorer: &mut ratatui_explorer::FileExplorer<F>,
     is_active: bool,
     copy_buffer: &[CopyOperation],
+    use_icons: bool,
 ) {
     // Build HashSet of selected paths from copy_buffer
     let selected_paths: HashSet<PathBuf> = copy_buffer
@@ -195,7 +200,8 @@ fn draw_pane<F: ratatui_explorer::FileSystem>(
                 .with_item_style(Style::default().fg(Color::White))
                 .with_dir_style(Style::default().fg(Color::LightBlue))
                 .with_highlight_dir_style(Style::default().fg(Color::LightBlue).bg(Color::Cyan))
-                .with_highlight_item_style(Style::default().fg(Color::White).bg(Color::Cyan)),
+                .with_highlight_item_style(Style::default().fg(Color::White).bg(Color::Cyan))
+                .use_icons(use_icons),
         );
     } else {
         // Don't highlight the items and directories
@@ -204,7 +210,8 @@ fn draw_pane<F: ratatui_explorer::FileSystem>(
                 .with_item_style(Style::default().fg(Color::White))
                 .with_dir_style(Style::default().fg(Color::LightBlue))
                 .with_highlight_dir_style(Style::default().fg(Color::LightBlue))
-                .with_highlight_item_style(Style::default().fg(Color::White)),
+                .with_highlight_item_style(Style::default().fg(Color::White))
+                .use_icons(use_icons),
         );
     }
 

@@ -202,7 +202,9 @@ pub enum ConnectingSource {
         form: ConnectionForm,
         original: Connection,
     },
-    ConnectionList,
+    ConnectionList {
+        file_explorer: bool,
+    },
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -1186,7 +1188,7 @@ impl<B: Backend + Write> App<B> {
                             draw_connection_list(size, conns, *return_to, false, "", f, false);
                             draw_connection_form_popup(size, form, false, f);
                         }
-                        ConnectingSource::ConnectionList => {
+                        ConnectingSource::ConnectionList { .. } => {
                             let conns = self.config.connections();
                             draw_connection_list(size, conns, *return_to, false, "", f, false);
                         }
@@ -1263,6 +1265,7 @@ impl<B: Backend + Write> App<B> {
                                 copy_buffer,
                                 *search_mode,
                                 search_query,
+                                self.config.have_nerd_font(),
                             );
                         }
                         None => {}
@@ -1304,6 +1307,7 @@ impl<B: Backend + Write> App<B> {
                         copy_buffer,
                         *search_mode,
                         search_query,
+                        self.config.have_nerd_font(),
                     );
 
                     // Draw source selector popup if active
@@ -1814,6 +1818,16 @@ impl<B: Backend + Write> App<B> {
                                             let _ = self.config.save();
                                         }
 
+                                        if let ConnectingSource::ConnectionList { file_explorer } =
+                                            return_from
+                                        {
+                                            if *file_explorer {
+                                                let conn = connection.clone();
+                                                self.go_to_file_explorer(conn, return_to).await?;
+                                                continue;
+                                            }
+                                        }
+
                                         // Handle based on source
                                         if let ConnectingSource::FormNew { .. } = return_from {
                                             // Save the connection (only for new connections)
@@ -1882,7 +1896,7 @@ impl<B: Backend + Write> App<B> {
                                                     current_selected: return_to,
                                                 };
                                             }
-                                            ConnectingSource::ConnectionList => {
+                                            ConnectingSource::ConnectionList { .. } => {
                                                 self.go_to_connection_list_with_selected(return_to);
                                             }
                                         }
@@ -1911,7 +1925,7 @@ impl<B: Backend + Write> App<B> {
                                             current_selected: return_to,
                                         };
                                     }
-                                    ConnectingSource::ConnectionList => {
+                                    ConnectingSource::ConnectionList { .. } => {
                                         self.go_to_connection_list_with_selected(return_to);
                                     }
                                 }

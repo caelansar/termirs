@@ -170,7 +170,7 @@ async fn handle_connecting_key<B: Backend + Write>(app: &mut App<B>, key: KeyEve
                     current_selected: return_to,
                 };
             }
-            crate::ConnectingSource::ConnectionList => {
+            crate::ConnectingSource::ConnectionList { .. } => {
                 app.go_to_connection_list_with_selected(return_to);
             }
         }
