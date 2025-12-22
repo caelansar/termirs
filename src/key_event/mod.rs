@@ -110,6 +110,10 @@ pub async fn handle_paste_event<B: Backend + Write>(app: &mut App<B>, data: &str
             ..
         } => {
             let mut guard = state.lock().await;
+            if guard.search.is_inputting() {
+                guard.search.push_str(data);
+                return;
+            }
             if guard.parser.screen().scrollback() > 0 {
                 guard.scroll_to_bottom();
             }

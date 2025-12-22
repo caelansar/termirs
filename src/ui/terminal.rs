@@ -146,6 +146,12 @@ impl TerminalSearch {
         }
     }
 
+    /// Append string to query
+    pub fn push_str(&mut self, str: &str) {
+        self.query.push_str(str);
+        self.dirty = true;
+    }
+
     /// Append character to query
     pub fn push_char(&mut self, ch: char) {
         self.query.push(ch);
