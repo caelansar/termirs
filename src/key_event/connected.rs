@@ -11,7 +11,7 @@ async fn ensure_scroll_to_bottom(
     state: &std::sync::Arc<tokio::sync::Mutex<crate::ui::TerminalState>>,
 ) {
     let mut guard = state.lock().await;
-    if guard.parser.screen().scrollback() > 0 {
+    if guard.scrollback() > 0 {
         guard.scroll_to_bottom();
     }
 }
@@ -145,16 +145,13 @@ pub async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: Key
 
         // Determine interactive mode (full-screen alt buffer or application cursor)
         let guard = state.lock().await;
-        let (in_alt, app_cursor) = (
-            guard.parser.screen().alternate_screen(),
-            guard.parser.screen().application_cursor(),
-        );
+        let (in_alt, app_cursor) = (guard.is_alternate_screen(), guard.application_cursor_keys());
         drop(guard); // Release the lock early
         let interactive = in_alt || app_cursor;
 
         if interactive {
             let mut guard = state.lock().await;
-            if guard.parser.screen().scrollback() > 0 {
+            if guard.scrollback() > 0 {
                 guard.scroll_to_bottom();
             }
             if let Some(seq) = encode_key_event_to_ansi(app_cursor, &key)
@@ -173,10 +170,8 @@ pub async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: Key
             }
             KeyCode::Esc => {
                 let guard = state.lock().await;
-                let (in_alt, app_cursor) = (
-                    guard.parser.screen().alternate_screen(),
-                    guard.parser.screen().application_cursor(),
-                );
+                let (in_alt, app_cursor) =
+                    (guard.is_alternate_screen(), guard.application_cursor_keys());
                 drop(guard); // Release the lock early
                 // If an interactive full-screen/app-cursor mode is active, forward ESC to remote
                 if in_alt || app_cursor {
@@ -199,21 +194,22 @@ pub async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: Key
             // Special scrolling behavior for PageUp/PageDown - these need local scrolling
             KeyCode::PageUp => {
                 let mut guard = state.lock().await;
-                let rows = guard.parser.screen().size().0;
+                let (rows, _) = guard.screen_size();
                 let page = (rows.saturating_sub(1)) as i32;
                 guard.scroll_by(page);
             }
             KeyCode::PageDown => {
                 let mut guard = state.lock().await;
-                let rows = guard.parser.screen().size().0;
+                let (rows, _) = guard.screen_size();
                 let page = (rows.saturating_sub(1)) as i32;
                 guard.scroll_by(-page);
             }
             // Special scrolling behavior for Home/End - these need local scrolling
             KeyCode::Home => {
                 let mut guard = state.lock().await;
-                let top = usize::MAX;
-                guard.parser.screen_mut().set_scrollback(top);
+                // Scroll to top (maximum scrollback)
+                let max_sb = guard.max_scrollback();
+                guard.scroll_by(max_sb as i32);
             }
             KeyCode::End => {
                 let mut guard = state.lock().await;
@@ -235,7 +231,7 @@ pub async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: Key
             // All other keys can be handled by the ANSI encoder
             _ => {
                 let guard = state.lock().await;
-                let app_cursor = guard.parser.screen().application_cursor();
+                let app_cursor = guard.application_cursor_keys();
                 drop(guard);
 
                 if let Some(seq) = encode_key_event_to_ansi(app_cursor, &key) {

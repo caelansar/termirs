@@ -436,6 +436,15 @@ impl<B: Backend + Write> App<B> {
         self.event_tx = Some(sender);
     }
 
+    /// Get the terminal size for SSH PTY (cols, rows), accounting for borders
+    pub fn ssh_terminal_size(&self) -> Result<(u16, u16)> {
+        let size = self.terminal.size()?;
+        // Account for top border (1 row for title bar)
+        let rows = size.height.saturating_sub(1);
+        let cols = size.width;
+        Ok((cols, rows))
+    }
+
     fn set_mouse_capture(&mut self, enable: bool) -> Result<()> {
         #[cfg(target_os = "windows")]
         return Ok(());
@@ -514,7 +523,12 @@ impl<B: Backend + Write> App<B> {
 
     pub fn selection_text(&self, state: &TerminalState) -> Option<String> {
         let (anchor, tail) = self.selection_endpoints()?;
-        crate::terminal::selection::collect_selection_text(state.parser.screen(), anchor, tail)
+        crate::terminal::selection::collect_selection_text(
+            &state.terminal,
+            state.scrollback(),
+            anchor,
+            tail,
+        )
     }
 
     pub fn begin_selection_auto_scroll(
@@ -1198,7 +1212,7 @@ impl<B: Backend + Write> App<B> {
                     let inner = rect_with_top_margin(size, 1);
                     new_viewport = inner;
                     if let Ok(mut guard) = state.try_lock() {
-                        if guard.parser.screen().size() != (inner.height, inner.width) {
+                        if guard.screen_size() != (inner.height, inner.width) {
                             guard.resize(inner.height, inner.width);
                         }
                         let selection = compute_selection_for_view(
@@ -1230,7 +1244,7 @@ impl<B: Backend + Write> App<B> {
                             let inner = rect_with_top_margin(size, 1);
                             new_viewport = inner;
                             if let Ok(mut guard) = state.try_lock() {
-                                if guard.parser.screen().size() != (inner.height, inner.width) {
+                                if guard.screen_size() != (inner.height, inner.width) {
                                     guard.resize(inner.height, inner.width);
                                 }
                                 let selection = compute_selection_for_view(
@@ -1549,8 +1563,10 @@ impl<B: Backend + Write> App<B> {
                 // Calculate inner area for terminal content (accounting for borders)
                 let h = size.height.saturating_sub(1); // Top borders
                 let w = size.width;
-                let guard = state.lock().await;
-                if guard.parser.screen().size() != (h, w) {
+                let mut guard = state.lock().await;
+                if guard.screen_size() != (h, w) {
+                    // Resize both local terminal state and remote PTY
+                    guard.resize(h, w);
                     client.request_size(w, h).await;
                     terminal_size_changed = true;
                 }
@@ -1594,7 +1610,7 @@ impl<B: Backend + Write> App<B> {
                                 SelectionScrollDirection::Down => -1,
                             };
                             guard.scroll_by(delta);
-                            let (height, width) = guard.parser.screen().size();
+                            let (height, width) = guard.screen_size();
                             let endpoint = if height > 0 && width > 0 {
                                 let target_row = auto.view_row.min(height.saturating_sub(1));
                                 let target_col = auto.view_col.min(width.saturating_sub(1));
@@ -1845,8 +1861,17 @@ impl<B: Backend + Write> App<B> {
                                         }
 
                                         let scrollback = self.config.terminal_scrollback_lines();
+                                        let (cols, rows) =
+                                            self.ssh_terminal_size().unwrap_or((80, 24));
+                                        tracing::info!(
+                                            "Creating TerminalState with {} rows x {} cols",
+                                            rows,
+                                            cols
+                                        );
                                         let state = Arc::new(Mutex::new(
-                                            TerminalState::new_with_scrollback(30, 100, scrollback),
+                                            TerminalState::new_with_scrollback(
+                                                rows, cols, scrollback,
+                                            ),
                                         ));
                                         let app_reader = state.clone();
                                         let reader =

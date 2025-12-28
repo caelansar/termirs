@@ -114,7 +114,7 @@ pub async fn handle_paste_event<B: Backend + Write>(app: &mut App<B>, data: &str
                 guard.search.push_str(data);
                 return;
             }
-            if guard.parser.screen().scrollback() > 0 {
+            if guard.scrollback() > 0 {
                 guard.scroll_to_bottom();
             }
             if let Err(e) = client.write_all(data.as_bytes()).await {
@@ -330,8 +330,7 @@ pub async fn handle_mouse_event<B: Backend + Write>(app: &mut App<B>, event: Mou
 
             let (in_alt, app_cursor) = {
                 let guard = state.lock().await;
-                let screen = guard.parser.screen();
-                (screen.alternate_screen(), screen.application_cursor())
+                (guard.is_alternate_screen(), guard.application_cursor_keys())
             };
 
             let interactive = in_alt || app_cursor;
@@ -382,19 +381,18 @@ fn compute_double_click_selection(
     view_row: u16,
     view_col: u16,
 ) -> Option<(SelectionEndpoint, SelectionEndpoint)> {
-    let screen = state.parser.screen();
-    let (height, width) = screen.size();
+    let (height, width) = state.screen_size();
     if height == 0 || width == 0 || view_row >= height {
         return None;
     }
 
-    let info = char_info_at(screen, view_row, view_col, width);
+    let info = char_info_at_wez(state, view_row, view_col, width);
     let mut start = info.start_col;
     let mut end = info.end_col;
     let kind = info.kind;
 
     while start > 0 {
-        let prev = char_info_at(screen, view_row, start - 1, width);
+        let prev = char_info_at_wez(state, view_row, start - 1, width);
         if prev.kind != kind {
             break;
         }
@@ -402,7 +400,7 @@ fn compute_double_click_selection(
     }
 
     while end < width {
-        let next = char_info_at(screen, view_row, end, width);
+        let next = char_info_at_wez(state, view_row, end, width);
         if next.kind != kind {
             break;
         }
@@ -419,8 +417,7 @@ fn compute_triple_click_selection(
     state: &TerminalState,
     view_row: u16,
 ) -> Option<(SelectionEndpoint, SelectionEndpoint)> {
-    let screen = state.parser.screen();
-    let (height, width) = screen.size();
+    let (height, width) = state.screen_size();
     if height == 0 || width == 0 || view_row >= height {
         return None;
     }
@@ -432,7 +429,7 @@ fn compute_triple_click_selection(
     Some((anchor, tail))
 }
 
-fn char_info_at(screen: &vt100::Screen, row: u16, column: u16, width: u16) -> CharInfo {
+fn char_info_at_wez(state: &TerminalState, view_row: u16, column: u16, width: u16) -> CharInfo {
     if width == 0 {
         return CharInfo {
             kind: CharKind::Whitespace,
@@ -440,51 +437,66 @@ fn char_info_at(screen: &vt100::Screen, row: u16, column: u16, width: u16) -> Ch
             end_col: 0,
         };
     }
+
     let max_col = width.saturating_sub(1);
     let clamped = column.min(max_col);
-    let base = resolve_base_col(screen, row, clamped);
-    let end_col = base.saturating_add(1).min(width);
 
-    if let Some(cell) = screen.cell(row, base) {
-        if cell.has_contents() {
-            let mut chars = cell.contents().chars();
-            let ch = chars.next().unwrap_or(' ');
-            let span = if cell.is_wide() { 2 } else { 1 };
+    // Get the line for this view_row
+    let screen = state.terminal.screen();
+    let total_lines = screen.scrollback_rows();
+    let phys_rows = screen.physical_rows;
+    let start_row = total_lines
+        .saturating_sub(phys_rows)
+        .saturating_sub(state.scrollback());
+    let abs_row = start_row + view_row as usize;
+
+    let lines = screen.lines_in_phys_range(abs_row..abs_row + 1);
+    if lines.is_empty() {
+        return CharInfo {
+            kind: CharKind::Whitespace,
+            start_col: clamped,
+            end_col: clamped.saturating_add(1).min(width),
+        };
+    }
+
+    let line = &lines[0];
+    let mut col = 0u16;
+
+    for cell in line.visible_cells() {
+        let cell_width = cell.width() as u16;
+        let cell_start = col;
+        let cell_end = col + cell_width;
+
+        // Check if the target column falls within this cell
+        if clamped >= cell_start && clamped < cell_end {
+            let cell_text = cell.str();
+            if cell_text.is_empty() {
+                return CharInfo {
+                    kind: CharKind::Whitespace,
+                    start_col: cell_start,
+                    end_col: cell_end.min(width),
+                };
+            }
+            let ch = cell_text.chars().next().unwrap_or(' ');
             return CharInfo {
                 kind: classify_char(ch),
-                start_col: base,
-                end_col: base.saturating_add(span).min(width),
+                start_col: cell_start,
+                end_col: cell_end.min(width),
             };
         }
-        if cell.is_wide_continuation() && base > 0 {
-            let prev_base = resolve_base_col(screen, row, base - 1);
-            let prev_info = char_info_at(screen, row, prev_base, width);
-            return CharInfo {
-                kind: prev_info.kind,
-                start_col: prev_info.start_col,
-                end_col: prev_info.end_col,
-            };
+
+        col += cell_width;
+        if col > clamped {
+            break;
         }
     }
 
+    // Column not found in cells, return whitespace
     CharInfo {
         kind: CharKind::Whitespace,
-        start_col: base,
-        end_col,
+        start_col: clamped,
+        end_col: clamped.saturating_add(1).min(width),
     }
-}
-
-fn resolve_base_col(screen: &vt100::Screen, row: u16, mut col: u16) -> u16 {
-    while col > 0 {
-        if let Some(cell) = screen.cell(row, col)
-            && cell.is_wide_continuation()
-        {
-            col -= 1;
-            continue;
-        }
-        break;
-    }
-    col
 }
 
 fn classify_char(ch: char) -> CharKind {
@@ -536,7 +548,7 @@ mod tests {
         state.process_bytes(b"hello world\r\nsecond line");
         let (start, end) = compute_triple_click_selection(&state, 0).unwrap();
         assert_eq!(start.col, 0);
-        let (_, width) = state.parser.screen().size();
+        let (_, width) = state.screen_size();
         assert_eq!(end.col, width.saturating_sub(1));
     }
 
@@ -545,7 +557,7 @@ mod tests {
         let state = TerminalState::new(1, 10);
         let (start, end) = compute_triple_click_selection(&state, 0).unwrap();
         assert_eq!(start.col, 0);
-        let (_, width) = state.parser.screen().size();
+        let (_, width) = state.screen_size();
         assert_eq!(end.col, width.saturating_sub(1));
     }
 }

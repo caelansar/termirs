@@ -105,6 +105,8 @@ pub async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
             }
         }
         KeyCode::Enter => {
+            // Get terminal size before borrowing app.mode mutably
+            let (cols, rows) = app.ssh_terminal_size().unwrap_or((80, 24));
             if let AppMode::FormNew {
                 auto_auth, form, ..
             } = &mut app.mode
@@ -140,9 +142,13 @@ pub async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                             conn.set_display_name(form.get_display_name_value().trim().to_string());
                         }
 
-                        // Initiate connection
+                        // Initiate connection with current terminal size
                         let (cancel_token, receiver) =
-                            crate::async_ssh_client::SshSession::initiate_connection(conn.clone());
+                            crate::async_ssh_client::SshSession::initiate_connection(
+                                conn.clone(),
+                                cols,
+                                rows,
+                            );
                         let connection_name = conn.display_name.clone();
                         let return_from = crate::ConnectingSource::FormNew {
                             auto_auth: *auto_auth,
