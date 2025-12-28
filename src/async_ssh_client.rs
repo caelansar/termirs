@@ -573,6 +573,9 @@ impl SshSession {
         debug!("Opening SSH session channel");
         let channel = session.channel_open_session().await?;
         info!("Requesting PTY with size {} cols x {} rows", cols, rows);
+
+        let _ = channel.set_env(false, "LC_CTYPE", "C.UTF-8").await;
+
         channel
             .request_pty(true, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
             .await?;
