@@ -543,8 +543,11 @@ impl SshSession {
 
     /// Initiate an SSH connection asynchronously
     /// Returns a cancel token and a receiver for the connection result
+    /// `cols` and `rows` specify the initial PTY size
     pub(crate) fn initiate_connection(
         conn: Connection,
+        cols: u16,
+        rows: u16,
     ) -> (
         tokio_util::sync::CancellationToken,
         mpsc::Receiver<Result<SshSession>>,
@@ -554,7 +557,7 @@ impl SshSession {
         let cancel_clone = cancel_token.clone();
 
         tokio::spawn(async move {
-            let result = Self::connect(&conn).await;
+            let result = Self::connect(&conn, cols, rows).await;
             // Only send result if not cancelled
             if !cancel_clone.is_cancelled() {
                 let _ = tx.send(result).await;
@@ -564,14 +567,14 @@ impl SshSession {
         (cancel_token, rx)
     }
 
-    pub async fn connect(connection: &Connection) -> Result<Self> {
+    pub async fn connect(connection: &Connection, cols: u16, rows: u16) -> Result<Self> {
         let (session, server_key) = Self::new_session(connection).await?;
 
         debug!("Opening SSH session channel");
         let channel = session.channel_open_session().await?;
-        debug!("Requesting PTY");
+        info!("Requesting PTY with size {} cols x {} rows", cols, rows);
         channel
-            .request_pty(true, "xterm-256color", 80, 120, 0, 0, &[])
+            .request_pty(true, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
             .await?;
         debug!("Requesting shell");
         channel.request_shell(true).await?;
@@ -2887,7 +2890,7 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
             "tester".to_string(),
             AuthMethod::Password("testerpass".to_string()),
         );
-        let mut client = SshSession::connect(&conn).await.unwrap();
+        let mut client = SshSession::connect(&conn, 80, 24).await.unwrap();
 
         let reader = client.take_reader().expect("reader already taken");
         let cancel_token = tokio_util::sync::CancellationToken::new();
@@ -2966,7 +2969,7 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
                 passphrase: None,
             },
         );
-        let mut client = SshSession::connect(&conn).await.unwrap();
+        let mut client = SshSession::connect(&conn, 80, 24).await.unwrap();
 
         let reader = client.take_reader().expect("reader already taken");
         let cancel_token = tokio_util::sync::CancellationToken::new();
@@ -3062,7 +3065,7 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
         );
 
         // Test connection
-        let mut client = SshSession::connect(&conn).await.unwrap();
+        let mut client = SshSession::connect(&conn, 80, 24).await.unwrap();
 
         let reader = client.take_reader().expect("reader already taken");
         let cancel_token = tokio_util::sync::CancellationToken::new();

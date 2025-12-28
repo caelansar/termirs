@@ -56,8 +56,13 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
                 let return_from = crate::ConnectingSource::ConnectionList {
                     file_explorer: true,
                 };
+                let (cols, rows) = app.ssh_terminal_size().unwrap_or((80, 24));
                 let (cancel_token, receiver) =
-                    crate::async_ssh_client::SshSession::initiate_connection(conn.clone());
+                    crate::async_ssh_client::SshSession::initiate_connection(
+                        conn.clone(),
+                        cols,
+                        rows,
+                    );
                 let connection_name = conn.display_name.clone();
                 app.go_to_connecting(
                     conn,
@@ -119,9 +124,14 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
                 .get(app.current_selected())
                 .cloned()
             {
-                // Initiate connection
+                // Initiate connection with current terminal size
+                let (cols, rows) = app.ssh_terminal_size().unwrap_or((80, 24));
                 let (cancel_token, receiver) =
-                    crate::async_ssh_client::SshSession::initiate_connection(conn.clone());
+                    crate::async_ssh_client::SshSession::initiate_connection(
+                        conn.clone(),
+                        cols,
+                        rows,
+                    );
                 let connection_name = conn.display_name.clone();
                 let return_from = crate::ConnectingSource::ConnectionList {
                     file_explorer: false,

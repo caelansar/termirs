@@ -14,7 +14,7 @@ categories = ["command-line-interface"]
 ratatui = { version = "0.28", default-features = false, features = ["crossterm"] }
 ring = "0.17"
 crossterm = { version = "0.28", features = ["event-stream"] }
-vt100 = "0.16"
+# vt100 = "0.16"  # Replaced by wezterm-term
 thiserror = "1.0"
 toml = "0.8"
 base64 = "0.22"
@@ -40,6 +40,8 @@ tracing-appender = "0.2"
 grep-searcher = "0.1"
 grep-regex = "0.1"
 grep-matcher = "0.1"
+wezterm-term = { git = "https://github.com/caelansar/wezterm.git", package = "wezterm-term" }
+wezterm-surface = { git = "https://github.com/caelansar/wezterm.git", package = "wezterm-surface" }
 
 
 [dev-dependencies]

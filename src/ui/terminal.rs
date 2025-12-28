@@ -1,19 +1,39 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
+use std::sync::Arc;
 use std::time::Instant;
 
 use grep_matcher::Matcher;
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::Searcher;
 use grep_searcher::sinks::UTF8;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Widget};
-use ratatui::{buffer::Buffer, style::Style as RatStyle};
-use vt100::{Color as VtColor, Parser};
+use wezterm_surface::CursorVisibility;
+use wezterm_term::color::{ColorAttribute, ColorPalette};
+use wezterm_term::config::TerminalConfiguration;
+use wezterm_term::{Intensity, Terminal as WezTerminal, TerminalSize, Underline};
 
 use crate::config::manager::DEFAULT_TERMINAL_SCROLLBACK_LINES;
+
+/// Simple configuration for the wezterm terminal
+#[derive(Debug)]
+struct SimpleConfig {
+    scrollback_size: usize,
+}
+
+impl TerminalConfiguration for SimpleConfig {
+    fn color_palette(&self) -> ColorPalette {
+        ColorPalette::default()
+    }
+
+    fn scrollback_size(&self) -> usize {
+        self.scrollback_size
+    }
+}
 
 /// Represents a single search match position in the terminal
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -216,7 +236,7 @@ pub fn find_matches_in_text(text: &str, pattern: &str) -> Vec<(usize, u16, u16)>
 }
 
 pub struct TerminalState {
-    pub parser: Parser,
+    pub terminal: WezTerminal,
     pub last_change: Instant,
     pub search: TerminalSearch,
     cached_lines: Vec<Line<'static>>,
@@ -225,6 +245,8 @@ pub struct TerminalState {
     cached_width: u16,
     cache_invalidated: bool,
     scrollback_limit: usize,
+    /// Current scrollback offset (0 = at bottom, positive = scrolled up)
+    scrollback_offset: usize,
 }
 
 impl TerminalState {
@@ -234,8 +256,20 @@ impl TerminalState {
 
     pub fn new_with_scrollback(rows: u16, cols: u16, scrollback_limit: usize) -> Self {
         let limit = scrollback_limit.max(1);
+        let size = TerminalSize {
+            rows: rows as usize,
+            cols: cols as usize,
+            pixel_width: 0,
+            pixel_height: 0,
+            dpi: 96,
+        };
+        let config = Arc::new(SimpleConfig {
+            scrollback_size: limit,
+        });
+        let terminal = WezTerminal::new(size, config, "termirs", "0.1", Box::new(std::io::sink()));
+
         Self {
-            parser: Parser::new(rows, cols, limit),
+            terminal,
             last_change: Instant::now(),
             search: TerminalSearch::new(),
             cached_lines: Vec::new(),
@@ -244,42 +278,77 @@ impl TerminalState {
             cached_width: 0,
             cache_invalidated: true,
             scrollback_limit: limit,
+            scrollback_offset: 0,
         }
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
-        self.parser.screen_mut().set_size(rows, cols);
+        let size = TerminalSize {
+            rows: rows as usize,
+            cols: cols as usize,
+            pixel_width: 0,
+            pixel_height: 0,
+            dpi: 96,
+        };
+        self.terminal.resize(size);
         self.last_change = Instant::now();
         self.invalidate_cache();
     }
 
     pub fn process_bytes(&mut self, data: &[u8]) {
-        self.parser.process(data);
+        self.terminal.advance_bytes(data);
         self.last_change = Instant::now();
         self.invalidate_cache();
         self.search.mark_dirty();
     }
 
+    /// Get the current scrollback offset
+    pub fn scrollback(&self) -> usize {
+        self.scrollback_offset
+    }
+
+    /// Get the maximum scrollback available
+    pub fn max_scrollback(&self) -> usize {
+        let screen = self.terminal.screen();
+        let total_lines = screen.scrollback_rows();
+        let phys_rows = screen.physical_rows;
+        total_lines.saturating_sub(phys_rows)
+    }
+
     pub fn scroll_by(&mut self, delta_lines: i32) {
-        let current = self.parser.screen().scrollback() as i32;
+        let max_sb = self.max_scrollback();
+        let current = self.scrollback_offset as i32;
         let target = current.saturating_add(delta_lines).max(0) as usize;
-        self.parser.screen_mut().set_scrollback(target);
+        self.scrollback_offset = target.min(max_sb);
         self.invalidate_cache();
     }
 
     pub fn scroll_to_bottom(&mut self) {
-        self.parser.screen_mut().set_scrollback(0);
+        self.scrollback_offset = 0;
         self.invalidate_cache();
     }
 
     #[allow(dead_code)]
     pub fn clear_history(&mut self) {
-        let (rows, cols) = self.parser.screen().size();
-        self.parser = Parser::new(rows, cols, self.scrollback_limit);
+        let screen = self.terminal.screen();
+        let rows = screen.physical_rows;
+        let cols = screen.physical_cols;
+        let size = TerminalSize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+            dpi: 96,
+        };
+        let config = Arc::new(SimpleConfig {
+            scrollback_size: self.scrollback_limit,
+        });
+        self.terminal = WezTerminal::new(size, config, "termirs", "0.1", Box::new(std::io::sink()));
         self.cached_lines.clear();
         self.row_hashes.clear();
         self.cached_height = 0;
         self.cached_width = 0;
+        self.scrollback_offset = 0;
         self.invalidate_cache();
         self.last_change = Instant::now();
     }
@@ -302,15 +371,28 @@ impl TerminalState {
         if !self.cache_invalidated {
             return;
         }
-        let screen = self.parser.screen();
-        let height = self.cached_height;
-        let width = self.cached_width;
-        for row in 0..height {
-            let row_idx = row as usize;
-            let new_hash = compute_row_hash(screen, row, width);
+        let screen = self.terminal.screen();
+        let height = self.cached_height as usize;
+        let width = self.cached_width as usize;
+
+        // Get the visible lines based on scrollback offset
+        let total_lines = screen.scrollback_rows();
+        let phys_rows = screen.physical_rows;
+        let start_row = total_lines
+            .saturating_sub(phys_rows)
+            .saturating_sub(self.scrollback_offset);
+        let end_row = start_row + height.min(phys_rows);
+
+        let lines = screen.lines_in_phys_range(start_row..end_row);
+
+        for (row_idx, line) in lines.iter().enumerate() {
+            if row_idx >= height {
+                break;
+            }
+            let new_hash = compute_row_hash_wez(line, width);
             if self.row_hashes[row_idx] != new_hash || self.cache_invalidated {
-                let line = build_line(screen, row, width);
-                self.cached_lines[row_idx] = line;
+                let built_line = build_line_wez(line, width);
+                self.cached_lines[row_idx] = built_line;
                 self.row_hashes[row_idx] = new_hash;
             }
         }
@@ -347,46 +429,28 @@ impl TerminalState {
             return;
         }
 
-        let (height, width) = self.parser.screen().size();
+        let screen = self.terminal.screen();
+        let height = screen.physical_rows;
+        let width = screen.physical_cols;
 
-        // Save current scrollback position
-        let original_scrollback = self.parser.screen().scrollback();
+        // Get total lines in scrollback + visible
+        let total_lines = screen.scrollback_rows();
+        let max_scrollback = total_lines.saturating_sub(height);
 
-        // Find the maximum scrollback (total scrollback buffer length)
-        self.parser.screen_mut().set_scrollback(usize::MAX);
-        let max_scrollback = self.parser.screen().scrollback();
-
-        // Calculate total rows: scrollback buffer + visible screen
-        let total_rows = max_scrollback + height as usize;
+        // Get all lines at once
+        let all_lines = screen.lines_in_phys_range(0..total_lines);
 
         // Collect all row texts with their absolute row indices
-        // This allows us to search the entire content at once
-        let mut row_texts: Vec<String> = Vec::with_capacity(total_rows);
-        let mut abs_row_map: Vec<usize> = Vec::with_capacity(total_rows);
+        let mut row_texts: Vec<String> = Vec::with_capacity(total_lines);
+        let mut abs_row_map: Vec<usize> = Vec::with_capacity(total_lines);
 
-        for abs_row in 0..total_rows {
-            // Calculate which scrollback position and view row we need
-            let (scrollback_pos, view_row) = if abs_row < max_scrollback {
-                // This row is in scrollback history
-                let sb = max_scrollback - abs_row;
-                (sb, 0u16)
-            } else {
-                // This row is in the current screen
-                (0, (abs_row - max_scrollback) as u16)
-            };
-
-            // Set scrollback to access this row
-            self.parser.screen_mut().set_scrollback(scrollback_pos);
-
-            let row_text = extract_visible_row_text(self.parser.screen(), view_row, width);
+        for (abs_row, line) in all_lines.iter().enumerate() {
+            let row_text = extract_line_text_wez(line, width);
             if !row_text.trim().is_empty() {
                 row_texts.push(row_text);
                 abs_row_map.push(abs_row);
             }
         }
-
-        // Restore original scrollback position
-        self.parser.screen_mut().set_scrollback(original_scrollback);
 
         // Build the complete text with newlines and search once
         let full_text = row_texts.join("\n");
@@ -426,11 +490,11 @@ impl TerminalState {
                 // To show row mat.row at the top of the screen:
                 // scrollback = max_scrollback - mat.row
                 let target_scrollback = max_scrollback - mat.row;
-                self.parser.screen_mut().set_scrollback(target_scrollback);
+                self.scrollback_offset = target_scrollback;
             } else {
                 // Match is in current screen area
                 // Make sure we're scrolled to bottom to see it
-                self.parser.screen_mut().set_scrollback(0);
+                self.scrollback_offset = 0;
             }
             self.invalidate_cache();
         }
@@ -443,8 +507,8 @@ impl TerminalState {
         }
 
         let max_scrollback = self.search.max_scrollback;
-        let current_scrollback = self.parser.screen().scrollback();
-        let height = self.parser.screen().size().0 as usize;
+        let current_scrollback = self.scrollback_offset;
+        let height = self.terminal.screen().physical_rows;
 
         // Calculate the range of absolute rows visible in the current view
         // When scrollback = S, we see rows from (max_scrollback - S) to (max_scrollback - S + height - 1)
@@ -462,35 +526,73 @@ impl TerminalState {
     pub fn get_max_scrollback(&self) -> usize {
         self.search.max_scrollback
     }
-}
 
-fn map_color(c: VtColor) -> Color {
-    match c {
-        VtColor::Default => Color::Reset,
-        VtColor::Idx(n) => Color::Indexed(n),
-        VtColor::Rgb(r, g, b) => Color::Rgb(r, g, b),
+    /// Get screen size as (rows, cols)
+    pub fn screen_size(&self) -> (u16, u16) {
+        let screen = self.terminal.screen();
+        (screen.physical_rows as u16, screen.physical_cols as u16)
+    }
+
+    /// Check if alternate screen is active
+    pub fn is_alternate_screen(&self) -> bool {
+        self.terminal.is_alt_screen_active()
+    }
+
+    /// Check if application cursor keys mode is active
+    pub fn application_cursor_keys(&self) -> bool {
+        self.terminal.get_application_cursor_keys()
+    }
+
+    /// Get cursor position as (row, col)
+    pub fn cursor_position(&self) -> (u16, u16) {
+        let cursor = self.terminal.cursor_pos();
+        (cursor.y as u16, cursor.x as u16)
+    }
+
+    /// Check if cursor should be hidden
+    pub fn hide_cursor(&self) -> bool {
+        self.terminal.cursor_pos().visibility != CursorVisibility::Visible
     }
 }
 
-/// Extract text content from a visible terminal row
-fn extract_visible_row_text(screen: &vt100::Screen, row: u16, width: u16) -> String {
-    let mut text = String::with_capacity(width as usize);
-
-    for col in 0..width {
-        if let Some(cell) = screen.cell(row, col) {
-            // Skip wide character continuation cells
-            if cell.is_wide_continuation() {
-                continue;
-            }
-            let contents = cell.contents();
-            if contents.is_empty() {
-                text.push(' ');
-            } else {
-                text.push_str(contents);
-            }
-        } else {
-            text.push(' ');
+/// Convert wezterm ColorAttribute to ratatui Color
+fn map_color_wez(color: &ColorAttribute) -> Color {
+    match color {
+        ColorAttribute::Default => Color::Reset,
+        ColorAttribute::PaletteIndex(idx) => Color::Indexed(*idx),
+        ColorAttribute::TrueColorWithDefaultFallback(c)
+        | ColorAttribute::TrueColorWithPaletteFallback(c, _) => {
+            let (r, g, b, _) = c.to_tuple_rgba();
+            Color::Rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
         }
+    }
+}
+
+/// Extract text content from a wezterm Line
+fn extract_line_text_wez(line: &wezterm_term::Line, width: usize) -> String {
+    let mut text = String::with_capacity(width);
+    let mut col = 0usize;
+
+    for cell in line.visible_cells() {
+        if col >= width {
+            break;
+        }
+
+        let cell_width = cell.width();
+        let cell_text = cell.str();
+
+        if cell_text.is_empty() || cell_text == " " {
+            text.push(' ');
+        } else {
+            text.push_str(cell_text);
+        }
+
+        col += cell_width;
+    }
+
+    // Pad with spaces to reach width
+    while text.len() < width {
+        text.push(' ');
     }
 
     text
@@ -572,14 +674,13 @@ pub fn draw_terminal(
     let inner = term_block.inner(area);
     let height = inner.height;
     let width = inner.width;
-    let screen = state.parser.screen();
-    let (cur_row, cur_col) = screen.cursor_position();
-    let hide_cursor = screen.hide_cursor();
+    let (cur_row, cur_col) = state.cursor_position();
+    let hide_cursor = state.hide_cursor();
     let lines = state.cached_lines(height, width);
 
     // Render terminal rows using a lightweight cached widget
     let widget = CachedTerminalWidget { lines };
-    frame.render_widget(widget.bg(Color::Red), inner);
+    frame.render_widget(widget, inner);
 
     // Highlight search matches
     if state.search.active && !state.search.matches.is_empty() {
@@ -606,7 +707,7 @@ fn highlight_search_matches(buf: &mut Buffer, area: Rect, state: &TerminalState)
 
     let current_match_idx = state.search.current_idx;
     let max_scrollback = state.search.max_scrollback;
-    let current_scrollback = state.parser.screen().scrollback();
+    let current_scrollback = state.scrollback_offset;
     let height = area.height as usize;
 
     // Calculate the range of absolute rows visible in the current view
@@ -673,15 +774,6 @@ struct CachedTerminalWidget<'a> {
     lines: &'a [Line<'static>],
 }
 
-impl<'a> CachedTerminalWidget<'a> {
-    fn bg(self, color: Color) -> CachedTerminalWidgetWithBg<'a> {
-        CachedTerminalWidgetWithBg {
-            inner: self,
-            background: color,
-        }
-    }
-}
-
 impl<'a> Widget for CachedTerminalWidget<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let height = area.height.min(self.lines.len() as u16);
@@ -689,18 +781,6 @@ impl<'a> Widget for CachedTerminalWidget<'a> {
             let line = &self.lines[row as usize];
             buf.set_line(area.x, area.y + row, line, area.width);
         }
-    }
-}
-
-struct CachedTerminalWidgetWithBg<'a> {
-    inner: CachedTerminalWidget<'a>,
-    background: Color,
-}
-
-impl<'a> Widget for CachedTerminalWidgetWithBg<'a> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        buf.set_style(area, RatStyle::default().bg(self.background));
-        self.inner.render(area, buf);
     }
 }
 
@@ -748,98 +828,129 @@ fn selection_bounds_for_row(selection: TerminalSelection, row: u16, width: u16) 
     (start_col, end_col)
 }
 
-fn compute_row_hash(screen: &vt100::Screen, row: u16, width: u16) -> u64 {
+/// Compute a hash for a wezterm Line for cache invalidation
+fn compute_row_hash_wez(line: &wezterm_term::Line, width: usize) -> u64 {
     let mut hasher = DefaultHasher::new();
-    for col in 0..width {
-        match screen.cell(row, col) {
-            Some(cell) => {
-                hash_color(&mut hasher, cell.fgcolor());
-                hash_color(&mut hasher, cell.bgcolor());
-                hasher.write_u8(cell.bold() as u8);
-                hasher.write_u8(cell.italic() as u8);
-                hasher.write_u8(cell.underline() as u8);
-                hasher.write_u8(cell.inverse() as u8);
-                hasher.write_u8(cell.dim() as u8);
-                let contents = cell.contents();
-                hasher.write_usize(contents.len());
-                hasher.write(contents.as_bytes());
-            }
-            None => {
-                hasher.write_u8(0);
-            }
+    let mut col = 0usize;
+
+    for cell in line.visible_cells() {
+        if col >= width {
+            break;
         }
+
+        let attrs = cell.attrs();
+        hash_color_wez(&mut hasher, &attrs.foreground());
+        hash_color_wez(&mut hasher, &attrs.background());
+        hasher.write_u8((attrs.intensity() == Intensity::Bold) as u8);
+        hasher.write_u8(attrs.italic() as u8);
+        hasher.write_u8((attrs.underline() != Underline::None) as u8);
+        hasher.write_u8(attrs.reverse() as u8);
+        hasher.write_u8((attrs.intensity() == Intensity::Half) as u8);
+
+        let contents = cell.str();
+        hasher.write_usize(contents.len());
+        hasher.write(contents.as_bytes());
+
+        col += cell.width();
     }
+
+    // Hash remaining empty columns
+    while col < width {
+        hasher.write_u8(0);
+        col += 1;
+    }
+
     hasher.finish()
 }
 
-fn hash_color(hasher: &mut DefaultHasher, color: VtColor) {
+/// Hash a wezterm ColorAttribute
+fn hash_color_wez(hasher: &mut DefaultHasher, color: &ColorAttribute) {
     match color {
-        VtColor::Default => hasher.write_u8(0),
-        VtColor::Idx(n) => {
+        ColorAttribute::Default => hasher.write_u8(0),
+        ColorAttribute::PaletteIndex(n) => {
             hasher.write_u8(1);
-            hasher.write_u8(n);
+            hasher.write_u8(*n);
         }
-        VtColor::Rgb(r, g, b) => {
+        ColorAttribute::TrueColorWithDefaultFallback(c)
+        | ColorAttribute::TrueColorWithPaletteFallback(c, _) => {
             hasher.write_u8(2);
-            hasher.write_u8(r);
-            hasher.write_u8(g);
-            hasher.write_u8(b);
+            let (r, g, b, _) = c.to_tuple_rgba();
+            hasher.write_u8((r * 255.0) as u8);
+            hasher.write_u8((g * 255.0) as u8);
+            hasher.write_u8((b * 255.0) as u8);
         }
     }
 }
 
-fn build_line(screen: &vt100::Screen, row: u16, width: u16) -> Line<'static> {
+/// Build a ratatui Line from a wezterm Line
+fn build_line_wez(line: &wezterm_term::Line, width: usize) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut current_style = Style::default();
     let mut current_text = String::new();
+    let mut col = 0usize;
 
-    for col in 0..width {
-        if let Some(cell) = screen.cell(row, col) {
-            // Skip wide character continuation cells to render the actual wide character once
-            if cell.is_wide_continuation() {
-                continue;
-            }
-            let fg = map_color(cell.fgcolor());
-            let bg = map_color(cell.bgcolor());
-            let bold = cell.bold();
-            let italic = cell.italic();
-            let underline = cell.underline();
-            let inverse = cell.inverse();
-            let dim = cell.dim();
+    for cell in line.visible_cells() {
+        if col >= width {
+            break;
+        }
 
-            let mut style = Style::default().fg(fg).bg(bg);
-            if bold {
-                style = style.add_modifier(Modifier::BOLD);
-            }
-            if italic {
-                style = style.add_modifier(Modifier::ITALIC);
-            }
-            if underline {
-                style = style.add_modifier(Modifier::UNDERLINED);
-            }
-            if dim {
-                style = style.add_modifier(Modifier::DIM);
-            }
-            if inverse {
-                style = style.add_modifier(Modifier::REVERSED);
-            }
+        let cell_width = cell.width();
+        let attrs = cell.attrs();
 
-            let contents = cell.contents();
-            let to_append = if contents.is_empty() { " " } else { contents };
+        let fg = map_color_wez(&attrs.foreground());
+        let bg = map_color_wez(&attrs.background());
+        let bold = attrs.intensity() == Intensity::Bold;
+        let italic = attrs.italic();
+        let underline = attrs.underline() != Underline::None;
+        let inverse = attrs.reverse();
+        let dim = attrs.intensity() == Intensity::Half;
 
-            if style == current_style {
-                current_text.push_str(to_append);
-            } else {
-                if !current_text.is_empty() {
-                    spans.push(Span::styled(
-                        std::mem::take(&mut current_text),
-                        current_style,
-                    ));
-                }
-                current_style = style;
-                current_text.push_str(to_append);
+        let mut style = Style::default().fg(fg).bg(bg);
+        if bold {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        if italic {
+            style = style.add_modifier(Modifier::ITALIC);
+        }
+        if underline {
+            style = style.add_modifier(Modifier::UNDERLINED);
+        }
+        if dim {
+            style = style.add_modifier(Modifier::DIM);
+        }
+        if inverse {
+            style = style.add_modifier(Modifier::REVERSED);
+        }
+
+        let contents = cell.str();
+        let to_append = if contents.is_empty() { " " } else { contents };
+
+        if style == current_style {
+            current_text.push_str(to_append);
+        } else {
+            if !current_text.is_empty() {
+                spans.push(Span::styled(
+                    std::mem::take(&mut current_text),
+                    current_style,
+                ));
             }
-        } else if current_style == Style::default() {
+            current_style = style;
+            current_text.push_str(to_append);
+        }
+
+        // For wide characters, account for the extra column
+        for _ in 1..cell_width {
+            if col + 1 < width {
+                // Wide character continuation - no additional text needed
+            }
+        }
+
+        col += cell_width;
+    }
+
+    // Fill remaining columns with spaces
+    while col < width {
+        if current_style == Style::default() {
             current_text.push(' ');
         } else {
             if !current_text.is_empty() {
@@ -851,7 +962,9 @@ fn build_line(screen: &vt100::Screen, row: u16, width: u16) -> Line<'static> {
             current_style = Style::default();
             current_text.push(' ');
         }
+        col += 1;
     }
+
     if !current_text.is_empty() {
         spans.push(Span::styled(current_text, current_style));
     }
