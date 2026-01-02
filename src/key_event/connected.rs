@@ -163,8 +163,8 @@ pub async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: Key
         }
 
         match key.code {
-            // Enter search mode with Ctrl+f
-            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Enter search mode with Ctrl+s
+            KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 let mut guard = state.lock().await;
                 guard.search.enter();
             }

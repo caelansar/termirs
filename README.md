@@ -94,7 +94,7 @@ cargo build --release --locked
 | Key                               | Action                                          |
 | --------------------------------- | ----------------------------------------------- |
 | `Page Up/Down` or `Ctrl+b/Ctrl+f` | Scroll terminal history                         |
-| `Ctrl+F`                          | Search terminal history                         |
+| `Ctrl+S`                          | Search terminal history                         |
 | `Esc`                             | Disconnect and return to connection list        |
 | `n`                               | Navigate next matched item (in search mode)     |
 | `p`                               | Navigate previous matched item (in search mode) |
