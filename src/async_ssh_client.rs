@@ -131,7 +131,7 @@ impl BufferPool {
     }
 }
 
-pub struct SshClient {
+pub(crate) struct SshClient {
     connection: Connection,
     server_key: Arc<OnceCell<String>>,
     // Channel for forwarding remote port forwarding connections
@@ -707,11 +707,11 @@ impl SshSession {
         cancel: &tokio_util::sync::CancellationToken,
         progress_reporter: impl ProgressReporter,
     ) -> Result<()> {
+        // Setup SFTP session
         let sftp = Self::setup_sftp_session(channel, connection, timeout, cancel).await?;
-
         progress_reporter.report_progress(0);
 
-        // Open remote file using RawSftpSession
+        // Open remote file for writing
         let remote_handle = sftp
             .open(
                 to,
@@ -719,120 +719,100 @@ impl SshSession {
                 FileAttributes::empty(),
             )
             .await
-            .map_err(|e| AppError::SftpError(format!("Failed to open remote file: {e}")))?;
+            .map_err(|e| {
+                AppError::SftpError(format!("Failed to open remote file '{}': {}", to, e))
+            })?;
 
-        // Use optimal buffer size for SFTP protocol (128KB for better throughput)
-        const CHUNK_SIZE: usize = 128 * 1024; // 128KB - good balance between memory and throughput
-        const MAX_CONCURRENT_WRITES: usize = 12; // Reasonable number of concurrent operations
+        // Configure transfer parameters
+        const CHUNK_SIZE: usize = 128 * 1024; // 128KB - optimal for SFTP throughput
+        const MAX_CONCURRENT_WRITES: usize = 12; // Balance between parallelism and resource usage
 
         let mut bytes_written = 0u64;
-        let mut offset = 0u64;
+        let mut read_offset = 0u64;
         let mut write_futures = FuturesUnordered::new();
         let mut eof_reached = false;
 
         sftp.set_timeout(30).await;
 
-        // Wrap sftp in Arc to share between tasks
+        // Wrap sftp in Arc for safe sharing across concurrent tasks
         let sftp = Arc::new(sftp);
-
-        // Create buffer pool for efficient memory reuse
         let buffer_pool = Arc::new(BufferPool::new(CHUNK_SIZE, MAX_CONCURRENT_WRITES * 2));
 
-        // Optimized pipeline logic: true concurrent read and write
+        // Main transfer loop: pipeline reads and writes concurrently
+        // This achieves maximum throughput by keeping both the network and disk busy
         loop {
-            // Check exit condition
+            // Exit when all data is read and all writes are complete
             if eof_reached && write_futures.is_empty() {
                 break;
             }
 
-            // Check if we can read more data
-            let can_read = write_futures.len() < MAX_CONCURRENT_WRITES && !eof_reached;
+            // Determine if we have capacity for more reads
+            let can_initiate_read = write_futures.len() < MAX_CONCURRENT_WRITES && !eof_reached;
 
-            if can_read {
-                // Try reading if we have capacity
-                tokio::select! {
-                    _ = cancel.cancelled() => {
-                        return Err(AppError::SftpError("Transfer cancelled".to_string()));
-                    }
+            tokio::select! {
+                biased; // Process cancellation first
 
-                    // Try to read next chunk
-                    read_result = async {
-                        let mut buffer = buffer_pool.get_buffer().await;
-                        let result = from.read(&mut buffer).await;
-                        (buffer, result)
-                    } => {
-                        let (mut buffer, read_result) = read_result;
-                        let bytes_read = read_result.map_err(|e| {
-                            AppError::SftpError(format!("Failed to read local file: {e}"))
-                        })?;
+                _ = cancel.cancelled() => {
+                    return Err(AppError::SftpError("File transfer cancelled by user".to_string()));
+                }
 
-                        if bytes_read == 0 {
-                            // EOF reached
-                            buffer_pool.return_buffer(buffer).await;
-                            eof_reached = true;
-                        } else {
-                            // Prepare data for concurrent write
-                            let data: Bytes = buffer.split_to(bytes_read).freeze();
-                            let current_offset = offset;
-                            offset += bytes_read as u64;
+                // Read next chunk from local file when we have capacity
+                read_result = async {
+                    let mut buffer = buffer_pool.get_buffer().await;
+                    let result = from.read(&mut buffer).await;
+                    (buffer, result)
+                }, if can_initiate_read => {
+                    let (mut buffer, read_result) = read_result;
+                    let bytes_read = read_result.map_err(|e| {
+                        AppError::SftpError(format!("Failed to read from local file: {}", e))
+                    })?;
 
-                            // Create concurrent write future
-                            let handle = remote_handle.handle.clone();
-                            let chunk_size = bytes_read as u64;
-                            let sftp_clone = Arc::clone(&sftp);
+                    if bytes_read == 0 {
+                        // End of file reached
+                        buffer_pool.return_buffer(buffer).await;
+                        eof_reached = true;
+                    } else {
+                        // Spawn async write operation for this chunk
+                        let data: Bytes = buffer.split_to(bytes_read).freeze();
+                        let current_offset = read_offset;
+                        read_offset += bytes_read as u64;
 
-                            let write_future = async move {
-                                let result = sftp_clone.write(&handle, current_offset, data.to_vec()).await;
-                                (chunk_size, result)
-                            };
+                        let handle = remote_handle.handle.clone();
+                        let chunk_size = bytes_read as u64;
+                        let sftp_clone = Arc::clone(&sftp);
 
-                            write_futures.push(write_future);
+                        // Create write future - will execute concurrently
+                        let write_future = async move {
+                            let result = sftp_clone.write(&handle, current_offset, data.to_vec()).await;
+                            (current_offset, chunk_size, result)
+                        };
 
-                            // Return buffer to pool
-                            buffer_pool.return_buffer(buffer).await;
-                        }
-                    }
-
-                    // Also process any completed writes while reading
-                    write_result = write_futures.next(), if !write_futures.is_empty() => {
-                        if let Some(result) = write_result {
-                            let (chunk_size, write_res) = result;
-                            write_res.map_err(|e| {
-                                AppError::SftpError(format!("Failed to write chunk: {e}"))
-                            })?;
-
-                            bytes_written += chunk_size;
-
-                            progress_reporter.report_progress(bytes_written);
-                        }
+                        write_futures.push(write_future);
+                        buffer_pool.return_buffer(buffer).await;
                     }
                 }
-            } else {
-                // Pipeline is full, only process writes
-                tokio::select! {
-                    _ = cancel.cancelled() => {
-                        return Err(AppError::SftpError("Transfer cancelled".to_string()));
-                    }
-                    write_result = write_futures.next() => {
-                        if let Some(result) = write_result {
-                            let (chunk_size, write_res) = result;
-                            write_res.map_err(|e| {
-                                AppError::SftpError(format!("Failed to write chunk: {e}"))
-                            })?;
 
-                            bytes_written += chunk_size;
+                // Process completed writes
+                write_result = write_futures.next(), if !write_futures.is_empty() => {
+                    if let Some((write_offset, chunk_size, write_res)) = write_result {
+                        write_res.map_err(|e| {
+                            AppError::SftpError(format!(
+                                "Failed to write chunk at offset {}: {}",
+                                write_offset, e
+                            ))
+                        })?;
 
-                            progress_reporter.report_progress(bytes_written);
-                        }
+                        bytes_written += chunk_size;
+                        progress_reporter.report_progress(bytes_written);
                     }
                 }
             }
         }
 
-        // Close the remote file handle
-        sftp.close(&remote_handle.handle)
-            .await
-            .map_err(|e| AppError::SftpError(format!("Failed to close remote file: {e}")))?;
+        // Cleanup: close remote file handle
+        sftp.close(&remote_handle.handle).await.map_err(|e| {
+            AppError::SftpError(format!("Failed to close remote file '{}': {}", to, e))
+        })?;
 
         progress_reporter.report_progress(bytes_written);
 
@@ -891,6 +871,7 @@ impl SshSession {
         cancel: &tokio_util::sync::CancellationToken,
         progress_reporter: impl ProgressReporter,
     ) -> Result<()> {
+        // Setup SFTP session
         let sftp = Self::setup_sftp_session(channel, connection, timeout, cancel).await?;
 
         // Query remote file size for progress reporting
@@ -902,33 +883,38 @@ impl SshSession {
         let remote_handle = sftp
             .open(from, OpenFlags::READ, FileAttributes::empty())
             .await
-            .map_err(|e| AppError::SftpError(format!("Failed to open remote file: {e}")))?;
+            .map_err(|e| {
+                AppError::SftpError(format!("Failed to open remote file '{}': {}", from, e))
+            })?;
 
-        // Create local file for writing
+        // Configure transfer parameters
         const FILE_BUFFER_SIZE: usize = 512 * 1024; // Large buffer to reduce write syscalls
+        const CHUNK_SIZE: usize = 128 * 1024; // 128KB - optimal for SFTP throughput
+        const MAX_CONCURRENT_READS: usize = 12; // Balance between parallelism and resource usage
+
+        // Setup local file writer with buffering
         let mut local_file = BufWriter::with_capacity(FILE_BUFFER_SIZE, to);
 
-        // Use optimal buffer size for SFTP protocol (128KB for better throughput)
-        const CHUNK_SIZE: usize = 128 * 1024; // 128KB - good balance between memory and throughput
+        // Transfer state management
+        let mut bytes_transferred = 0u64;
+        let mut next_read_offset = 0u64;
+        let mut next_write_offset = 0u64;
+        let mut eof_reached = false;
 
-        let mut bytes_read = 0u64;
-        let mut offset = 0u64;
+        // Concurrent read pipeline state
+        let mut read_futures = FuturesUnordered::new();
+        let mut write_queue: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
+        let mut pending_reads: VecDeque<(u64, u32)> = VecDeque::new();
 
         sftp.set_timeout(30).await;
 
-        // Optimized pipeline logic: concurrent read and write with ordered writes
-        const MAX_CONCURRENT_READS: usize = 12; // Reasonable number of concurrent operations
-        let mut read_futures = FuturesUnordered::new();
-        let mut write_queue: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
-        let mut next_write_offset = 0u64;
-        let mut eof_reached = false;
-        let mut pending_reads: VecDeque<(u64, u32)> = VecDeque::new();
-
-        // Wrap sftp in Arc to share between tasks
+        // Wrap sftp in Arc for safe sharing across concurrent tasks
         let sftp = Arc::new(sftp);
 
+        // Main transfer loop: pipeline reads and writes concurrently
+        // Reads are concurrent but writes are ordered to maintain file integrity
         loop {
-            // Check exit condition
+            // Exit when all operations are complete
             if eof_reached
                 && read_futures.is_empty()
                 && write_queue.is_empty()
@@ -937,36 +923,39 @@ impl SshSession {
                 break;
             }
 
-            // Fill the pipeline with as many requests as allowed
+            // Fill the read pipeline up to max concurrent limit
             while read_futures.len() < MAX_CONCURRENT_READS
                 && (!eof_reached || !pending_reads.is_empty())
             {
-                let (current_offset, requested_len) =
+                // Determine the next read operation
+                let (read_offset, read_length) =
                     if let Some((pending_offset, pending_len)) = pending_reads.pop_front() {
+                        // Retry partial read
                         (pending_offset, pending_len)
                     } else {
-                        let next_offset = offset;
-                        offset += CHUNK_SIZE as u64;
-                        (next_offset, CHUNK_SIZE as u32)
+                        // Start new read
+                        let offset = next_read_offset;
+                        next_read_offset += CHUNK_SIZE as u64;
+                        (offset, CHUNK_SIZE as u32)
                     };
 
-                if requested_len == 0 {
+                if read_length == 0 {
                     continue;
                 }
 
+                // Spawn async read operation
                 let handle = remote_handle.handle.clone();
                 let sftp_clone = Arc::clone(&sftp);
 
                 let read_future = async move {
-                    let result = sftp_clone
-                        .read(&handle, current_offset, requested_len)
-                        .await;
+                    let result = sftp_clone.read(&handle, read_offset, read_length).await;
                     match result {
-                        Ok(data) => Ok((current_offset, requested_len, data.data, false)),
+                        Ok(data) => Ok((read_offset, read_length, data.data, false)),
                         Err(russh_sftp::client::error::Error::Status(status))
                             if status.status_code == StatusCode::Eof =>
                         {
-                            Ok((current_offset, requested_len, Vec::new(), true))
+                            // EOF is not an error, it's expected
+                            Ok((read_offset, read_length, Vec::new(), true))
                         }
                         Err(err) => Err(AppError::RusshSftpError(err)),
                     }
@@ -975,84 +964,104 @@ impl SshSession {
                 read_futures.push(read_future);
             }
 
-            // Helper closure to process a single read result
-            let mut process_read_result =
-                |result: std::result::Result<(u64, u32, Vec<u8>, bool), AppError>| -> Result<()> {
-                    let (read_offset, requested_len, data, is_eof) = result?;
-                    let bytes_in_chunk = data.len();
-                    let bytes_in_chunk_u32 = u32::try_from(bytes_in_chunk).map_err(|_| {
-                        AppError::SftpError(
-                            "Received chunk larger than u32::MAX; unsupported transfer size"
-                                .to_string(),
-                        )
-                    })?;
-
-                    if bytes_in_chunk_u32 == 0 || is_eof {
-                        eof_reached = true;
-                    } else {
-                        // Add to write queue with offset for ordering
-                        write_queue.insert(read_offset, data);
-
-                        if !is_eof && bytes_in_chunk_u32 < requested_len {
-                            let remaining = requested_len - bytes_in_chunk_u32;
-                            let next_offset = read_offset + u64::from(bytes_in_chunk_u32);
-                            pending_reads.push_back((next_offset, remaining));
-                        }
-                    }
-
-                    Ok(())
-                };
-
-            // Process completed reads
+            // Wait for and process completed reads
             tokio::select! {
+                biased; // Process cancellation first
+
                 _ = cancel.cancelled() => {
-                    return Err(AppError::SftpError("Transfer cancelled".to_string()));
+                    return Err(AppError::SftpError("File transfer cancelled by user".to_string()));
                 }
 
                 read_result = read_futures.next(), if !read_futures.is_empty() => {
                     if let Some(result) = read_result {
-                        // Process the first completed result
-                        process_read_result(result)?;
+                        // Process the first completed read
+                        Self::process_read_result(
+                            result,
+                            &mut eof_reached,
+                            &mut write_queue,
+                            &mut pending_reads,
+                        )?;
 
-                        // Batch process additional completed results without blocking
-                        // Use now_or_never to poll for immediately available results
-                        // This significantly reduces loop overhead when multiple reads complete simultaneously
+                        // Optimization: batch process additional completed reads without blocking
+                        // This reduces loop overhead when multiple reads complete simultaneously
                         while let Some(Some(res)) = read_futures.next().now_or_never() {
-                            process_read_result(res)?;
+                            Self::process_read_result(
+                                res,
+                                &mut eof_reached,
+                                &mut write_queue,
+                                &mut pending_reads,
+                            )?;
                         }
                     }
                 }
 
-                // If no reads are pending and we can't start new ones, just yield
+                // Yield if no reads are pending to avoid busy waiting
                 _ = tokio::task::yield_now(), if read_futures.is_empty() => {}
             }
 
-            // Process writes in order
+            // Write completed chunks to local file in order
+            // This loop ensures data is written sequentially even though reads are concurrent
             while let Some(data) = write_queue.remove(&next_write_offset) {
-                // Write data to local file
                 local_file.write_all(&data).await.map_err(|e| {
-                    AppError::SftpError(format!("Failed to write to local file: {e}"))
+                    AppError::SftpError(format!(
+                        "Failed to write to local file at offset {}: {}",
+                        next_write_offset, e
+                    ))
                 })?;
 
                 next_write_offset += data.len() as u64;
-                bytes_read += data.len() as u64;
+                bytes_transferred += data.len() as u64;
 
-                progress_reporter.report_progress(bytes_read);
+                progress_reporter.report_progress(bytes_transferred);
             }
         }
 
-        // Flush and close the local file
+        // Cleanup: flush and close files
         local_file
             .flush()
             .await
-            .map_err(|e| AppError::SftpError(format!("Failed to flush local file: {e}")))?;
+            .map_err(|e| AppError::SftpError(format!("Failed to flush local file: {}", e)))?;
 
-        // Close the remote file handle
-        sftp.close(&remote_handle.handle)
-            .await
-            .map_err(|e| AppError::SftpError(format!("Failed to close remote file: {e}")))?;
+        sftp.close(&remote_handle.handle).await.map_err(|e| {
+            AppError::SftpError(format!("Failed to close remote file '{}': {}", from, e))
+        })?;
 
-        // progress_reporter.report_progress(bytes_read);
+        Ok(())
+    }
+
+    /// Helper function to process a single read result
+    /// Updates the transfer state based on the read outcome
+    fn process_read_result(
+        result: std::result::Result<(u64, u32, Vec<u8>, bool), AppError>,
+        eof_reached: &mut bool,
+        write_queue: &mut BTreeMap<u64, Vec<u8>>,
+        pending_reads: &mut VecDeque<(u64, u32)>,
+    ) -> Result<()> {
+        let (read_offset, requested_len, data, is_eof) = result?;
+        let bytes_received = data.len();
+
+        // Validate chunk size
+        let bytes_received_u32 = u32::try_from(bytes_received).map_err(|_| {
+            AppError::SftpError(format!(
+                "Received chunk size ({}) exceeds u32::MAX",
+                bytes_received
+            ))
+        })?;
+
+        if bytes_received_u32 == 0 || is_eof {
+            // End of file reached
+            *eof_reached = true;
+        } else {
+            // Queue data for ordered writing
+            write_queue.insert(read_offset, data);
+
+            // Handle partial reads: if we got less than requested, queue the remainder
+            if !is_eof && bytes_received_u32 < requested_len {
+                let remaining = requested_len - bytes_received_u32;
+                let next_offset = read_offset + u64::from(bytes_received_u32);
+                pending_reads.push_back((next_offset, remaining));
+            }
+        }
 
         Ok(())
     }
