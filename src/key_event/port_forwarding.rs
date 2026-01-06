@@ -207,7 +207,7 @@ pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
         }
         KeyCode::Char('q') => {
             // Return to connection list
-            app.go_to_connection_list_with_selected(app.current_selected());
+            app.go_to_connection_list_with_selected(0);
         }
         _ => {}
     }

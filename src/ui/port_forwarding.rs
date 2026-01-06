@@ -431,7 +431,7 @@ pub fn draw_port_forwarding_list(
         Cell::from("Type"),
         Cell::from("Name"),
         Cell::from("Connection"),
-        Cell::from("Local"),
+        Cell::from("Bind"),
         Cell::from("Service"),
         Cell::from("Created"),
     ])
@@ -477,7 +477,7 @@ pub fn draw_port_forwarding_list(
             Constraint::Length(8),  // Type
             Constraint::Min(12),    // Name
             Constraint::Min(10),    // Connection
-            Constraint::Min(12),    // Local
+            Constraint::Min(12),    // Bind
             Constraint::Min(12),    // Service
             Constraint::Length(16), // Created
             Constraint::Length(1),  // Scrollbar
