@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use crate::config::manager::Connection;
 use crate::filesystem::SftpFileSystem;
-use crate::{ActivePane, CopyOperation, FileExplorerPane, LeftExplorer};
+use crate::{ActivePane, CopyOperation, FileExplorerPane, LeftExplorer, SearchState};
 
 /// Draw the dual-pane file explorer interface.
 #[allow(clippy::too_many_arguments)]
@@ -25,29 +25,17 @@ pub fn draw_file_explorer(
     remote_explorer: &mut ratatui_explorer::FileExplorer<SftpFileSystem>,
     active_pane: &ActivePane,
     copy_buffer: &[CopyOperation],
-    search_mode: bool,
-    search_query: &str,
+    search: &SearchState,
     use_icons: bool,
 ) {
-    // Main layout: header, content, footer (and optional search input)
-    let constraints = if search_mode {
-        vec![
-            Constraint::Length(3), // Header
-            Constraint::Min(1),    // Content (dual panes)
-            Constraint::Length(3), // Search input
-            Constraint::Length(1), // Footer
-        ]
-    } else {
-        vec![
-            Constraint::Length(3), // Header
-            Constraint::Min(1),    // Content (dual panes)
-            Constraint::Length(1), // Footer
-        ]
-    };
-
+    // Main layout: header, content, footer
     let main_layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(constraints)
+        .constraints([
+            Constraint::Length(3), // Header
+            Constraint::Min(1),    // Content (dual panes)
+            Constraint::Length(1), // Footer
+        ])
         .split(area);
 
     // Render header
@@ -104,13 +92,8 @@ pub fn draw_file_explorer(
         use_icons,
     );
 
-    // Render search input if in search mode
-    if search_mode {
-        draw_search_input(f, main_layout[2], search_query);
-        draw_footer(f, main_layout[3], copy_buffer, search_mode);
-    } else {
-        draw_footer(f, main_layout[2], copy_buffer, search_mode);
-    }
+    // Render footer
+    draw_footer(f, main_layout[2], copy_buffer, search);
 }
 
 /// Draw the header showing connection name and copy status
@@ -243,59 +226,86 @@ fn draw_pane<F: ratatui_explorer::FileSystem>(
     // TODO: Show copy marker for files in copy mode
 }
 
-/// Draw the search input bar
-fn draw_search_input(f: &mut Frame, area: Rect, search_query: &str) {
-    let search_widget = Paragraph::new(search_query).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Search")
-            .style(Style::default().fg(Color::Cyan)),
-    );
-
-    f.render_widget(search_widget, area);
-}
-
 /// Draw the footer showing available keybindings
-fn draw_footer(f: &mut Frame, area: Rect, copy_buffer: &[CopyOperation], search_mode: bool) {
+fn draw_footer(f: &mut Frame, area: Rect, copy_buffer: &[CopyOperation], search: &SearchState) {
     use ratatui::layout::{Alignment, Constraint, Direction, Layout};
 
-    let footer_layout = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
+    if search.is_on() {
+        // Search mode: show search input with placeholder
+        let mut spans = vec![Span::styled(
+            "Search: ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )];
 
-    let hint_text = if search_mode {
-        "Enter/Esc: Exit Search   Backspace: Delete   Arrow Keys: Navigate".to_string()
-    } else if !copy_buffer.is_empty() {
-        let count_label = if copy_buffer.len() == 1 {
-            "1 file selected".to_string()
+        if search.query().is_empty() {
+            spans.push(Span::styled(
+                "Type to filter files",
+                Style::default().fg(Color::DarkGray).dim(),
+            ));
         } else {
-            format!("{} files selected", copy_buffer.len())
-        };
-        format!("Esc: Clear | Tab: Switch Pane | v: Paste ({count_label}) | q: Quit")
+            spans.push(Span::raw(search.query()));
+        }
+
+        let search_line =
+            Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::Reset));
+        f.render_widget(search_line, area);
+    } else if matches!(search, crate::SearchState::Applied { .. }) {
+        // Applied filter: show "Searched: xxx"
+        let search_line = Paragraph::new(Line::from(vec![
+            Span::styled(
+                "Searched: ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(search.query(), Style::default().fg(Color::Yellow)),
+            Span::styled(
+                "   Press Esc to clear",
+                Style::default().fg(Color::DarkGray).dim(),
+            ),
+        ]))
+        .style(Style::default().bg(Color::Reset));
+        f.render_widget(search_line, area);
     } else {
-        "↑↓/jk: Move | ←→: Dir | Tab: Switch | s: Switch Source | c: Copy | d: Delete | /: Search | h: Hidden | r: Refresh | q: Quit"
-            .to_string()
-    };
+        // Normal mode: show hints
+        let footer_layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(area);
 
-    let left = Paragraph::new(Line::from(Span::styled(
-        hint_text,
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::DIM),
-    )))
-    .alignment(Alignment::Left);
+        let hint_text = if !copy_buffer.is_empty() {
+            let count_label = if copy_buffer.len() == 1 {
+                "1 file selected".to_string()
+            } else {
+                format!("{} files selected", copy_buffer.len())
+            };
+            format!("Esc: Clear | Tab: Switch Pane | v: Paste ({count_label}) | q: Quit")
+        } else {
+            "↑↓/jk: Move | ←→: Dir | Tab: Switch | s: Switch Source | c: Copy | d: Delete | /: Search | h: Hidden | r: Refresh | q: Quit"
+                .to_string()
+        };
 
-    let right = Paragraph::new(Line::from(Span::styled(
-        format!("TermiRs v{}", env!("CARGO_PKG_VERSION")),
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::DIM),
-    )))
-    .alignment(Alignment::Right);
+        let left = Paragraph::new(Line::from(Span::styled(
+            hint_text,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::DIM),
+        )))
+        .alignment(Alignment::Left);
 
-    f.render_widget(left, footer_layout[0]);
-    f.render_widget(right, footer_layout[1]);
+        let right = Paragraph::new(Line::from(Span::styled(
+            format!("TermiRs v{}", env!("CARGO_PKG_VERSION")),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::DIM),
+        )))
+        .alignment(Alignment::Right);
+
+        f.render_widget(left, footer_layout[0]);
+        f.render_widget(right, footer_layout[1]);
+    }
 }
 
 /// Draw the file delete confirmation popup
@@ -404,8 +414,7 @@ pub fn draw_connection_selector_popup(
     exclude_connection_id: Option<&str>,
     include_local_option: bool,
     title: &str,
-    search_mode: bool,
-    search_query: &str,
+    search: &SearchState,
 ) {
     use ratatui::widgets::{Clear, List, ListItem, ListState};
 
@@ -438,7 +447,7 @@ pub fn draw_connection_selector_popup(
 
     // Build list items: optional local entry + filtered connections
     let filtered_indices =
-        filter_connection_indices(connections, exclude_connection_id, search_query);
+        filter_connection_indices(connections, exclude_connection_id, search.query());
     let local_offset = if include_local_option { 1 } else { 0 };
     let total_items = filtered_indices.len() + local_offset;
     let clamped_selected = selected.min(total_items.saturating_sub(1));
@@ -515,7 +524,7 @@ pub fn draw_connection_selector_popup(
 
     // Render footer content (instructions or search)
     if footer_area.height > 0 {
-        if search_mode {
+        if search.is_on() {
             let mut spans = vec![Span::styled(
                 "Search: ",
                 Style::default()
@@ -523,13 +532,13 @@ pub fn draw_connection_selector_popup(
                     .add_modifier(Modifier::BOLD),
             )];
 
-            if search_query.is_empty() {
+            if search.query().is_empty() {
                 spans.push(Span::styled(
-                    "type to filter connections",
+                    "Type to filter connections",
                     Style::default().fg(Color::DarkGray).dim(),
                 ));
             } else {
-                spans.push(Span::raw(search_query));
+                spans.push(Span::raw(search.query()));
             }
 
             let search_line =

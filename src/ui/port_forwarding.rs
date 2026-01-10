@@ -1,5 +1,6 @@
 use chrono::Local;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
+use ratatui::prelude::Stylize;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
@@ -337,13 +338,47 @@ pub struct PortForwardingListItem {
     pub created_at: String,
 }
 
+/// Get the count of port forwards after applying search filter
+pub fn get_filtered_port_forward_count(
+    port_forwards: &[PortForward],
+    connections: &[Connection],
+    search_query: &str,
+) -> usize {
+    if search_query.is_empty() {
+        return port_forwards.len();
+    }
+
+    let search_lower = search_query.to_lowercase();
+    port_forwards
+        .iter()
+        .filter(|pf| {
+            let connection_name = connections
+                .iter()
+                .find(|c| c.id == pf.connection_id)
+                .map(|c| c.display_name.as_str())
+                .unwrap_or("Unknown");
+
+            let forward_type = match pf.forward_type {
+                PortForwardType::Local => "Local",
+                PortForwardType::Remote => "Remote",
+                PortForwardType::Dynamic => "Dynamic",
+            };
+
+            pf.get_display_name().to_lowercase().contains(&search_lower)
+                || connection_name.to_lowercase().contains(&search_lower)
+                || pf.local_address().to_lowercase().contains(&search_lower)
+                || pf.service_address().to_lowercase().contains(&search_lower)
+                || forward_type.to_lowercase().contains(&search_lower)
+        })
+        .count()
+}
+
 pub fn draw_port_forwarding_list(
     area: Rect,
     port_forwards: &[PortForward],
     connections: &[Connection],
     selected_index: usize,
-    search_mode: bool,
-    search_query: &str,
+    search: &crate::SearchState,
     frame: &mut ratatui::Frame<'_>,
 ) {
     let mut items: Vec<PortForwardingListItem> = port_forwards
@@ -384,27 +419,27 @@ pub fn draw_port_forwarding_list(
         .collect();
 
     // Filter items based on search query
-    if !search_query.is_empty() {
+    if !search.query().is_empty() {
         items.retain(|item| {
             item.display_name
                 .to_lowercase()
-                .contains(&search_query.to_lowercase())
+                .contains(&search.query().to_lowercase())
                 || item
                     .connection_name
                     .to_lowercase()
-                    .contains(&search_query.to_lowercase())
+                    .contains(&search.query().to_lowercase())
                 || item
                     .local_address
                     .to_lowercase()
-                    .contains(&search_query.to_lowercase())
+                    .contains(&search.query().to_lowercase())
                 || item
                     .service_address
                     .to_lowercase()
-                    .contains(&search_query.to_lowercase())
+                    .contains(&search.query().to_lowercase())
                 || item
                     .forward_type
                     .to_lowercase()
-                    .contains(&search_query.to_lowercase())
+                    .contains(&search.query().to_lowercase())
         });
     }
 
@@ -414,16 +449,11 @@ pub fn draw_port_forwarding_list(
         selected_index.min(items.len() - 1)
     };
 
-    // In search mode, the area passed is already the table area, so no need for layout splitting
-    let layout = if search_mode {
-        vec![area] // Just use the entire area for the table
-    } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(1)])
-            .split(area)
-            .to_vec()
-    };
+    // Layout for table and footer
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(area);
 
     // Create table header
     let header = Row::new(vec![
@@ -525,9 +555,49 @@ pub fn draw_port_forwarding_list(
         }
     }
 
-    // Only render footer in normal mode (search mode footer is handled in main.rs)
-    if !search_mode {
-        let footer_area = layout[1];
+    // Render footer
+    let footer_area = layout[1];
+
+    if search.is_on() {
+        // Search mode: show search input with placeholder
+        let mut spans = vec![Span::styled(
+            "Search: ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )];
+
+        if search.query().is_empty() {
+            spans.push(Span::styled(
+                "Type to filter port forwards",
+                Style::default().fg(Color::DarkGray).dim(),
+            ));
+        } else {
+            spans.push(Span::raw(search.query()));
+        }
+
+        let search_line =
+            Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::Reset));
+        frame.render_widget(search_line, footer_area);
+    } else if matches!(search, crate::SearchState::Applied { .. }) {
+        // Applied filter: show "Searched: xxx"
+        let search_line = Paragraph::new(Line::from(vec![
+            Span::styled(
+                "Searched: ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(search.query(), Style::default().fg(Color::Yellow)),
+            Span::styled(
+                "   Press Esc to clear",
+                Style::default().fg(Color::DarkGray).dim(),
+            ),
+        ]))
+        .style(Style::default().bg(Color::Reset));
+        frame.render_widget(search_line, footer_area);
+    } else {
+        // Normal mode: show hints
         let footer = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])

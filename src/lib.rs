@@ -3,6 +3,7 @@ mod config;
 mod error;
 mod filesystem;
 mod key_event;
+mod search_state;
 mod ui;
 
 // New modules from refactoring
@@ -20,6 +21,7 @@ pub use app::{
 pub use async_ssh_client::expand_tilde;
 pub use error::{AppError, Result};
 pub use events::AppEvent;
+pub use search_state::SearchState;
 pub use transfer::{
     ScpFileProgress, ScpFileResult, ScpProgress, ScpResult, ScpTransferProgress, ScpTransferSpec,
     TransferState,

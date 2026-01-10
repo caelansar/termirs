@@ -10,40 +10,65 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
     app: &mut App<B>,
     key: KeyEvent,
 ) -> KeyFlow {
-    // Check if we're in search mode
+    // Check if we're in search mode (actively typing)
     if let AppMode::ConnectionList {
-        search_mode: true,
-        search_input,
-        ..
+        search, selected, ..
     } = &mut app.mode
     {
-        match key.code {
-            KeyCode::Esc => {
-                if let AppMode::ConnectionList {
-                    search_mode,
-                    search_input,
-                    ..
-                } = &mut app.mode
-                {
-                    *search_mode = false;
-                    search_input.delete_line_by_head();
-                    search_input.delete_line_by_end();
+        if search.is_on() {
+            match key.code {
+                KeyCode::Char(c) => {
+                    if let Some(query) = search.query_mut() {
+                        query.push(c);
+                    }
+                    *selected = 0; // Reset selection when query changes
+                    app.mark_redraw();
                 }
-            }
-            KeyCode::Enter => {
-                if let AppMode::ConnectionList { search_mode, .. } = &mut app.mode {
-                    *search_mode = false;
+                KeyCode::Backspace => {
+                    if let Some(query) = search.query_mut() {
+                        query.pop();
+                    }
+                    *selected = 0; // Reset selection when query changes
+                    app.mark_redraw();
                 }
+                KeyCode::Esc => {
+                    if !search.query().is_empty() {
+                        search.clear_query();
+                        *selected = 0; // Reset selection when clearing query
+                    } else {
+                        search.deactivate();
+                        *selected = 0; // Reset selection when exiting search
+                    }
+                    app.mark_redraw();
+                }
+                KeyCode::Enter => {
+                    search.apply();
+                    // Keep current selection when applying filter
+                    app.mark_redraw();
+                }
+                _ => {}
             }
-            _ => {
-                // Let TextArea handle all other key events (cursor movement, editing, etc.)
-                search_input.input(key);
+            return KeyFlow::Continue;
+        }
+
+        // Handle Esc when search filter is applied (but not actively editing)
+        if matches!(search, crate::SearchState::Applied { .. }) {
+            if key.code == KeyCode::Esc {
+                search.deactivate();
+                *selected = 0; // Reset selection when clearing filter
+                app.mark_redraw();
+                return KeyFlow::Continue;
             }
         }
-        return KeyFlow::Continue;
     }
 
-    let len = app.config.connections().len();
+    // Get the effective list length (filtered if search is active)
+    let len = if let AppMode::ConnectionList { search, .. } = &app.mode {
+        crate::ui::get_filtered_connection_count(app.config.connections(), search.query())
+    } else {
+        app.config.connections().len()
+    };
+
     match key.code {
         KeyCode::Char('n') | KeyCode::Char('N') => {
             app.go_to_form_new();
@@ -86,15 +111,12 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
         }
         KeyCode::Char('/') => {
             if let AppMode::ConnectionList {
-                search_mode,
-                search_input,
-                ..
+                search, selected, ..
             } = &mut app.mode
             {
-                *search_mode = true;
-                // Clear any existing text and set up the TextArea for search
-                search_input.delete_line_by_head();
-                search_input.delete_line_by_end();
+                search.activate();
+                *selected = 0; // Reset selection when starting search
+                app.mark_redraw();
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {

@@ -14,6 +14,7 @@ use crate::async_ssh_client::SshSession;
 use crate::config::manager::{ConfigManager, Connection};
 use crate::error::{AppError, Result};
 use crate::events::AppEvent;
+use crate::search_state::SearchState;
 use crate::terminal::{
     LastMouseClick, MouseClickClass, SelectionAutoScroll, SelectionEndpoint,
     SelectionScrollDirection, TerminalPoint, compute_selection_for_view, make_selection_endpoint,
@@ -24,8 +25,7 @@ use crate::ui::{
     draw_connection_list, draw_delete_confirmation_popup, draw_error_popup,
     draw_file_delete_confirmation_popup, draw_file_explorer, draw_info_popup,
     draw_port_forward_delete_confirmation_popup, draw_port_forwarding_form_popup,
-    draw_port_forwarding_list, draw_scp_progress_popup, draw_search_overlay, draw_terminal,
-    rect_with_top_margin,
+    draw_port_forwarding_list, draw_scp_progress_popup, draw_terminal, rect_with_top_margin,
 };
 
 /// Enum to track where to return after SCP operations
@@ -186,8 +186,7 @@ pub enum ScpReturnMode {
         active_pane: ActivePane,
         copy_buffer: Vec<CopyOperation>,
         return_to: usize,
-        search_mode: bool,
-        search_query: String,
+        search: SearchState,
     },
 }
 
@@ -211,8 +210,7 @@ pub enum ConnectingSource {
 pub enum AppMode {
     ConnectionList {
         selected: usize,
-        search_mode: bool,
-        search_input: TextArea<'static>,
+        search: SearchState,
     },
     FormNew {
         auto_auth: bool,
@@ -267,14 +265,12 @@ pub enum AppMode {
         active_pane: ActivePane,
         copy_buffer: Vec<CopyOperation>,
         return_to: usize,
-        search_mode: bool,
-        search_query: String,
+        search: SearchState,
 
         // Connection selector for left pane
         showing_source_selector: bool,
         selector_selected: usize,
-        selector_search_mode: bool,
-        selector_search_query: String,
+        selector_search: SearchState,
 
         // File delete confirmation
         showing_delete_confirmation: bool,
@@ -283,24 +279,21 @@ pub enum AppMode {
     },
     PortForwardingList {
         selected: usize,
-        search_mode: bool,
-        search_input: TextArea<'static>,
+        search: SearchState,
     },
     PortForwardingFormNew {
         form: crate::ui::PortForwardingForm,
         current_selected: usize, // Port forwarding list position
         select_connection_mode: bool,
         connection_selected: usize, // Connection list position
-        connection_search_mode: bool,
-        connection_search_query: String,
+        connection_search: SearchState,
     },
     PortForwardingFormEdit {
         form: crate::ui::PortForwardingForm,
         current_selected: usize, // Port forwarding list position
         select_connection_mode: bool,
         connection_selected: usize, // Connection list position
-        connection_search_mode: bool,
-        connection_search_query: String,
+        connection_search: SearchState,
     },
     PortForwardDeleteConfirmation {
         port_forward_name: String,
@@ -361,8 +354,7 @@ impl<B: Backend + Write> App<B> {
         Ok(Self {
             mode: AppMode::ConnectionList {
                 selected: 0,
-                search_mode: false,
-                search_input: create_search_textarea(),
+                search: SearchState::Off,
             },
             error: None,
             info: None,
@@ -712,8 +704,7 @@ impl<B: Backend + Write> App<B> {
         self.clear_selection();
         self.mode = AppMode::ConnectionList {
             selected,
-            search_mode: false,
-            search_input: create_search_textarea(),
+            search: SearchState::Off,
         };
         self.needs_redraw = true; // Mode change requires redraw
     }
@@ -758,8 +749,7 @@ impl<B: Backend + Write> App<B> {
 
         self.mode = AppMode::PortForwardingList {
             selected,
-            search_mode: false,
-            search_input: create_search_textarea(),
+            search: SearchState::Off,
         };
         self.needs_redraw = true;
     }
@@ -770,8 +760,7 @@ impl<B: Backend + Write> App<B> {
             current_selected: self.current_selected(),
             select_connection_mode: false,
             connection_selected: 0,
-            connection_search_mode: false,
-            connection_search_query: String::new(),
+            connection_search: SearchState::Off,
         };
         self.needs_redraw = true;
     }
@@ -782,8 +771,7 @@ impl<B: Backend + Write> App<B> {
             current_selected: self.current_selected(),
             select_connection_mode: false,
             connection_selected: 0,
-            connection_search_mode: false,
-            connection_search_query: String::new(),
+            connection_search: SearchState::Off,
         };
         self.needs_redraw = true;
     }
@@ -883,13 +871,11 @@ impl<B: Backend + Write> App<B> {
             active_pane: ActivePane::Left,
             copy_buffer: Vec::new(),
             return_to,
-            search_mode: false,
-            search_query: String::new(),
+            search: SearchState::Off,
 
             showing_source_selector: false,
             selector_selected: 0,
-            selector_search_mode: false,
-            selector_search_query: String::new(),
+            selector_search: SearchState::Off,
 
             showing_delete_confirmation: false,
             delete_file_name: String::new(),
@@ -1127,63 +1113,38 @@ impl<B: Backend + Write> App<B> {
         self.terminal.draw(|f| {
             let size = f.area();
             match &mut self.mode {
-                AppMode::ConnectionList {
-                    selected,
-                    search_mode,
-                    search_input,
-                } => {
+                AppMode::ConnectionList { selected, search } => {
                     let conns = self.config.connections();
-                    let search_query = search_input.lines()[0].to_string();
-                    let search_query_ref = search_query.as_str();
 
-                    if *search_mode {
-                        draw_search_overlay(
-                            f,
-                            size,
-                            search_input,
-                            "Enter: Apply Search   Esc: Exit Search   Arrow Keys: Move Cursor",
-                            [
-                                ratatui::layout::Constraint::Percentage(50),
-                                ratatui::layout::Constraint::Percentage(50),
-                            ],
-                            |area, frame| {
-                                draw_connection_list(
-                                    area,
-                                    conns,
-                                    *selected,
-                                    *search_mode,
-                                    search_query_ref,
-                                    frame,
-                                    false,
-                                );
-                            },
-                        );
-                    } else {
-                        // Normal mode: let draw_connection_list handle everything
-                        draw_connection_list(
-                            size,
-                            conns,
-                            *selected,
-                            *search_mode,
-                            search_query_ref,
-                            f,
-                            false,
-                        );
-                    }
+                    draw_connection_list(size, conns, *selected, search, f, false);
                 }
                 AppMode::FormNew {
                     current_selected, ..
                 } => {
                     // Render the connection list background first
                     let conns = self.config.connections();
-                    draw_connection_list(size, conns, *current_selected, false, "", f, false);
+                    draw_connection_list(
+                        size,
+                        conns,
+                        *current_selected,
+                        &SearchState::Off,
+                        f,
+                        false,
+                    );
                 }
                 AppMode::FormEdit {
                     current_selected, ..
                 } => {
                     // Render the connection list background first
                     let conns = self.config.connections();
-                    draw_connection_list(size, conns, *current_selected, false, "", f, false);
+                    draw_connection_list(
+                        size,
+                        conns,
+                        *current_selected,
+                        &SearchState::Off,
+                        f,
+                        false,
+                    );
                 }
                 AppMode::Connecting {
                     return_from,
@@ -1194,17 +1155,38 @@ impl<B: Backend + Write> App<B> {
                     match return_from {
                         ConnectingSource::FormNew { form, .. } => {
                             let conns = self.config.connections();
-                            draw_connection_list(size, conns, *return_to, false, "", f, false);
+                            draw_connection_list(
+                                size,
+                                conns,
+                                *return_to,
+                                &SearchState::Off,
+                                f,
+                                false,
+                            );
                             draw_connection_form_popup(size, form, true, f);
                         }
                         ConnectingSource::FormEdit { form, .. } => {
                             let conns = self.config.connections();
-                            draw_connection_list(size, conns, *return_to, false, "", f, false);
+                            draw_connection_list(
+                                size,
+                                conns,
+                                *return_to,
+                                &SearchState::Off,
+                                f,
+                                false,
+                            );
                             draw_connection_form_popup(size, form, false, f);
                         }
                         ConnectingSource::ConnectionList { .. } => {
                             let conns = self.config.connections();
-                            draw_connection_list(size, conns, *return_to, false, "", f, false);
+                            draw_connection_list(
+                                size,
+                                conns,
+                                *return_to,
+                                &SearchState::Off,
+                                f,
+                                false,
+                            );
                         }
                     }
                 }
@@ -1234,8 +1216,7 @@ impl<B: Backend + Write> App<B> {
                                 size,
                                 conns,
                                 *current_selected,
-                                false,
-                                "",
+                                &SearchState::Off,
                                 f,
                                 false,
                             );
@@ -1264,8 +1245,7 @@ impl<B: Backend + Write> App<B> {
                             remote_explorer,
                             active_pane,
                             copy_buffer,
-                            search_mode,
-                            search_query,
+                            search,
                             ..
                         }) => {
                             draw_file_explorer(
@@ -1277,8 +1257,7 @@ impl<B: Backend + Write> App<B> {
                                 remote_explorer,
                                 active_pane,
                                 copy_buffer,
-                                *search_mode,
-                                search_query,
+                                search,
                                 self.config.have_nerd_font(),
                             );
                         }
@@ -1290,7 +1269,14 @@ impl<B: Backend + Write> App<B> {
                 } => {
                     // Render the connection list background first
                     let conns = self.config.connections();
-                    draw_connection_list(size, conns, *current_selected, false, "", f, false);
+                    draw_connection_list(
+                        size,
+                        conns,
+                        *current_selected,
+                        &SearchState::Off,
+                        f,
+                        false,
+                    );
                 }
                 AppMode::FileExplorer {
                     connection_name,
@@ -1299,12 +1285,10 @@ impl<B: Backend + Write> App<B> {
                     remote_explorer,
                     active_pane,
                     copy_buffer,
-                    search_mode,
-                    search_query,
+                    search,
                     showing_source_selector,
                     selector_selected,
-                    selector_search_mode,
-                    selector_search_query,
+                    selector_search,
                     ssh_connection,
                     showing_delete_confirmation,
                     delete_file_name,
@@ -1319,8 +1303,7 @@ impl<B: Backend + Write> App<B> {
                         remote_explorer,
                         active_pane,
                         copy_buffer,
-                        *search_mode,
-                        search_query,
+                        search,
                         self.config.have_nerd_font(),
                     );
 
@@ -1335,8 +1318,7 @@ impl<B: Backend + Write> App<B> {
                             Some(ssh_connection.id.as_str()),
                             true,
                             " Select Left Pane Source ",
-                            *selector_search_mode,
-                            selector_search_query.as_str(),
+                            selector_search,
                         );
                     }
 
@@ -1345,50 +1327,18 @@ impl<B: Backend + Write> App<B> {
                         draw_file_delete_confirmation_popup(f, size, delete_file_name);
                     }
                 }
-                AppMode::PortForwardingList {
-                    selected,
-                    search_mode,
-                    search_input,
-                } => {
+                AppMode::PortForwardingList { selected, search } => {
                     let connections = self.config.connections();
                     let port_forwards = self.config.port_forwards();
-                    let search_query = search_input.lines()[0].to_string();
-                    let search_query_ref = search_query.as_str();
 
-                    if *search_mode {
-                        draw_search_overlay(
-                            f,
-                            size,
-                            search_input,
-                            "Enter: Apply Search   Esc: Exit Search   Arrow Keys: Move Cursor",
-                            [
-                                ratatui::layout::Constraint::Percentage(50),
-                                ratatui::layout::Constraint::Percentage(50),
-                            ],
-                            |area, frame| {
-                                draw_port_forwarding_list(
-                                    area,
-                                    port_forwards,
-                                    connections,
-                                    *selected,
-                                    *search_mode,
-                                    search_query_ref,
-                                    frame,
-                                );
-                            },
-                        );
-                    } else {
-                        // Normal mode: let draw_port_forwarding_list handle everything
-                        draw_port_forwarding_list(
-                            size,
-                            port_forwards,
-                            connections,
-                            *selected,
-                            *search_mode,
-                            search_query_ref,
-                            f,
-                        );
-                    }
+                    draw_port_forwarding_list(
+                        size,
+                        port_forwards,
+                        connections,
+                        *selected,
+                        search,
+                        f,
+                    );
                 }
                 AppMode::PortForwardingFormNew {
                     current_selected, ..
@@ -1401,8 +1351,7 @@ impl<B: Backend + Write> App<B> {
                         port_forwards,
                         connections,
                         *current_selected,
-                        false,
-                        "",
+                        &SearchState::Off,
                         f,
                     );
                 }
@@ -1417,8 +1366,7 @@ impl<B: Backend + Write> App<B> {
                         port_forwards,
                         connections,
                         *current_selected,
-                        false,
-                        "",
+                        &SearchState::Off,
                         f,
                     );
                 }
@@ -1433,8 +1381,7 @@ impl<B: Backend + Write> App<B> {
                         port_forwards,
                         connections,
                         *current_selected,
-                        false,
-                        "",
+                        &SearchState::Off,
                         f,
                     );
                 }
@@ -1454,8 +1401,7 @@ impl<B: Backend + Write> App<B> {
             if let AppMode::PortForwardingFormNew {
                 select_connection_mode,
                 connection_selected,
-                connection_search_mode,
-                connection_search_query,
+                connection_search,
                 ..
             } = &mut self.mode
                 && *select_connection_mode
@@ -1469,15 +1415,13 @@ impl<B: Backend + Write> App<B> {
                     None,
                     false,
                     " Choose Connection ",
-                    *connection_search_mode,
-                    connection_search_query.as_str(),
+                    connection_search,
                 );
             }
             if let AppMode::PortForwardingFormEdit {
                 select_connection_mode,
                 connection_selected,
-                connection_search_mode,
-                connection_search_query,
+                connection_search,
                 ..
             } = &mut self.mode
                 && *select_connection_mode
@@ -1491,8 +1435,7 @@ impl<B: Backend + Write> App<B> {
                     None,
                     false,
                     " Choose Connection ",
-                    *connection_search_mode,
-                    connection_search_query.as_str(),
+                    connection_search,
                 );
             }
 
@@ -1766,8 +1709,7 @@ impl<B: Backend + Write> App<B> {
                                                 active_pane,
                                                 copy_buffer,
                                                 return_to,
-                                                search_mode,
-                                                search_query,
+                                                search,
                                             } => {
                                                 self.mode = AppMode::FileExplorer {
                                                     connection_name,
@@ -1781,12 +1723,10 @@ impl<B: Backend + Write> App<B> {
                                                     active_pane,
                                                     copy_buffer,
                                                     return_to,
-                                                    search_mode,
-                                                    search_query,
+                                                    search,
                                                     showing_source_selector: false,
                                                     selector_selected: 0,
-                                                    selector_search_mode: false,
-                                                    selector_search_query: String::new(),
+                                                    selector_search: SearchState::Off,
                                                     showing_delete_confirmation: false,
                                                     delete_file_name: String::new(),
                                                     delete_pane: ActivePane::Left,

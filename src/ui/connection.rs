@@ -1,5 +1,6 @@
 use chrono::Local;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::prelude::Stylize;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
@@ -224,12 +225,31 @@ pub struct ConnectionListItem<'a> {
     pub last_used: Option<String>,
 }
 
+/// Get the count of connections after applying search filter
+pub fn get_filtered_connection_count(conns: &[Connection], search_query: &str) -> usize {
+    if search_query.is_empty() {
+        return conns.len();
+    }
+
+    conns
+        .iter()
+        .filter(|c| {
+            c.host.to_lowercase().contains(&search_query.to_lowercase())
+                || c.username
+                    .to_lowercase()
+                    .contains(&search_query.to_lowercase())
+                || c.display_name
+                    .to_lowercase()
+                    .contains(&search_query.to_lowercase())
+        })
+        .count()
+}
+
 pub fn draw_connection_list(
     area: Rect,
     conns: &[Connection],
     selected_index: usize,
-    search_mode: bool,
-    search_query: &str,
+    search: &crate::SearchState,
     frame: &mut ratatui::Frame<'_>,
     choose_connection_mode: bool,
 ) {
@@ -257,19 +277,19 @@ pub fn draw_connection_list(
         .collect();
 
     // Filter items based on search query
-    if !search_query.is_empty() {
+    if !search.query().is_empty() {
         items.retain(|item| {
             item.host
                 .to_lowercase()
-                .contains(&search_query.to_lowercase())
+                .contains(&search.query().to_lowercase())
                 || item
                     .username
                     .to_lowercase()
-                    .contains(&search_query.to_lowercase())
+                    .contains(&search.query().to_lowercase())
                 || item
                     .name
                     .to_lowercase()
-                    .contains(&search_query.to_lowercase())
+                    .contains(&search.query().to_lowercase())
         });
     }
 
@@ -279,16 +299,11 @@ pub fn draw_connection_list(
         selected_index.min(items.len() - 1)
     };
 
-    // In search mode, the area passed is already the table area, so no need for layout splitting
-    let layout = if search_mode {
-        vec![area] // Just use the entire area for the table
-    } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(1)])
-            .split(area)
-            .to_vec()
-    };
+    // Layout for table and footer
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(area);
 
     // Create table header
     let header = Row::new(vec![
@@ -390,9 +405,49 @@ pub fn draw_connection_list(
         }
     }
 
-    // Only render footer in normal mode (search mode footer is handled in main.rs)
-    if !search_mode {
-        let footer_area = layout[1];
+    // Render footer
+    let footer_area = layout[1];
+
+    if search.is_on() {
+        // Search mode: show search input with placeholder
+        let mut spans = vec![Span::styled(
+            "Search: ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )];
+
+        if search.query().is_empty() {
+            spans.push(Span::styled(
+                "Type to filter connections",
+                Style::default().fg(Color::DarkGray).dim(),
+            ));
+        } else {
+            spans.push(Span::raw(search.query()));
+        }
+
+        let search_line =
+            Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::Reset));
+        frame.render_widget(search_line, footer_area);
+    } else if matches!(search, crate::SearchState::Applied { .. }) {
+        // Applied filter: show "Searched: xxx"
+        let search_line = Paragraph::new(Line::from(vec![
+            Span::styled(
+                "Searched: ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(search.query(), Style::default().fg(Color::Yellow)),
+            Span::styled(
+                "   Press Esc to clear",
+                Style::default().fg(Color::DarkGray).dim(),
+            ),
+        ]))
+        .style(Style::default().bg(Color::Reset));
+        frame.render_widget(search_line, footer_area);
+    } else {
+        // Normal mode: show hints
         let footer = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])

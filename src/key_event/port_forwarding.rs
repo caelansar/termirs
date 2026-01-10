@@ -5,6 +5,7 @@ use ratatui::prelude::Backend;
 use tracing::{error, info};
 
 use super::KeyFlow;
+use crate::SearchState;
 use crate::app::{App, AppMode};
 use crate::config::manager::{PortForward, PortForwardStatus};
 use crate::error::AppError;
@@ -14,40 +15,69 @@ pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
     app: &mut App<B>,
     key: KeyEvent,
 ) -> KeyFlow {
-    // Check if we're in search mode
+    // Check if we're in search mode (actively typing)
     if let AppMode::PortForwardingList {
-        search_mode: true,
-        search_input,
-        ..
+        search, selected, ..
     } = &mut app.mode
     {
-        match key.code {
-            KeyCode::Esc => {
-                if let AppMode::PortForwardingList {
-                    search_mode,
-                    search_input,
-                    ..
-                } = &mut app.mode
-                {
-                    *search_mode = false;
-                    search_input.delete_line_by_head();
-                    search_input.delete_line_by_end();
+        if search.is_on() {
+            match key.code {
+                KeyCode::Char(c) => {
+                    if let Some(query) = search.query_mut() {
+                        query.push(c);
+                    }
+                    *selected = 0; // Reset selection when query changes
+                    app.mark_redraw();
                 }
-            }
-            KeyCode::Enter => {
-                if let AppMode::PortForwardingList { search_mode, .. } = &mut app.mode {
-                    *search_mode = false;
+                KeyCode::Backspace => {
+                    if let Some(query) = search.query_mut() {
+                        query.pop();
+                    }
+                    *selected = 0; // Reset selection when query changes
+                    app.mark_redraw();
                 }
+                KeyCode::Esc => {
+                    if !search.query().is_empty() {
+                        search.clear_query();
+                        *selected = 0; // Reset selection when clearing query
+                    } else {
+                        search.deactivate();
+                        *selected = 0; // Reset selection when exiting search
+                    }
+                    app.mark_redraw();
+                }
+                KeyCode::Enter => {
+                    search.apply();
+                    // Keep current selection when applying filter
+                    app.mark_redraw();
+                }
+                _ => {}
             }
-            _ => {
-                // Let TextArea handle all other key events (cursor movement, editing, etc.)
-                search_input.input(key);
+            return KeyFlow::Continue;
+        }
+
+        // Handle Esc when search filter is applied (but not actively editing)
+        if matches!(search, crate::SearchState::Applied { .. }) {
+            if key.code == KeyCode::Esc {
+                search.deactivate();
+                *selected = 0; // Reset selection when clearing filter
+                app.mark_redraw();
+                return KeyFlow::Continue;
             }
         }
-        return KeyFlow::Continue;
     }
 
-    let len = app.config.port_forwards().len();
+    // Get the effective list length (filtered if search is active)
+    let len = if let AppMode::PortForwardingList { search, .. } = &app.mode {
+        crate::ui::get_filtered_port_forward_count(
+            app.config.port_forwards(),
+            app.config.connections(),
+            search.query(),
+        )
+    } else {
+        app.config.port_forwards().len()
+    };
+
     match key.code {
         KeyCode::Char('n') | KeyCode::Char('N') => {
             app.go_to_port_forwarding_form_new();
@@ -68,15 +98,12 @@ pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
         }
         KeyCode::Char('/') => {
             if let AppMode::PortForwardingList {
-                search_mode,
-                search_input,
-                ..
+                search, selected, ..
             } = &mut app.mode
             {
-                *search_mode = true;
-                // Clear any existing text and set up the TextArea for search
-                search_input.delete_line_by_head();
-                search_input.delete_line_by_end();
+                search.activate();
+                *selected = 0; // Reset selection when starting search
+                app.mark_redraw();
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
@@ -435,8 +462,7 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
                 form,
                 select_connection_mode,
                 connection_selected,
-                connection_search_mode,
-                connection_search_query,
+                connection_search,
                 ..
             } = &mut app.mode
             {
@@ -461,8 +487,7 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
                             .position(|c| c.id == form.connection_id)
                             .unwrap_or(0);
                         *select_connection_mode = true;
-                        *connection_search_mode = false;
-                        connection_search_query.clear();
+                        connection_search.deactivate();
                     }
                 } else {
                     // If not focused on Connection or ForwardType field, pass the key to text input
@@ -474,8 +499,7 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
                 form,
                 select_connection_mode,
                 connection_selected,
-                connection_search_mode,
-                connection_search_query,
+                connection_search,
                 ..
             } = &mut app.mode
             {
@@ -500,8 +524,7 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
                             .position(|c| c.id == form.connection_id)
                             .unwrap_or(0);
                         *select_connection_mode = true;
-                        *connection_search_mode = false;
-                        connection_search_query.clear();
+                        connection_search.deactivate();
                     }
                 } else {
                     // If not focused on Connection or ForwardType field, pass the key to text input
@@ -540,20 +563,24 @@ pub async fn handle_port_forwarding_form_connection_select_key<B: Backend + Writ
 
     let connections = app.config.connections();
     let mut filtered_indices =
-        filter_connection_indices(connections, None, selector.search_query.as_str());
+        filter_connection_indices(connections, None, selector.search.query());
     let mut total_items = filtered_indices.len();
 
-    if *selector.search_mode {
+    if selector.search.is_on() {
         match key.code {
             KeyCode::Char(c) => {
-                selector.search_query.push(c);
+                if let Some(query) = selector.search.query_mut() {
+                    query.push(c);
+                }
                 *selector.connection_selected = 0;
                 app.mark_redraw();
             }
             KeyCode::Backspace => {
-                selector.search_query.pop();
+                if let Some(query) = selector.search.query_mut() {
+                    query.pop();
+                }
                 filtered_indices =
-                    filter_connection_indices(connections, None, selector.search_query.as_str());
+                    filter_connection_indices(connections, None, selector.search.query());
                 total_items = filtered_indices.len();
                 if total_items == 0 {
                     *selector.connection_selected = 0;
@@ -563,13 +590,10 @@ pub async fn handle_port_forwarding_form_connection_select_key<B: Backend + Writ
                 app.mark_redraw();
             }
             KeyCode::Esc => {
-                if !selector.search_query.is_empty() {
-                    selector.search_query.clear();
-                    filtered_indices = filter_connection_indices(
-                        connections,
-                        None,
-                        selector.search_query.as_str(),
-                    );
+                if !selector.search.query().is_empty() {
+                    selector.search.clear_query();
+                    filtered_indices =
+                        filter_connection_indices(connections, None, selector.search.query());
                     total_items = filtered_indices.len();
                     if total_items == 0 {
                         *selector.connection_selected = 0;
@@ -577,12 +601,12 @@ pub async fn handle_port_forwarding_form_connection_select_key<B: Backend + Writ
                         *selector.connection_selected = total_items - 1;
                     }
                 } else {
-                    *selector.search_mode = false;
+                    selector.search.deactivate();
                 }
                 app.mark_redraw();
             }
             KeyCode::Enter => {
-                *selector.search_mode = false;
+                selector.search.deactivate();
                 if total_items == 0 {
                     app.mark_redraw();
                     return KeyFlow::Continue;
@@ -595,8 +619,7 @@ pub async fn handle_port_forwarding_form_connection_select_key<B: Backend + Writ
                     selector.form.connection_id = connection.id.clone();
                     selector.form.next();
                     *selector.select_connection_mode = false;
-                    *selector.search_mode = false;
-                    selector.search_query.clear();
+                    selector.search.deactivate();
                 }
                 app.mark_redraw();
             }
@@ -607,8 +630,7 @@ pub async fn handle_port_forwarding_form_connection_select_key<B: Backend + Writ
 
     match key.code {
         KeyCode::Char('/') => {
-            *selector.search_mode = true;
-            selector.search_query.clear();
+            selector.search.activate();
             app.mark_redraw();
         }
         KeyCode::Up | KeyCode::Char('k') => {
@@ -640,15 +662,13 @@ pub async fn handle_port_forwarding_form_connection_select_key<B: Backend + Writ
                 selector.form.connection_id = connection.id.clone();
                 selector.form.next();
                 *selector.select_connection_mode = false;
-                *selector.search_mode = false;
-                selector.search_query.clear();
+                selector.search.deactivate();
                 app.mark_redraw();
             }
         }
         KeyCode::Esc => {
             *selector.select_connection_mode = false;
-            *selector.search_mode = false;
-            selector.search_query.clear();
+            selector.search.deactivate();
             app.mark_redraw();
         }
         _ => {}
@@ -660,8 +680,7 @@ struct ConnectionSelectorState<'a> {
     form: &'a mut PortForwardingForm,
     select_connection_mode: &'a mut bool,
     connection_selected: &'a mut usize,
-    search_mode: &'a mut bool,
-    search_query: &'a mut String,
+    search: &'a mut SearchState,
 }
 
 fn connection_selector_state<'a>(mode: &'a mut AppMode) -> Option<ConnectionSelectorState<'a>> {
@@ -670,23 +689,20 @@ fn connection_selector_state<'a>(mode: &'a mut AppMode) -> Option<ConnectionSele
             form,
             select_connection_mode,
             connection_selected,
-            connection_search_mode,
-            connection_search_query,
+            connection_search,
             ..
         }
         | AppMode::PortForwardingFormEdit {
             form,
             select_connection_mode,
             connection_selected,
-            connection_search_mode,
-            connection_search_query,
+            connection_search,
             ..
         } => Some(ConnectionSelectorState {
             form,
             select_connection_mode,
             connection_selected,
-            search_mode: connection_search_mode,
-            search_query: connection_search_query,
+            search: connection_search,
         }),
         _ => None,
     }

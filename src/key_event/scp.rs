@@ -6,7 +6,7 @@ use tracing::{debug, info};
 
 use super::KeyFlow;
 use crate::error::AppError;
-use crate::{App, AppMode};
+use crate::{App, AppMode, SearchState};
 
 pub async fn handle_scp_progress_key<B: Backend + Write>(
     app: &mut App<B>,
@@ -83,8 +83,7 @@ async fn restore_after_scp_progress<B: Backend + Write>(
             active_pane,
             copy_buffer,
             return_to,
-            search_mode,
-            search_query,
+            search,
         } => {
             let any_success = results
                 .as_ref()
@@ -128,12 +127,10 @@ async fn restore_after_scp_progress<B: Backend + Write>(
                 active_pane,
                 copy_buffer,
                 return_to,
-                search_mode,
-                search_query,
+                search,
                 showing_source_selector: false,
                 selector_selected: 0,
-                selector_search_mode: false,
-                selector_search_query: String::new(),
+                selector_search: SearchState::Off,
                 showing_delete_confirmation: false,
                 delete_file_name: String::new(),
                 delete_pane: crate::ActivePane::Left,
