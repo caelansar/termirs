@@ -15,7 +15,9 @@ use tracing::{debug, error, info, warn};
 
 use russh::client::{self, AuthResult, KeyboardInteractiveAuthResponse};
 use russh::keys::{self, PrivateKeyWithHashAlg, ssh_key};
-use russh::{Channel, ChannelMsg, Disconnect, Error as RusshError, MethodKind};
+use russh::{
+    Channel, ChannelMsg, Disconnect, Error as RusshError, MethodKind, Preferred, compression,
+};
 use russh_sftp::client::rawsession::RawSftpSession;
 use russh_sftp::protocol::{FileAttributes, OpenFlags, StatusCode};
 use tokio::net::{TcpListener, TcpStream};
@@ -231,9 +233,23 @@ impl SshSession {
             connection.host_port()
         );
 
+        // Configure preferred algorithms, especially compression
+        // We prefer zlib@openssh.com over zlib because:
+        // - zlib starts compression IMMEDIATELY after key exchange (before auth)
+        // - zlib@openssh.com starts compression AFTER authentication
+        // russh only initializes decompression after auth success, so using "zlib"
+        // with servers that compress immediately (like tmate) will fail.
+        let mut preferred = Preferred::default();
+        preferred.compression = std::borrow::Cow::Borrowed(&[
+            compression::NONE,
+            compression::ZLIB_LEGACY, // zlib@openssh.com - compression after auth
+            compression::ZLIB,        // zlib - compression immediately (fallback)
+        ]);
+
         let config = client::Config {
             keepalive_interval: Some(std::time::Duration::from_secs(30)),
             keepalive_max: 3,
+            preferred,
             ..Default::default()
         };
 
