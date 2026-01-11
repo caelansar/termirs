@@ -111,23 +111,26 @@ pub async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                 auto_auth, form, ..
             } = &mut app.mode
             {
-                match form.validate(*auto_auth) {
+                match form.validate() {
                     Ok(_) => {
                         let user = form.get_username_value().trim().to_string();
 
-                        let auth_method = if !form.get_private_key_path_value().trim().is_empty() {
-                            AuthMethod::PublicKey {
-                                private_key_path: form
-                                    .get_private_key_path_value()
-                                    .trim()
-                                    .to_string(),
-                                passphrase: None,
+                        let auth_method = match (
+                            form.get_private_key_path_value().trim(),
+                            form.get_password_value().trim(),
+                            *auto_auth,
+                        ) {
+                            (private_key_path, _, _) if !private_key_path.is_empty() => {
+                                AuthMethod::PublicKey {
+                                    private_key_path: private_key_path.to_string(),
+                                    passphrase: None,
+                                }
                             }
-                        } else if !form.get_password_value().trim().is_empty() {
-                            AuthMethod::Password(form.get_password_value().trim().to_string())
-                        } else {
-                            // Both password and private_key_path are empty - use AutoLoadKey
-                            AuthMethod::AutoLoadKey
+                            (_, password, _) if !password.is_empty() => {
+                                AuthMethod::Password(password.to_string())
+                            }
+                            (_, _, true) => AuthMethod::AutoLoadKey,
+                            _ => AuthMethod::None,
                         };
 
                         let mut conn = Connection::new(
@@ -208,9 +211,7 @@ pub async fn handle_form_edit_key<B: Backend + Write>(app: &mut App<B>, key: Key
                 current_selected,
             } = &mut app.mode
             {
-                if let Err(e) =
-                    form.validate(matches!(original.auth_method, AuthMethod::AutoLoadKey))
-                {
+                if let Err(e) = form.validate() {
                     app.error = Some(AppError::ValidationError(e));
                     return KeyFlow::Continue;
                 }

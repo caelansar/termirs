@@ -135,23 +135,15 @@ impl ConnectionForm {
         &self.display_name.lines()[0]
     }
 
-    pub fn validate(&self, auto_auth: bool) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
         if self.get_host_value().trim().is_empty() {
             return Err("Host is required".into());
-        }
-        if self.get_port_value().trim().is_empty() {
-            return Err("Port is required".into());
         }
         if self.get_username_value().trim().is_empty() {
             return Err("Username is required".into());
         }
-        if !auto_auth
-            && self.get_password_value().is_empty()
-            && self.get_private_key_path_value().is_empty()
-        {
-            return Err("Password or private key is required".into());
-        }
-        if !self.get_port_value().is_empty() && self.get_port_value().parse::<u16>().is_err() {
+        let port_str = self.get_port_value().trim();
+        if !port_str.is_empty() && port_str.parse::<u16>().is_err() {
             return Err("Port must be a number".into());
         }
         Ok(())
@@ -193,6 +185,9 @@ impl ConnectionForm {
             }
             AuthMethod::AutoLoadKey => {
                 // No fields to populate for auto-load key
+            }
+            AuthMethod::None => {
+                // No fields to populate for none auth
             }
         }
 
@@ -269,6 +264,7 @@ pub fn draw_connection_list(
                 AuthMethod::Password(_) => "password",
                 AuthMethod::PublicKey { .. } => "public key",
                 AuthMethod::AutoLoadKey => "auto-load key",
+                AuthMethod::None => "none",
             },
             last_used: c
                 .last_used

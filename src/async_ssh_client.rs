@@ -360,7 +360,12 @@ impl SshSession {
                             .await?
                     }
                 },
-                MethodKind::None | MethodKind::HostBased => unreachable!(),
+                MethodKind::None => {
+                    // None authentication was already attempted at the start
+                    // If we're here, it means the server accepts None auth
+                    session.authenticate_none(username).await?
+                }
+                MethodKind::HostBased => unreachable!(),
             };
         }
     }
@@ -372,6 +377,7 @@ impl SshSession {
                 | (MethodKind::KeyboardInteractive, AuthMethod::Password(_))
                 | (MethodKind::PublicKey, AuthMethod::PublicKey { .. })
                 | (MethodKind::PublicKey, AuthMethod::AutoLoadKey)
+                | (MethodKind::None, AuthMethod::None)
         )
     }
 

@@ -306,6 +306,8 @@ pub enum AuthMethod {
     },
     #[serde(rename = "auto_load_key")]
     AutoLoadKey,
+    #[serde(rename = "none")]
+    None,
 }
 
 impl Connection {
