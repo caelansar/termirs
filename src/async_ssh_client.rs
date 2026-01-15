@@ -8,7 +8,7 @@ use bytes::{Bytes, BytesMut};
 use futures::FutureExt;
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
-use tokio::sync::{Mutex, OnceCell, mpsc};
+use tokio::sync::{OnceCell, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -1806,19 +1806,19 @@ type ActiveForwardMap = HashMap<String, (JoinHandle<()>, CancellationToken)>;
 
 /// Runtime management for port forwarding sessions
 pub struct PortForwardingRuntime {
-    active_forwards: Arc<Mutex<ActiveForwardMap>>,
+    active_forwards: ActiveForwardMap,
 }
 
 impl PortForwardingRuntime {
     pub fn new() -> Self {
         Self {
-            active_forwards: Arc::new(Mutex::new(HashMap::new())),
+            active_forwards: HashMap::new(),
         }
     }
 
     /// Start a port forwarding session
     pub async fn start_port_forward(
-        &self,
+        &mut self,
         port_forward: &PortForward,
         connection: &Connection,
     ) -> Result<()> {
@@ -1864,17 +1864,14 @@ impl PortForwardingRuntime {
         };
 
         // Store the handle and cancellation token
-        let mut active_forwards = self.active_forwards.lock().await;
-        active_forwards.insert(pf_id, (handle, cancel_token));
+        self.active_forwards.insert(pf_id, (handle, cancel_token));
 
         Ok(())
     }
 
     /// Stop a port forwarding session
-    pub async fn stop_port_forward(&self, port_forward_id: &str) -> Result<()> {
-        let mut active_forwards = self.active_forwards.lock().await;
-
-        if let Some((handle, cancel_token)) = active_forwards.remove(port_forward_id) {
+    pub async fn stop_port_forward(&mut self, port_forward_id: &str) -> Result<()> {
+        if let Some((handle, cancel_token)) = self.active_forwards.remove(port_forward_id) {
             // Cancel the task
             cancel_token.cancel();
 
@@ -1893,17 +1890,14 @@ impl PortForwardingRuntime {
     }
 
     /// Check if a port forward is currently running
-    pub async fn is_running(&self, port_forward_id: &str) -> bool {
-        let active_forwards = self.active_forwards.lock().await;
-        active_forwards.contains_key(port_forward_id)
+    pub async fn is_running(&mut self, port_forward_id: &str) -> bool {
+        self.active_forwards.contains_key(port_forward_id)
     }
 
     /// Stop all port forwarding sessions
     #[allow(dead_code)]
-    pub async fn stop_all(&self) -> Result<()> {
-        let mut active_forwards = self.active_forwards.lock().await;
-
-        for (_, (handle, cancel_token)) in active_forwards.drain() {
+    pub async fn stop_all(&mut self) -> Result<()> {
+        for (_, (handle, cancel_token)) in self.active_forwards.drain() {
             cancel_token.cancel();
 
             // Wait for task completion with timeout
