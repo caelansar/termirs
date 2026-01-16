@@ -579,7 +579,7 @@ impl SshSession {
         let cancel_clone = cancel_token.clone();
 
         tokio::spawn(async move {
-            let result = Self::connect(&conn, cols, rows).await;
+            let result = Self::connect_with_cancel(&conn, cols, rows, None, &cancel_clone).await;
             // Only send result if not cancelled
             if !cancel_clone.is_cancelled() {
                 let _ = tx.send(result).await;
@@ -589,36 +589,59 @@ impl SshSession {
         (cancel_token, rx)
     }
 
+    async fn connect_with_cancel(
+        connection: &Connection,
+        cols: u16,
+        rows: u16,
+        timeout: Option<Duration>,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<Self> {
+        let timeout = timeout.unwrap_or(Duration::from_secs(10));
+
+        let f = || async {
+            let (session, server_key) =
+                Self::new_session_with_timeout(connection, Some(timeout), cancel).await?;
+
+            debug!("Opening SSH session channel");
+            let channel = session.channel_open_session().await?;
+            info!("Requesting PTY with size {} cols x {} rows", cols, rows);
+
+            let _ = channel.set_env(false, "LC_CTYPE", "C.UTF-8").await;
+
+            channel
+                .request_pty(true, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
+                .await?;
+
+            debug!("Requesting shell");
+            channel.request_shell(true).await?;
+
+            let (r, w) = channel.split();
+
+            info!(
+                "SSH session established successfully to {}",
+                connection.host_port()
+            );
+
+            Ok::<Self, AppError>(Self {
+                session: Arc::new(tokio::sync::Mutex::new(Some(session))),
+                r: Some(r),
+                w,
+                server_key,
+            })
+        };
+
+        cancellable_timeout(timeout, f, cancel).await
+    }
+
     pub async fn connect(connection: &Connection, cols: u16, rows: u16) -> Result<Self> {
-        let (session, server_key) = Self::new_session(connection).await?;
-
-        debug!("Opening SSH session channel");
-        let channel = session.channel_open_session().await?;
-        info!("Requesting PTY with size {} cols x {} rows", cols, rows);
-
-        let _ = channel.set_env(false, "LC_CTYPE", "C.UTF-8").await;
-
-        channel
-            .request_pty(true, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
-            .await?;
-        debug!("Requesting shell");
-        channel.request_shell(true).await?;
-
-        // Build a writer from the channel upfront to avoid later locking the channel to create it
-        // let writer: Box<dyn tokio::io::AsyncWrite + Send + Unpin> = Box::new(channel.make_writer());
-
-        let (r, w) = channel.split();
-
-        info!(
-            "SSH session established successfully to {}",
-            connection.host_port()
-        );
-        Ok(Self {
-            session: Arc::new(tokio::sync::Mutex::new(Some(session))),
-            r: Some(r),
-            w,
-            server_key,
-        })
+        Self::connect_with_cancel(
+            connection,
+            cols,
+            rows,
+            None,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
     }
 
     pub async fn request_size(&self, cols: u16, rows: u16) {
