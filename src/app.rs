@@ -1578,7 +1578,6 @@ impl<B: Backend + Write> App<B> {
                         return_mode,
                     } = &mut self.mode
                     {
-                        progress_needs_redraw = true;
                         while let Ok(update) = progress_updates.try_recv() {
                             progress.update_progress(update);
                             progress_needs_redraw = true;
