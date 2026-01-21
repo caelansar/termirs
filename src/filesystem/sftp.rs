@@ -89,6 +89,13 @@ impl FileSystem for SftpFileSystem {
             // Check if it's a symlink
             let is_symlink = entry.file_type().is_symlink();
 
+            // Read symlink target if this is a symlink
+            let symlink_target = if is_symlink {
+                self.session.read_link(full_path_str.as_ref()).await.ok()
+            } else {
+                None
+            };
+
             // Get permissions and convert to ratatui_explorer::FilePermissions
             let sftp_perms = entry.metadata().permissions();
             let permissions = Some(FilePermissions {
@@ -101,7 +108,6 @@ impl FileSystem for SftpFileSystem {
                 others_read: sftp_perms.other_read,
                 others_write: sftp_perms.other_write,
                 others_execute: sftp_perms.other_exec,
-                is_symlink,
             });
 
             entries.push(FileEntry {
@@ -116,6 +122,8 @@ impl FileSystem for SftpFileSystem {
                 size,
                 modified,
                 permissions,
+                is_symlink,
+                symlink_target,
             });
         }
 
