@@ -11,7 +11,7 @@ keywords = ["ssh", "terminal", "sftp"]
 categories = ["command-line-interface"]
 
 [dependencies]
-ratatui = { version = "0.28", default-features = false, features = ["crossterm"] }
+ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
 ring = "0.17"
 crossterm = { version = "0.28", features = ["event-stream"] }
 # vt100 = "0.16"  # Replaced by wezterm-term
@@ -27,7 +27,7 @@ russh = "0.54.3"
 russh-sftp = "2.1.1"
 futures = "0.3"
 anyhow = { version = "1", optional = true }
-tui-textarea = "0.6.1"
+tui-textarea = "0.7"
 bytes = "1.10.1"
 ratatui-explorer = { git = "https://github.com/caelansar/ratatui-explorer.git" }
 ssh2-config = { git = "https://github.com/caelansar/ssh2-config.git", branch = "develop" }
