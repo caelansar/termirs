@@ -1,12 +1,8 @@
 use chrono::Local;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
-use ratatui::prelude::Stylize;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
-    Table, TableState,
-};
+use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row};
 use tui_textarea::TextArea;
 
 use crate::config::manager::{Connection, PortForward, PortForwardStatus, PortForwardType};
@@ -328,49 +324,79 @@ impl PortForwardingForm {
 }
 
 #[derive(Clone, Debug)]
-pub struct PortForwardingListItem {
-    pub status_icon: String,
-    pub forward_type: String,
+pub struct PortForwardingListItem<'a> {
+    pub status_icon: &'a str,
+    pub forward_type: &'a str,
     pub display_name: String,
-    pub connection_name: String,
+    pub connection_name: &'a str,
     pub local_address: String,
     pub service_address: String,
     pub created_at: String,
 }
 
-/// Get the count of port forwards after applying search filter
-pub fn get_filtered_port_forward_count(
-    port_forwards: &[PortForward],
-    connections: &[Connection],
-    search_query: &str,
-) -> usize {
-    if search_query.is_empty() {
-        return port_forwards.len();
+/// Table component implementation for PortForwardingList
+pub struct PortForwardingTableComponent;
+
+impl super::table::TableListComponent<7> for PortForwardingTableComponent {
+    type Item<'a> = PortForwardingListItem<'a>;
+
+    const HEADER_LABELS: &'static [&'static str; 7] = &[
+        "Status",
+        "Type",
+        "Name",
+        "Connection",
+        "Bind",
+        "Service",
+        "Created",
+    ];
+
+    const COLUMN_CONSTRAINTS: &'static [Constraint; 7] = &[
+        Constraint::Length(8),  // Status
+        Constraint::Length(8),  // Type
+        Constraint::Min(12),    // Name
+        Constraint::Min(10),    // Connection
+        Constraint::Min(12),    // Bind
+        Constraint::Min(12),    // Service
+        Constraint::Length(16), // Created
+    ];
+
+    fn render_row(&self, item: &PortForwardingListItem<'_>) -> Row<'static> {
+        use ratatui::text::Span;
+
+        let status_color = match item.status_icon {
+            "●" => Color::Green,
+            "○" => Color::Gray,
+            "✗" => Color::Red,
+            _ => Color::White,
+        };
+
+        Row::new(vec![
+            Cell::from(Span::styled(
+                item.status_icon.to_string(),
+                Style::default().fg(status_color),
+            )),
+            Cell::from(item.forward_type.to_string()),
+            Cell::from(item.display_name.to_string()),
+            Cell::from(item.connection_name.to_string()),
+            Cell::from(item.local_address.to_string()),
+            Cell::from(item.service_address.to_string()),
+            Cell::from(item.created_at.to_string()),
+        ])
+        .height(1)
     }
 
-    let search_lower = search_query.to_lowercase();
-    port_forwards
-        .iter()
-        .filter(|pf| {
-            let connection_name = connections
-                .iter()
-                .find(|c| c.id == pf.connection_id)
-                .map(|c| c.display_name.as_str())
-                .unwrap_or("Unknown");
+    fn matches_query(&self, item: &PortForwardingListItem, query: &str) -> bool {
+        let lower = query.to_lowercase();
+        item.display_name.to_lowercase().contains(&lower)
+            || item.connection_name.to_lowercase().contains(&lower)
+            || item.local_address.to_lowercase().contains(&lower)
+            || item.service_address.to_lowercase().contains(&lower)
+            || item.forward_type.to_lowercase().contains(&lower)
+    }
 
-            let forward_type = match pf.forward_type {
-                PortForwardType::Local => "Local",
-                PortForwardType::Remote => "Remote",
-                PortForwardType::Dynamic => "Dynamic",
-            };
-
-            pf.get_display_name().to_lowercase().contains(&search_lower)
-                || connection_name.to_lowercase().contains(&search_lower)
-                || pf.local_address().to_lowercase().contains(&search_lower)
-                || pf.service_address().to_lowercase().contains(&search_lower)
-                || forward_type.to_lowercase().contains(&search_lower)
-        })
-        .count()
+    fn footer_hints(&self) -> &'static str {
+        "Enter: Start/Stop   N: New   E: Edit   D: Delete   Q: Back   /: Search"
+    }
 }
 
 pub fn draw_port_forwarding_list(
@@ -381,7 +407,8 @@ pub fn draw_port_forwarding_list(
     search: &crate::SearchState,
     frame: &mut ratatui::Frame<'_>,
 ) {
-    let mut items: Vec<PortForwardingListItem> = port_forwards
+    // Build the list items
+    let items: Vec<PortForwardingListItem> = port_forwards
         .iter()
         .map(|pf| {
             let connection = connections
@@ -403,10 +430,10 @@ pub fn draw_port_forwarding_list(
             };
 
             PortForwardingListItem {
-                status_icon: status_icon.to_string(),
-                forward_type: forward_type.to_string(),
+                status_icon: status_icon,
+                forward_type: forward_type,
                 display_name: pf.get_display_name(),
-                connection_name: connection.to_string(),
+                connection_name: connection,
                 local_address: pf.local_address(),
                 service_address: pf.service_address(),
                 created_at: pf
@@ -418,212 +445,14 @@ pub fn draw_port_forwarding_list(
         })
         .collect();
 
-    // Filter items based on search query
-    if !search.query().is_empty() {
-        items.retain(|item| {
-            item.display_name
-                .to_lowercase()
-                .contains(&search.query().to_lowercase())
-                || item
-                    .connection_name
-                    .to_lowercase()
-                    .contains(&search.query().to_lowercase())
-                || item
-                    .local_address
-                    .to_lowercase()
-                    .contains(&search.query().to_lowercase())
-                || item
-                    .service_address
-                    .to_lowercase()
-                    .contains(&search.query().to_lowercase())
-                || item
-                    .forward_type
-                    .to_lowercase()
-                    .contains(&search.query().to_lowercase())
-        });
-    }
+    // Create the component
+    let component = PortForwardingTableComponent;
 
-    let sel = if items.is_empty() {
-        0
-    } else {
-        selected_index.min(items.len() - 1)
-    };
+    // Create state from current values
+    let state = super::table::TableListState::from_parts(selected_index, search.clone());
 
-    // Layout for table and footer
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
-        .split(area);
-
-    // Create table header
-    let header = Row::new(vec![
-        Cell::from("Status"),
-        Cell::from("Type"),
-        Cell::from("Name"),
-        Cell::from("Connection"),
-        Cell::from("Bind"),
-        Cell::from("Service"),
-        Cell::from("Created"),
-    ])
-    .style(
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-    )
-    .height(1);
-
-    // Create table rows
-    let rows: Vec<Row> = items
-        .iter()
-        .map(|item| {
-            let status_color = match item.status_icon.as_str() {
-                "●" => Color::Green,
-                "○" => Color::Gray,
-                "✗" => Color::Red,
-                _ => Color::White,
-            };
-
-            Row::new(vec![
-                Cell::from(Span::styled(
-                    &item.status_icon,
-                    Style::default().fg(status_color),
-                )),
-                Cell::from(item.forward_type.as_str()),
-                Cell::from(item.display_name.as_str()),
-                Cell::from(item.connection_name.as_str()),
-                Cell::from(item.local_address.as_str()),
-                Cell::from(item.service_address.as_str()),
-                Cell::from(item.created_at.as_str()),
-            ])
-            .height(1)
-        })
-        .collect();
-
-    // Create the table
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(8),  // Status
-            Constraint::Length(8),  // Type
-            Constraint::Min(12),    // Name
-            Constraint::Min(10),    // Connection
-            Constraint::Min(12),    // Bind
-            Constraint::Min(12),    // Service
-            Constraint::Length(16), // Created
-            Constraint::Length(1),  // Scrollbar
-        ],
-    )
-    .header(header)
-    .block(Block::default().borders(Borders::ALL).title(format!(
-        "Port Forwards ({}/{})",
-        if !items.is_empty() { sel + 1 } else { 0 },
-        items.len()
-    )))
-    .highlight_style(
-        Style::default()
-            .bg(Color::Cyan)
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
-    )
-    .highlight_symbol("▶ ");
-
-    // Render the table with state
-    let mut table_state = TableState::default().with_selected(Some(sel));
-    frame.render_stateful_widget(table, layout[0], &mut table_state);
-
-    // Render vertical scrollbar only if content exceeds one page (visible rows)
-    if !items.is_empty() {
-        let inner_area = layout[0].inner(ratatui::layout::Margin::new(1, 2));
-        // inner_area includes header row; visible rows are inner height - 1 (for header)
-        let visible_rows = inner_area.height.saturating_sub(1) as usize;
-        let content_length = items.len();
-        if content_length > visible_rows {
-            // Compute page-aware scrollbar positions
-            let max_top = content_length.saturating_sub(visible_rows);
-            let centered_top = sel.saturating_sub(visible_rows.saturating_sub(1) / 2);
-            let top_index = centered_top.min(max_top);
-            let total_positions = max_top.saturating_add(1);
-
-            let mut scroll_state = ScrollbarState::new(total_positions).position(top_index);
-
-            let scrollbar = Scrollbar::default()
-                .orientation(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(None)
-                .end_symbol(None);
-
-            frame.render_stateful_widget(scrollbar, inner_area, &mut scroll_state);
-        }
-    }
-
-    // Render footer
-    let footer_area = layout[1];
-
-    if search.is_on() {
-        // Search mode: show search input with placeholder
-        let mut spans = vec![Span::styled(
-            "Search: ",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )];
-
-        if search.query().is_empty() {
-            spans.push(Span::styled(
-                "Type to filter port forwards",
-                Style::default().fg(Color::DarkGray).dim(),
-            ));
-        } else {
-            spans.push(Span::raw(search.query()));
-        }
-
-        let search_line =
-            Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::Reset));
-        frame.render_widget(search_line, footer_area);
-    } else if matches!(search, crate::SearchState::Applied { .. }) {
-        // Applied filter: show "Searched: xxx"
-        let search_line = Paragraph::new(Line::from(vec![
-            Span::styled(
-                "Searched: ",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(search.query(), Style::default().fg(Color::Yellow)),
-            Span::styled(
-                "   Press Esc to clear",
-                Style::default().fg(Color::DarkGray).dim(),
-            ),
-        ]))
-        .style(Style::default().bg(Color::Reset));
-        frame.render_widget(search_line, footer_area);
-    } else {
-        // Normal mode: show hints
-        let footer = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])
-            .split(footer_area);
-
-        let hint_text = "Enter: Start/Stop   N: New   E: Edit   D: Delete   Q: Back   /: Search";
-
-        let left = Paragraph::new(Line::from(Span::styled(
-            hint_text,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::DIM),
-        )))
-        .alignment(Alignment::Left);
-
-        let right = Paragraph::new(Line::from(Span::styled(
-            format!("TermiRs v{}", env!("CARGO_PKG_VERSION")),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::DIM),
-        )))
-        .alignment(Alignment::Right);
-
-        frame.render_widget(left, footer[0]);
-        frame.render_widget(right, footer[1]);
-    }
+    // Use the generic table renderer
+    super::table_renderer::draw_table_list(area, &component, items, &state, frame, "Port Forwards");
 }
 
 pub fn draw_port_forwarding_form_popup(

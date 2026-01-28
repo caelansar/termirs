@@ -5,79 +5,84 @@ use ratatui::prelude::Backend;
 use tracing::{error, info};
 
 use super::KeyFlow;
+use super::table_handler::{handle_navigation_keys, handle_search_keys};
 use crate::SearchState;
 use crate::app::{App, AppMode};
 use crate::config::manager::{PortForward, PortForwardStatus};
 use crate::error::AppError;
+use crate::ui::table::TableListState;
 use crate::ui::{PortForwardingForm, file_explorer::filter_connection_indices};
 
 pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
     app: &mut App<B>,
     key: KeyEvent,
 ) -> KeyFlow {
-    // Check if we're in search mode (actively typing)
+    // Handle search keys using shared handler
     if let AppMode::PortForwardingList {
         search, selected, ..
     } = &mut app.mode
     {
-        if search.is_on() {
-            match key.code {
-                KeyCode::Char(c) => {
-                    if let Some(query) = search.query_mut() {
-                        query.push(c);
-                    }
-                    *selected = 0; // Reset selection when query changes
-                    app.mark_redraw();
-                }
-                KeyCode::Backspace => {
-                    if let Some(query) = search.query_mut() {
-                        query.pop();
-                    }
-                    *selected = 0; // Reset selection when query changes
-                    app.mark_redraw();
-                }
-                KeyCode::Esc => {
-                    if !search.query().is_empty() {
-                        search.clear_query();
-                        *selected = 0; // Reset selection when clearing query
-                    } else {
-                        search.deactivate();
-                        *selected = 0; // Reset selection when exiting search
-                    }
-                    app.mark_redraw();
-                }
-                KeyCode::Enter => {
-                    search.apply();
-                    // Keep current selection when applying filter
-                    app.mark_redraw();
-                }
-                _ => {}
-            }
+        let mut table_state = TableListState::from_parts(*selected, search.clone());
+        if handle_search_keys(&mut table_state, key) {
+            *selected = table_state.selected;
+            *search = table_state.search;
+            app.mark_redraw();
             return KeyFlow::Continue;
-        }
-
-        // Handle Esc when search filter is applied (but not actively editing)
-        if matches!(search, crate::SearchState::Applied { .. }) {
-            if key.code == KeyCode::Esc {
-                search.deactivate();
-                *selected = 0; // Reset selection when clearing filter
-                app.mark_redraw();
-                return KeyFlow::Continue;
-            }
         }
     }
 
     // Get the effective list length (filtered if search is active)
     let len = if let AppMode::PortForwardingList { search, .. } = &app.mode {
-        crate::ui::get_filtered_port_forward_count(
-            app.config.port_forwards(),
-            app.config.connections(),
-            search.query(),
-        )
+        if search.query().is_empty() {
+            app.config.port_forwards().len()
+        } else {
+            // Filter port forwards using same logic as the component
+            let query_lower = search.query().to_lowercase();
+            app.config
+                .port_forwards()
+                .iter()
+                .filter(|pf| {
+                    let connection_name = app
+                        .config
+                        .connections()
+                        .iter()
+                        .find(|c| c.id == pf.connection_id)
+                        .map(|c| c.display_name.as_str())
+                        .unwrap_or("Unknown");
+
+                    let forward_type = match pf.forward_type {
+                        crate::config::manager::PortForwardType::Local => "Local",
+                        crate::config::manager::PortForwardType::Remote => "Remote",
+                        crate::config::manager::PortForwardType::Dynamic => "Dynamic",
+                    };
+
+                    pf.get_display_name().to_lowercase().contains(&query_lower)
+                        || connection_name.to_lowercase().contains(&query_lower)
+                        || pf.local_address().to_lowercase().contains(&query_lower)
+                        || pf.service_address().to_lowercase().contains(&query_lower)
+                        || forward_type.to_lowercase().contains(&query_lower)
+                })
+                .count()
+        }
     } else {
         app.config.port_forwards().len()
     };
 
+    // Handle navigation keys using shared handler
+    if let AppMode::PortForwardingList {
+        search, selected, ..
+    } = &mut app.mode
+    {
+        let mut table_state = TableListState::from_parts(*selected, search.clone());
+        if handle_navigation_keys(&mut table_state, key, len) {
+            *selected = table_state.selected;
+            *search = table_state.search;
+            app.mark_redraw();
+            return KeyFlow::Continue;
+        }
+    }
+
+    // Handle component-specific actions
     match key.code {
         KeyCode::Char('n') | KeyCode::Char('N') => {
             app.go_to_port_forwarding_form_new();
@@ -94,36 +99,6 @@ pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
                 let pf_id = pf.id.clone();
                 let current_selected = app.current_selected();
                 app.go_to_port_forward_delete_confirmation(pf_name, pf_id, current_selected);
-            }
-        }
-        KeyCode::Char('/') => {
-            if let AppMode::PortForwardingList {
-                search, selected, ..
-            } = &mut app.mode
-            {
-                search.activate();
-                *selected = 0; // Reset selection when starting search
-                app.mark_redraw();
-            }
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            if let AppMode::PortForwardingList { selected, .. } = &mut app.mode {
-                if len != 0 {
-                    *selected = if *selected == 0 {
-                        len - 1
-                    } else {
-                        (*selected - 1).min(len - 1)
-                    };
-                } else {
-                    *selected = 0;
-                }
-            }
-        }
-        KeyCode::Char('j') | KeyCode::Down => {
-            if let AppMode::PortForwardingList { selected, .. } = &mut app.mode
-                && len != 0
-            {
-                *selected = (*selected + 1) % len;
             }
         }
         KeyCode::Enter => {

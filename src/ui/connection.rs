@@ -1,12 +1,7 @@
 use chrono::Local;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::prelude::Stylize;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table,
-    TableState,
-};
+use ratatui::layout::{Constraint, Rect};
+use ratatui::style::Style;
+use ratatui::widgets::{Cell, Row};
 use tui_textarea::TextArea;
 
 use crate::config::manager::{AuthMethod, Connection};
@@ -220,26 +215,6 @@ pub struct ConnectionListItem<'a> {
     pub last_used: Option<String>,
 }
 
-/// Get the count of connections after applying search filter
-pub fn get_filtered_connection_count(conns: &[Connection], search_query: &str) -> usize {
-    if search_query.is_empty() {
-        return conns.len();
-    }
-
-    conns
-        .iter()
-        .filter(|c| {
-            c.host.to_lowercase().contains(&search_query.to_lowercase())
-                || c.username
-                    .to_lowercase()
-                    .contains(&search_query.to_lowercase())
-                || c.display_name
-                    .to_lowercase()
-                    .contains(&search_query.to_lowercase())
-        })
-        .count()
-}
-
 pub fn draw_connection_list(
     area: Rect,
     conns: &[Connection],
@@ -248,7 +223,8 @@ pub fn draw_connection_list(
     frame: &mut ratatui::Frame<'_>,
     choose_connection_mode: bool,
 ) {
-    let mut items: Vec<ConnectionListItem> = conns
+    // Build the list items
+    let items: Vec<ConnectionListItem> = conns
         .iter()
         .map(|c| ConnectionListItem {
             name: &c.display_name,
@@ -272,207 +248,85 @@ pub fn draw_connection_list(
         })
         .collect();
 
-    // Filter items based on search query
-    if !search.query().is_empty() {
-        items.retain(|item| {
-            item.host
-                .to_lowercase()
-                .contains(&search.query().to_lowercase())
-                || item
-                    .username
-                    .to_lowercase()
-                    .contains(&search.query().to_lowercase())
-                || item
-                    .name
-                    .to_lowercase()
-                    .contains(&search.query().to_lowercase())
-        });
-    }
-
-    let sel = if items.is_empty() {
-        0
+    // Create the component with appropriate footer hints based on mode
+    let component = if choose_connection_mode {
+        ConnectionTableComponentWithMode {
+            hints: "Enter: Select   K/↑: Up   J/↓: Down   /: Search",
+        }
     } else {
-        selected_index.min(items.len() - 1)
+        ConnectionTableComponentWithMode {
+            hints: "Enter: Connect   K/↑: Up   J/↓: Down   N: New   I: File Explorer   P: Port Forward   D: Delete   E: Edit   /: Search",
+        }
     };
 
-    // Layout for table and footer
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
-        .split(area);
+    // Create state from current values
+    let state = super::table::TableListState::from_parts(selected_index, search.clone());
 
-    // Create table header
-    let header = Row::new(vec![
-        Cell::from("Name"),
-        Cell::from("Host"),
-        Cell::from("Port"),
-        Cell::from("User"),
-        Cell::from("Auth"),
-        Cell::from("Created"),
-        Cell::from("Last Used"),
-    ])
-    .style(
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-    )
-    .height(1);
-
-    // Create table rows
-    let rows: Vec<Row> = items
-        .iter()
-        .map(|item| {
-            Row::new(vec![
-                Cell::from(item.name),
-                Cell::from(item.host),
-                Cell::from(item.port.to_string()),
-                Cell::from(item.username),
-                Cell::from(item.auth_method),
-                Cell::from(item.created_at.clone()),
-                Cell::from(
-                    item.last_used
-                        .clone()
-                        .unwrap_or_else(|| "Never".to_string()),
-                ),
-            ])
-            .height(1)
-        })
-        .collect();
-
+    // Determine title based on mode
     let title = if choose_connection_mode {
         "Choose Connection"
     } else {
         "Connection List"
     };
 
-    // Create the table
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Min(8),     // Name
-            Constraint::Min(8),     // Host (reduced from 15 to 8)
-            Constraint::Length(6),  // Port
-            Constraint::Min(6),     // User (reduced from 12 to 6)
-            Constraint::Length(16), // Auth
-            Constraint::Length(16), // Created
-            Constraint::Length(16), // Last Used
-            Constraint::Length(1),  // Scrollbar
-        ],
-    )
-    .header(header)
-    .block(Block::default().borders(Borders::ALL).title(format!(
-        "{title} ({}/{})",
-        if !items.is_empty() { sel + 1 } else { 0 },
-        items.len()
-    )))
-    .highlight_style(
-        Style::default()
-            .bg(Color::Cyan)
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
-    )
-    .highlight_symbol("▶ ");
+    // Use the generic table renderer
+    super::table_renderer::draw_table_list(area, &component, items, &state, frame, title);
+}
 
-    // Render the table with state
-    let mut table_state = TableState::default().with_selected(Some(sel));
-    frame.render_stateful_widget(table, layout[0], &mut table_state);
+// Helper component that allows customizing footer hints
+struct ConnectionTableComponentWithMode {
+    hints: &'static str,
+}
 
-    // Render vertical scrollbar only if content exceeds one page (visible rows)
-    if !items.is_empty() {
-        let inner_area = layout[0].inner(ratatui::layout::Margin::new(1, 2));
-        // inner_area includes header row; visible rows are inner height - 1 (for header)
-        let visible_rows = inner_area.height.saturating_sub(1) as usize;
-        let content_length = items.len();
-        if content_length > visible_rows {
-            // Compute page-aware scrollbar positions
-            let max_top = content_length.saturating_sub(visible_rows);
-            let centered_top = sel.saturating_sub(visible_rows.saturating_sub(1) / 2);
-            let top_index = centered_top.min(max_top);
-            let total_positions = max_top.saturating_add(1);
+impl super::table::TableListComponent<7> for ConnectionTableComponentWithMode {
+    type Item<'a> = ConnectionListItem<'a>;
 
-            let mut scroll_state = ScrollbarState::new(total_positions).position(top_index);
+    const HEADER_LABELS: &'static [&'static str; 7] = &[
+        "Name",
+        "Host",
+        "Port",
+        "User",
+        "Auth",
+        "Created",
+        "Last Used",
+    ];
 
-            let scrollbar = Scrollbar::default()
-                .orientation(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(None)
-                .end_symbol(None);
+    const COLUMN_CONSTRAINTS: &'static [Constraint; 7] = &[
+        Constraint::Min(8),     // Name
+        Constraint::Min(8),     // Host
+        Constraint::Length(6),  // Port
+        Constraint::Min(6),     // User
+        Constraint::Length(16), // Auth
+        Constraint::Length(16), // Created
+        Constraint::Length(16), // Last Used
+    ];
 
-            frame.render_stateful_widget(scrollbar, inner_area, &mut scroll_state);
-        }
+    fn render_row(&self, item: &ConnectionListItem<'_>) -> Row<'static> {
+        Row::new(vec![
+            Cell::from(item.name.to_string()),
+            Cell::from(item.host.to_string()),
+            Cell::from(item.port.to_string()),
+            Cell::from(item.username.to_string()),
+            Cell::from(item.auth_method.to_string()),
+            Cell::from(item.created_at.clone()),
+            Cell::from(
+                item.last_used
+                    .clone()
+                    .unwrap_or_else(|| "Never".to_string()),
+            ),
+        ])
+        .height(1)
     }
 
-    // Render footer
-    let footer_area = layout[1];
+    fn matches_query(&self, item: &ConnectionListItem<'_>, query: &str) -> bool {
+        let lower = query.to_lowercase();
+        item.host.to_lowercase().contains(&lower)
+            || item.username.to_lowercase().contains(&lower)
+            || item.name.to_lowercase().contains(&lower)
+    }
 
-    if search.is_on() {
-        // Search mode: show search input with placeholder
-        let mut spans = vec![Span::styled(
-            "Search: ",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )];
-
-        if search.query().is_empty() {
-            spans.push(Span::styled(
-                "Type to filter connections",
-                Style::default().fg(Color::DarkGray).dim(),
-            ));
-        } else {
-            spans.push(Span::raw(search.query()));
-        }
-
-        let search_line =
-            Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::Reset));
-        frame.render_widget(search_line, footer_area);
-    } else if matches!(search, crate::SearchState::Applied { .. }) {
-        // Applied filter: show "Searched: xxx"
-        let search_line = Paragraph::new(Line::from(vec![
-            Span::styled(
-                "Searched: ",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(search.query(), Style::default().fg(Color::Yellow)),
-            Span::styled(
-                "   Press Esc to clear",
-                Style::default().fg(Color::DarkGray).dim(),
-            ),
-        ]))
-        .style(Style::default().bg(Color::Reset));
-        frame.render_widget(search_line, footer_area);
-    } else {
-        // Normal mode: show hints
-        let footer = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])
-            .split(footer_area);
-
-        let hint_text = if choose_connection_mode {
-            "Enter: Select   K/↑: Up   J/↓: Down   /: Search"
-        } else {
-            "Enter: Connect   K/↑: Up   J/↓: Down   N: New   I: File Explorer   P: Port Forward   D: Delete   E: Edit   /: Search"
-        };
-
-        let left = Paragraph::new(Line::from(Span::styled(
-            hint_text,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::DIM),
-        )))
-        .alignment(Alignment::Left);
-
-        let right = Paragraph::new(Line::from(Span::styled(
-            format!("TermiRs v{}", env!("CARGO_PKG_VERSION")),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::DIM),
-        )))
-        .alignment(Alignment::Right);
-
-        frame.render_widget(left, footer[0]);
-        frame.render_widget(right, footer[1]);
+    fn footer_hints(&self) -> &'static str {
+        self.hints
     }
 }
 

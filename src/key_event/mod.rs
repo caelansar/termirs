@@ -14,6 +14,7 @@ pub mod file_explorer;
 pub mod form;
 pub mod port_forwarding;
 pub mod scp;
+pub mod table_handler;
 
 // Re-export commonly used items for convenience
 pub use connected::handle_connected_key;

@@ -68,16 +68,27 @@ impl FileSystem for SftpFileSystem {
             let full_path = normalized_path.join(&filename);
             let full_path_str = full_path.to_string_lossy();
 
+            let file_type = entry.file_type();
+
             // Determine if this is a directory
             // For symlinks, we need to follow them to check if they point to directories
-            let is_dir = if entry.file_type().is_symlink() {
+            let is_dir = if file_type.is_symlink() {
                 // Try to follow the symlink to get the target's metadata
                 match self.session.metadata(full_path_str.as_ref()).await {
                     Ok(target_metadata) => target_metadata.is_dir(),
                     Err(_) => false, // If we can't follow the symlink, treat it as a file
                 }
             } else {
-                entry.file_type().is_dir()
+                file_type.is_dir()
+            };
+
+            let is_file = if file_type.is_symlink() {
+                match self.session.metadata(full_path_str.as_ref()).await {
+                    Ok(target_metadata) => target_metadata.is_regular(),
+                    Err(_) => false, // If we can't follow the symlink, treat it as a file
+                }
+            } else {
+                file_type.is_file()
             };
 
             // Get file size from metadata
@@ -87,7 +98,7 @@ impl FileSystem for SftpFileSystem {
             let modified = entry.metadata().modified().ok();
 
             // Check if it's a symlink
-            let is_symlink = entry.file_type().is_symlink();
+            let is_symlink = file_type.is_symlink();
 
             // Read symlink target if this is a symlink
             let symlink_target = if is_symlink {
@@ -117,6 +128,7 @@ impl FileSystem for SftpFileSystem {
                     filename
                 },
                 path: full_path_str.to_string(),
+                is_file,
                 is_dir,
                 is_hidden,
                 size,

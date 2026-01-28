@@ -4,71 +4,64 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::Backend;
 
 use super::KeyFlow;
+use super::table_handler::{handle_navigation_keys, handle_search_keys};
+use crate::ui::table::TableListState;
 use crate::{App, AppMode};
 
 pub async fn handle_connection_list_key<B: Backend + Write>(
     app: &mut App<B>,
     key: KeyEvent,
 ) -> KeyFlow {
-    // Check if we're in search mode (actively typing)
+    // Handle search keys using shared handler
     if let AppMode::ConnectionList {
         search, selected, ..
     } = &mut app.mode
     {
-        if search.is_on() {
-            match key.code {
-                KeyCode::Char(c) => {
-                    if let Some(query) = search.query_mut() {
-                        query.push(c);
-                    }
-                    *selected = 0; // Reset selection when query changes
-                    app.mark_redraw();
-                }
-                KeyCode::Backspace => {
-                    if let Some(query) = search.query_mut() {
-                        query.pop();
-                    }
-                    *selected = 0; // Reset selection when query changes
-                    app.mark_redraw();
-                }
-                KeyCode::Esc => {
-                    if !search.query().is_empty() {
-                        search.clear_query();
-                        *selected = 0; // Reset selection when clearing query
-                    } else {
-                        search.deactivate();
-                        *selected = 0; // Reset selection when exiting search
-                    }
-                    app.mark_redraw();
-                }
-                KeyCode::Enter => {
-                    search.apply();
-                    // Keep current selection when applying filter
-                    app.mark_redraw();
-                }
-                _ => {}
-            }
+        let mut table_state = TableListState::from_parts(*selected, search.clone());
+        if handle_search_keys(&mut table_state, key) {
+            *selected = table_state.selected;
+            *search = table_state.search;
+            app.mark_redraw();
             return KeyFlow::Continue;
-        }
-
-        // Handle Esc when search filter is applied (but not actively editing)
-        if matches!(search, crate::SearchState::Applied { .. }) {
-            if key.code == KeyCode::Esc {
-                search.deactivate();
-                *selected = 0; // Reset selection when clearing filter
-                app.mark_redraw();
-                return KeyFlow::Continue;
-            }
         }
     }
 
     // Get the effective list length (filtered if search is active)
     let len = if let AppMode::ConnectionList { search, .. } = &app.mode {
-        crate::ui::get_filtered_connection_count(app.config.connections(), search.query())
+        if search.query().is_empty() {
+            app.config.connections().len()
+        } else {
+            // Filter connections using same logic as the component
+            let query_lower = search.query().to_lowercase();
+            app.config
+                .connections()
+                .iter()
+                .filter(|c| {
+                    c.host.to_lowercase().contains(&query_lower)
+                        || c.username.to_lowercase().contains(&query_lower)
+                        || c.display_name.to_lowercase().contains(&query_lower)
+                })
+                .count()
+        }
     } else {
         app.config.connections().len()
     };
 
+    // Handle navigation keys using shared handler
+    if let AppMode::ConnectionList {
+        search, selected, ..
+    } = &mut app.mode
+    {
+        let mut table_state = TableListState::from_parts(*selected, search.clone());
+        if handle_navigation_keys(&mut table_state, key, len) {
+            *selected = table_state.selected;
+            *search = table_state.search;
+            app.mark_redraw();
+            return KeyFlow::Continue;
+        }
+    }
+
+    // Handle component-specific actions
     match key.code {
         KeyCode::Char('n') | KeyCode::Char('N') => {
             app.go_to_form_new();
@@ -97,47 +90,11 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
                     cancel_token,
                     receiver,
                 );
-                // match app.go_to_file_explorer(conn, selected_idx).await {
-                //     Ok(_) => {}
-                //     Err(e) => {
-                //         app.error = Some(e);
-                //     }
-                // }
             }
         }
         KeyCode::Char('p') | KeyCode::Char('P') => {
             // Open port forwarding manager
             app.go_to_port_forwarding_list().await;
-        }
-        KeyCode::Char('/') => {
-            if let AppMode::ConnectionList {
-                search, selected, ..
-            } = &mut app.mode
-            {
-                search.activate();
-                *selected = 0; // Reset selection when starting search
-                app.mark_redraw();
-            }
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            if let AppMode::ConnectionList { selected, .. } = &mut app.mode {
-                if len != 0 {
-                    *selected = if *selected == 0 {
-                        len - 1
-                    } else {
-                        (*selected - 1).min(len - 1)
-                    };
-                } else {
-                    *selected = 0;
-                }
-            }
-        }
-        KeyCode::Char('j') | KeyCode::Down => {
-            if let AppMode::ConnectionList { selected, .. } = &mut app.mode
-                && len != 0
-            {
-                *selected = (*selected + 1) % len;
-            }
         }
         KeyCode::Enter => {
             if let Some(conn) = app
