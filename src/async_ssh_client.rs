@@ -698,6 +698,12 @@ impl SshSession {
                 ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
                     let mut guard = processor.lock().await;
                     guard.process_bytes(&data);
+                    drop(guard); // Release lock before sending event
+
+                    // Notify event loop that terminal has updates (event-driven refresh)
+                    if let Some(tx) = &event_tx {
+                        let _ = tx.send(crate::AppEvent::TerminalUpdate).await;
+                    }
                 }
                 ChannelMsg::Eof | ChannelMsg::Close | ChannelMsg::ExitStatus { .. } => {
                     // Notify the main loop that the connection has been disconnected

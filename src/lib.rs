@@ -20,7 +20,7 @@ pub use app::{
 };
 pub use async_ssh_client::expand_tilde;
 pub use error::{AppError, Result};
-pub use events::AppEvent;
+pub use events::{AppEvent, TickControl};
 pub use search_state::SearchState;
 pub use transfer::{
     ScpFileProgress, ScpFileResult, ScpProgress, ScpResult, ScpTransferProgress, ScpTransferSpec,
@@ -31,6 +31,6 @@ pub use utils::{init_panic_hook, init_tracing};
 // Implement ByteProcessor for TerminalState
 impl async_ssh_client::ByteProcessor for ui::TerminalState {
     fn process_bytes(&mut self, bytes: &[u8]) {
-        ui::TerminalState::process_bytes(self, bytes);
+        self.process_bytes(bytes);
     }
 }

@@ -4,7 +4,10 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::Backend;
 
 use super::KeyFlow;
-use crate::app::{App, AppMode};
+use crate::{
+    AppEvent,
+    app::{App, AppMode},
+};
 
 /// Helper function to scroll to bottom if needed
 async fn ensure_scroll_to_bottom(
@@ -129,8 +132,7 @@ pub async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: Key
         name: _,
         client,
         state,
-        current_selected,
-        cancel_token,
+        ..
     } = &mut app.mode
     {
         // Check if in search mode first
@@ -180,15 +182,7 @@ pub async fn handle_connected_key<B: Backend + Write>(app: &mut App<B>, key: Key
                         app.error = Some(e);
                     }
                 } else {
-                    // Cancel the background read task first
-                    cancel_token.cancel();
-
-                    // Then close the SSH connection
-                    if let Err(e) = client.close().await {
-                        app.error = Some(e);
-                    }
-                    let current_selected = *current_selected;
-                    app.go_to_connection_list_with_selected(current_selected);
+                    app.send_event(AppEvent::Disconnect);
                 }
             }
             // Special scrolling behavior for PageUp/PageDown - these need local scrolling

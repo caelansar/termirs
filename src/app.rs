@@ -319,6 +319,7 @@ pub struct App<B: Backend + Write> {
     terminal: Terminal<B>,
     needs_redraw: bool, // Track if UI needs redrawing
     event_tx: Option<tokio::sync::mpsc::Sender<AppEvent>>, // Event sender for SSH disconnect
+    tick_control_tx: Option<tokio::sync::mpsc::Sender<crate::events::TickControl>>, // Tick control sender
     mouse_capture_enabled: bool,
     terminal_viewport: Rect,
     selection_anchor: Option<SelectionEndpoint>,
@@ -361,8 +362,9 @@ impl<B: Backend + Write> App<B> {
             config: ConfigManager::new()?,
             port_forwarding_runtime: crate::async_ssh_client::PortForwardingRuntime::new(),
             terminal,
-            needs_redraw: true, // Initial redraw needed
-            event_tx: None,     // Will be set later
+            needs_redraw: true,    // Initial redraw needed
+            event_tx: None,        // Will be set later
+            tick_control_tx: None, // Will be set later
             mouse_capture_enabled: false,
             terminal_viewport: Rect::default(),
             selection_anchor: None,
@@ -426,6 +428,38 @@ impl<B: Backend + Write> App<B> {
 
     pub fn set_event_sender(&mut self, sender: tokio::sync::mpsc::Sender<AppEvent>) {
         self.event_tx = Some(sender);
+    }
+
+    pub fn set_tick_control_sender(
+        &mut self,
+        sender: tokio::sync::mpsc::Sender<crate::events::TickControl>,
+    ) {
+        self.tick_control_tx = Some(sender);
+    }
+
+    pub fn start_ticker(&self) {
+        if let Some(tx) = &self.tick_control_tx {
+            let _ = tx.try_send(crate::events::TickControl::Start);
+        }
+    }
+
+    pub fn stop_ticker(&self) {
+        if let Some(tx) = &self.tick_control_tx {
+            let _ = tx.try_send(crate::events::TickControl::Stop);
+        }
+    }
+
+    pub fn send_event(&self, event: AppEvent) {
+        if let Some(tx) = &self.event_tx {
+            let _ = tx.try_send(event);
+        }
+    }
+
+    fn mode_needs_ticker(&self) -> bool {
+        matches!(
+            self.mode,
+            AppMode::ScpProgress { .. } | AppMode::Connecting { .. }
+        )
     }
 
     /// Get the terminal size for SSH PTY (cols, rows), accounting for borders
@@ -534,11 +568,16 @@ impl<B: Backend + Write> App<B> {
             view_row,
             view_col,
         });
+        self.start_ticker();
     }
 
     pub fn stop_selection_auto_scroll(&mut self) {
         if self.selection_auto_scroll.is_some() {
             self.selection_auto_scroll = None;
+            // Only stop if no other features need ticking
+            if !self.mode_needs_ticker() {
+                self.stop_ticker();
+            }
         }
     }
 
@@ -677,6 +716,11 @@ impl<B: Backend + Write> App<B> {
             cancel_token,
         };
         self.clear_selection();
+        // Stop ticker - terminal updates are now event-driven via TerminalUpdate
+        // Selection auto-scroll can re-enable ticker if needed
+        if self.selection_auto_scroll.is_none() {
+            self.stop_ticker();
+        }
         self.needs_redraw = true; // Mode change requires redraw
     }
 
@@ -706,6 +750,8 @@ impl<B: Backend + Write> App<B> {
             selected,
             search: SearchState::Off,
         };
+        // Stop ticker when returning to connection list (idle state)
+        self.stop_ticker();
         self.needs_redraw = true; // Mode change requires redraw
     }
 
@@ -722,6 +768,7 @@ impl<B: Backend + Write> App<B> {
             progress_updates,
             return_mode: Some(return_mode),
         };
+        self.start_ticker();
         self.needs_redraw = true; // Mode change requires redraw
     }
 
@@ -807,6 +854,7 @@ impl<B: Backend + Write> App<B> {
             cancel_token,
             receiver,
         };
+        self.start_ticker();
         self.needs_redraw = true;
     }
 
@@ -1499,7 +1547,6 @@ impl<B: Backend + Write> App<B> {
 
             // Check terminal size changes and update SSH session if needed
             let mut terminal_size_changed = false;
-            let mut has_terminal_updates = false;
 
             if let AppMode::Connected { client, state, .. } = &self.mode {
                 let size = self.terminal.size()?;
@@ -1513,17 +1560,11 @@ impl<B: Backend + Write> App<B> {
                     client.request_size(w, h).await;
                     terminal_size_changed = true;
                 }
-
-                // Check if terminal content has been updated recently
-                // Only redraw if content changed within last few milliseconds
-                let time_since_update = guard.last_change.elapsed();
-                if time_since_update.as_millis() < 100 {
-                    has_terminal_updates = true;
-                }
             }
 
             // Only render when needed
-            if self.should_redraw() || terminal_size_changed || has_terminal_updates {
+            // Terminal content updates now trigger via TerminalUpdate event (event-driven)
+            if self.should_redraw() || terminal_size_changed {
                 self.draw()?;
             }
 
@@ -1538,6 +1579,19 @@ impl<B: Backend + Write> App<B> {
 
             match ev {
                 AppEvent::Tick => {
+                    // Safety net: should only receive ticks when features are active
+                    let needs_tick = self.selection_auto_scroll.is_some()
+                        || matches!(
+                            self.mode,
+                            AppMode::ScpProgress { .. } | AppMode::Connecting { .. }
+                        );
+
+                    if !needs_tick {
+                        // Skip tick processing - no active features need it
+                        tracing::warn!("Received tick when no feature needs it");
+                        continue;
+                    }
+
                     if self.selection_dragging
                         && let Some(auto) = self.selection_auto_scroll
                     {
@@ -1570,7 +1624,7 @@ impl<B: Backend + Write> App<B> {
                     }
 
                     // Update spinner animation for SCP progress and handle results
-                    let mut progress_needs_redraw = false;
+                    let mut progress_needs_redraw: bool = false;
                     if let AppMode::ScpProgress {
                         progress,
                         receiver,
@@ -1920,6 +1974,10 @@ impl<B: Backend + Write> App<B> {
                         _ => {}
                     }
                 }
+                AppEvent::TerminalUpdate => {
+                    // Terminal has received data from SSH - mark redraw to update display
+                    self.mark_redraw();
+                }
                 AppEvent::Disconnect => {
                     // SSH connection has been disconnected (e.g., user typed 'exit')
                     // Automatically return to the connection list
@@ -1928,6 +1986,7 @@ impl<B: Backend + Write> App<B> {
                         current_selected,
                         cancel_token,
                         name,
+                        client,
                         ..
                     } = &self.mode
                     {
@@ -1935,8 +1994,13 @@ impl<B: Backend + Write> App<B> {
                         let current_selected = *current_selected;
                         // Cancel the read task
                         cancel_token.cancel();
+                        // Close the SSH connection
+                        if let Err(e) = client.close().await {
+                            tracing::error!("Error closing SSH connection: {}", e);
+                        }
                         // Go back to connection list
                         self.go_to_connection_list_with_selected(current_selected);
+                        self.stop_ticker();
                         self.mark_redraw();
                     }
                 }

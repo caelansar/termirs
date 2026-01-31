@@ -7,7 +7,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use tokio::{select, sync::mpsc, time};
 
-use termirs::{App, AppEvent, Result, init_panic_hook, init_tracing};
+use termirs::{App, AppEvent, Result, TickControl, init_panic_hook, init_tracing};
 
 /// A modern, async SSH terminal client
 #[derive(Parser, Debug)]
@@ -50,17 +50,21 @@ async fn main() -> Result<()> {
 
     // async event channel
     let (tx, mut rx) = mpsc::channel::<AppEvent>(100);
+    let (tick_control_tx, mut tick_control_rx) = mpsc::channel::<TickControl>(10);
 
     // Set the event sender in the app
     app.set_event_sender(tx.clone());
+    app.set_tick_control_sender(tick_control_tx);
 
-    // ticker - reduced frequency for better performance
-    let mut ticker = time::interval(Duration::from_millis(50)); // Changed from 10ms to 50ms
+    // ticker - 50ms interval, conditionally enabled
+    let mut ticker = time::interval(Duration::from_millis(50));
     let tx_tick = tx.clone();
 
     // asynchronous: keyboard/terminal event listening
     let mut event_stream = event::EventStream::new();
     tokio::spawn(async move {
+        let mut tick_enabled = false; // Start with ticker disabled
+
         loop {
             select! {
                 maybe_ev = event_stream.next() => {
@@ -73,9 +77,16 @@ async fn main() -> Result<()> {
                         break;
                     }
                 }
-                _ = ticker.tick() => {
+                _ = ticker.tick(), if tick_enabled => {
+                    // Only fires when tick_enabled is true
                     if tx_tick.send(AppEvent::Tick).await.is_err() {
                         break;
+                    }
+                }
+                Some(control) = tick_control_rx.recv() => {
+                    match control {
+                        TickControl::Start => tick_enabled = true,
+                        TickControl::Stop => tick_enabled = false,
                     }
                 }
             }

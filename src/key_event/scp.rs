@@ -58,6 +58,8 @@ async fn restore_after_scp_progress<B: Backend + Write>(
     results: Option<Vec<crate::ScpFileResult>>,
     last_success: Option<String>,
 ) {
+    app.stop_ticker();
+
     match return_mode {
         crate::ScpReturnMode::ConnectionList { current_selected } => {
             app.go_to_connection_list_with_selected(current_selected);
