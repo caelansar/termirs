@@ -33,9 +33,14 @@ use ratatui::{
 /// * `title` - The base title for the table (e.g., "Connection List")
 ///
 /// # Example
-/// ```rust
+/// ```ignore
+/// use termirs::ui::table::TableListState;
+/// use termirs::SearchState;
+///
 /// let component = ConnectionTableComponent;
 /// let items = vec![/* ... */];
+/// let selected = 0;
+/// let search = SearchState::Off;
 /// let state = TableListState::from_parts(selected, search);
 ///
 /// draw_table_list(

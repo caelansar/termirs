@@ -309,11 +309,7 @@ impl super::table::TableListComponent<7> for ConnectionTableComponentWithMode {
             Cell::from(item.username.to_string()),
             Cell::from(item.auth_method.to_string()),
             Cell::from(item.created_at.clone()),
-            Cell::from(
-                item.last_used
-                    .clone()
-                    .unwrap_or_else(|| "Never".to_string()),
-            ),
+            Cell::from(item.last_used.clone().unwrap_or("Never".into())),
         ])
         .height(1)
     }

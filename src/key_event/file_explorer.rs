@@ -488,7 +488,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                     return KeyFlow::Continue;
                 }
 
-                let source_path = current_file.path().to_string_lossy().to_string();
+                let source_path = current_file.path().to_string_lossy().into_owned();
                 if let Some(existing_idx) = copy_buffer
                     .iter()
                     .position(|item| item.source_path == source_path)
@@ -552,8 +552,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                     copy_buffer.len()
                 );
                 let dest_dir = match active_pane {
-                    ActivePane::Left => left_explorer.cwd().to_string_lossy().to_string(),
-                    ActivePane::Right => remote_explorer.cwd().to_string_lossy().to_string(),
+                    ActivePane::Left => left_explorer.cwd().to_string_lossy().into_owned(),
+                    ActivePane::Right => remote_explorer.cwd().to_string_lossy().into_owned(),
                 };
 
                 let direction = copy_buffer[0].direction;
@@ -601,7 +601,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                                     item.source_name.clone(),
                                     std::path::Path::new(&remote_dest)
                                         .file_name()
-                                        .map(|f| f.to_string_lossy().to_string())
+                                        .map(|f| f.to_string_lossy().into_owned())
                                         .unwrap_or_else(|| item.source_name.clone()),
                                 )
                             }
@@ -617,7 +617,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                                     item.source_name.clone(),
                                     std::path::Path::new(&local_dest)
                                         .file_name()
-                                        .map(|f| f.to_string_lossy().to_string())
+                                        .map(|f| f.to_string_lossy().into_owned())
                                         .unwrap_or_else(|| item.source_name.clone()),
                                 )
                             }

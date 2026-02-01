@@ -5,27 +5,32 @@
 ///
 /// # Example
 ///
-/// ```rust
-/// use crate::ui::table::{TableListComponent, TableListState};
+/// ```ignore
+/// use termirs::ui::table::{TableListComponent, TableListState};
 /// use ratatui::widgets::{Row, Cell};
 /// use ratatui::layout::Constraint;
 ///
+/// struct MyItem<'a> {
+///     name: &'a str,
+///     value: &'a str,
+/// }
+///
 /// struct MyTableComponent;
 ///
-/// impl TableListComponent for MyTableComponent {
+/// impl TableListComponent<3> for MyTableComponent {
 ///     type Item<'a> = MyItem<'a>;
 ///
-///     const HEADER_LABELS: &'static [&'static str] = &["Name", "Value"];
-///     const COLUMN_CONSTRAINTS: &'static [Constraint] = &[
+///     const HEADER_LABELS: &'static [&'static str; 3] = &["Name", "Value", ""];
+///     const COLUMN_CONSTRAINTS: &'static [Constraint; 3] = &[
 ///         Constraint::Min(10),
 ///         Constraint::Min(10),
 ///         Constraint::Length(1), // Scrollbar
 ///     ];
 ///
-///     fn render_row(&self, item: &MyItem<'_>) -> Row {
+///     fn render_row(&self, item: &MyItem<'_>) -> Row<'static> {
 ///         Row::new(vec![
-///             Cell::from(item.name),
-///             Cell::from(item.value),
+///             Cell::from(item.name.to_string()),
+///             Cell::from(item.value.to_string()),
 ///         ])
 ///     }
 ///

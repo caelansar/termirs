@@ -475,7 +475,10 @@ impl TerminalState {
         // Store max_scrollback for later use in coordinate conversion
         self.search.max_scrollback = max_scrollback;
 
-        self.search.last_query = self.search.query.clone();
+        // Only clone query if it actually changed
+        if self.search.query != self.search.last_query {
+            self.search.last_query = self.search.query.clone();
+        }
     }
 
     /// Scroll to make current match visible

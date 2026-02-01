@@ -2,6 +2,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph};
+use std::borrow::Cow;
 
 use crate::ScpProgress;
 
@@ -54,10 +55,7 @@ pub fn draw_scp_progress_popup(area: Rect, progress: &ScpProgress, frame: &mut r
     // Connection info
     let connection_info = Paragraph::new(Line::from(vec![
         Span::styled("Connection: ", Style::default().fg(Color::Gray)),
-        Span::styled(
-            progress.connection_name.clone(),
-            Style::default().fg(Color::Cyan),
-        ),
+        Span::styled(&progress.connection_name, Style::default().fg(Color::Cyan)),
     ]));
     frame.render_widget(connection_info, layout[0]);
 
@@ -81,31 +79,31 @@ pub fn draw_scp_progress_popup(area: Rect, progress: &ScpProgress, frame: &mut r
             ])
             .split(row);
 
-        let (status_label, status_style): (String, Style) = match &file.state {
+        let (status_label, status_style) = match &file.state {
             crate::TransferState::Pending => {
-                ("Pending".to_string(), Style::default().fg(Color::Gray))
+                (Cow::Borrowed("Pending"), Style::default().fg(Color::Gray))
             }
             crate::TransferState::InProgress => (
-                "In Progress".to_string(),
+                Cow::Borrowed("In Progress"),
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
             crate::TransferState::Completed => (
-                "Completed".to_string(),
+                Cow::Borrowed("Completed"),
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             ),
             crate::TransferState::Failed(err) => (
-                format!("Failed ({err})"),
+                Cow::Owned(format!("Failed ({err})")),
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             ),
         };
 
         let header = Paragraph::new(Line::from(vec![
             Span::styled(format!("{status_label:<12}"), status_style),
-            Span::styled(file.display_name.clone(), Style::default().fg(Color::White)),
+            Span::styled(&file.display_name, Style::default().fg(Color::White)),
         ]));
         frame.render_widget(header, file_chunks[0]);
 
@@ -115,9 +113,9 @@ pub fn draw_scp_progress_popup(area: Rect, progress: &ScpProgress, frame: &mut r
         };
         let path_line = Paragraph::new(Line::from(vec![
             Span::styled("From: ", Style::default().fg(Color::Gray)),
-            Span::styled(from_path.clone(), Style::default().fg(Color::White)),
+            Span::styled(from_path.as_str(), Style::default().fg(Color::White)),
             Span::styled("  To: ", Style::default().fg(Color::Gray)),
-            Span::styled(to_path.clone(), Style::default().fg(Color::White)),
+            Span::styled(to_path.as_str(), Style::default().fg(Color::White)),
         ]));
         frame.render_widget(path_line, file_chunks[1]);
 

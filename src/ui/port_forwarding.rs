@@ -376,11 +376,11 @@ impl super::table::TableListComponent<7> for PortForwardingTableComponent {
                 Style::default().fg(status_color),
             )),
             Cell::from(item.forward_type.to_string()),
-            Cell::from(item.display_name.to_string()),
+            Cell::from(item.display_name.clone()),
             Cell::from(item.connection_name.to_string()),
-            Cell::from(item.local_address.to_string()),
-            Cell::from(item.service_address.to_string()),
-            Cell::from(item.created_at.to_string()),
+            Cell::from(item.local_address.clone()),
+            Cell::from(item.service_address.clone()),
+            Cell::from(item.created_at.clone()),
         ])
         .height(1)
     }

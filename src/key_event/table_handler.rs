@@ -21,7 +21,15 @@ use crate::ui::table::TableListState;
 /// `true` if the event was handled, `false` otherwise
 ///
 /// # Example
-/// ```rust
+/// ```ignore
+/// use termirs::ui::table::TableListState;
+/// use termirs::key_event::KeyFlow;
+/// use crossterm::event::KeyEvent;
+///
+/// let mut state = TableListState::default();
+/// let key = KeyEvent::from(crossterm::event::KeyCode::Char('a'));
+/// let mut app = todo!();
+///
 /// if handle_search_keys(&mut state, key) {
 ///     app.mark_redraw();
 ///     return KeyFlow::Continue;
@@ -91,7 +99,16 @@ pub fn handle_search_keys(state: &mut TableListState, key: KeyEvent) -> bool {
 /// `true` if the event was handled, `false` otherwise
 ///
 /// # Example
-/// ```rust
+/// ```ignore
+/// use termirs::ui::table::TableListState;
+/// use termirs::key_event::KeyFlow;
+/// use crossterm::event::KeyEvent;
+///
+/// let mut state = TableListState::default();
+/// let key = KeyEvent::from(crossterm::event::KeyCode::Char('j'));
+/// let mut app = todo!();
+/// fn get_filtered_list_length() -> usize { 10 }
+///
 /// let len = get_filtered_list_length();
 /// if handle_navigation_keys(&mut state, key, len) {
 ///     app.mark_redraw();
