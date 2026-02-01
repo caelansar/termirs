@@ -24,7 +24,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 use crate::config::manager::{AuthMethod, Connection, PortForward, PortForwardType};
 use crate::error::{AppError, Result};
-use crate::transfer::ScpTransferProgress;
+use crate::transfer::{ScpResult, ScpTransferProgress};
 
 const STANDARD_KEY_PATHS: &[&str] = &[
     "~/.ssh/id_rsa",
@@ -58,14 +58,14 @@ pub(crate) trait ProgressReporter {
 }
 
 pub(crate) struct TxProgressReporter {
-    progress: Option<mpsc::Sender<ScpTransferProgress>>,
+    progress: Option<mpsc::Sender<ScpResult>>,
     file_index: usize,
     total_bytes: std::cell::Cell<Option<u64>>,
 }
 
 impl TxProgressReporter {
     pub(crate) fn new(
-        progress: Option<mpsc::Sender<ScpTransferProgress>>,
+        progress: Option<mpsc::Sender<ScpResult>>,
         file_index: usize,
         total_bytes: Option<u64>,
     ) -> Self {
@@ -80,11 +80,11 @@ impl TxProgressReporter {
 impl ProgressReporter for TxProgressReporter {
     fn report_progress(&self, transferred_bytes: u64) {
         if let Some(progress) = &self.progress {
-            let _ = progress.try_send(ScpTransferProgress {
+            let _ = progress.try_send(ScpResult::Progress(ScpTransferProgress {
                 file_index: self.file_index,
                 transferred_bytes,
                 total_bytes: self.total_bytes.get(),
-            });
+            }));
         }
     }
 
@@ -876,7 +876,7 @@ impl SshSession {
         local_path: &str,
         remote_path: &str,
         file_index: usize,
-        progress: Option<mpsc::Sender<ScpTransferProgress>>,
+        progress: Option<mpsc::Sender<ScpResult>>,
     ) -> Result<()> {
         info!("Starting SFTP upload: {} -> {}", local_path, remote_path);
         let local_file = tokio::fs::File::open(expand_tilde(local_path))
@@ -1123,7 +1123,7 @@ impl SshSession {
         remote_path: &str,
         local_path: &str,
         file_index: usize,
-        progress: Option<mpsc::Sender<ScpTransferProgress>>,
+        progress: Option<mpsc::Sender<ScpResult>>,
     ) -> Result<()> {
         info!("Starting SFTP download: {} -> {}", remote_path, local_path);
         let local_file = tokio::fs::File::create(expand_tilde(local_path))

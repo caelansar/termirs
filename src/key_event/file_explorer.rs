@@ -7,6 +7,7 @@ use std::io::Write;
 use tracing::{debug, error, info};
 
 use super::KeyFlow;
+use crate::AppEvent;
 use crate::async_ssh_client::HostFile;
 use crate::ui::file_explorer::filter_connection_indices;
 use crate::{
@@ -658,8 +659,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                     ..
                 } = old_mode
                 {
-                    let (result_sender, result_receiver) = tokio::sync::mpsc::channel(1);
-                    let (progress_sender, progress_receiver) = tokio::sync::mpsc::channel(64);
+                    let (sftp_sender, mut sftp_receiver) =
+                        tokio::sync::mpsc::channel::<ScpResult>(64);
 
                     let progress_items: Vec<ScpFileProgress> = transfer_specs
                         .iter()
@@ -697,12 +698,20 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                         search: search.clone(),
                     };
 
-                    app.go_to_scp_progress(
-                        progress,
-                        result_receiver,
-                        progress_receiver,
-                        return_mode,
-                    );
+                    app.go_to_scp_progress(progress, return_mode);
+
+                    // Spawn forwarder task to convert ScpResult -> AppEvent::SftpProgress
+                    let event_tx = app.get_event_sender().expect("event sender must be set");
+                    tokio::spawn(async move {
+                        while let Some(result) = sftp_receiver.recv().await {
+                            // Forward to main event loop
+                            if event_tx.send(AppEvent::SftpProgress(result)).await.is_err() {
+                                // Main loop shut down - exit forwarder
+                                break;
+                            }
+                        }
+                        // Receiver closed - forwarder exits naturally
+                    });
 
                     tokio::spawn(async move {
                         let total = transfer_specs.len();
@@ -710,7 +719,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
 
                         for (index, spec) in transfer_specs.into_iter().enumerate() {
                             let ssh_connection = ssh_connection.clone();
-                            let progress_tx = progress_sender.clone();
+                            let unified_tx = sftp_sender.clone();
                             let left_sftp_clone = left_sftp_for_transfer.clone();
 
                             tasks.push(tokio::spawn(async move {
@@ -723,7 +732,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                                                 match crate::filesystem::sftp_file::open_for_read(left_sftp_session.clone(), &spec.local_path).await {
                                                     Ok(sftp_file) => {
                                                         let file_size = sftp_file.file_size().await;
-                                                        let progress_reporter = crate::async_ssh_client::TxProgressReporter::new(Some(progress_tx.clone()), index, file_size.ok());
+                                                        let progress_reporter = crate::async_ssh_client::TxProgressReporter::new(Some(unified_tx.clone()), index, file_size.ok());
 
                                                         crate::async_ssh_client::SshSession::sftp_send_file_with_timeout(
                                                             None,
@@ -749,7 +758,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                                             if let Some((left_sftp_session, _left_conn)) = left_sftp_clone {
                                                 match crate::filesystem::sftp_file::open_for_write(left_sftp_session.clone(), &spec.local_path).await {
                                                     Ok(sftp_file) => {
-                                                        let progress_reporter = crate::async_ssh_client::TxProgressReporter::new(Some(progress_tx.clone()), index, None);
+                                                        let progress_reporter = crate::async_ssh_client::TxProgressReporter::new(Some(unified_tx.clone()), index, None);
                                                         crate::async_ssh_client::SshSession::sftp_receive_file_with_timeout(
                                                             None,
                                                             &ssh_connection,
@@ -780,7 +789,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                                                 &spec.local_path,
                                                 &spec.remote_path,
                                                 index,
-                                                Some(progress_tx.clone()),
+                                                Some(unified_tx.clone()),
                                             )
                                             .await
                                         }
@@ -791,7 +800,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                                                 &spec.remote_path,
                                                 &spec.local_path,
                                                 index,
-                                                Some(progress_tx),
+                                                Some(unified_tx),
                                             )
                                             .await
                                         }
@@ -813,8 +822,6 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                             }));
                         }
 
-                        drop(progress_sender);
-
                         let joined = join_all(tasks).await;
                         let mut results = Vec::with_capacity(joined.len());
 
@@ -822,7 +829,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                             match outcome {
                                 Ok(file_result) => results.push(file_result),
                                 Err(e) => {
-                                    let _ = result_sender
+                                    let _ = sftp_sender
                                         .send(ScpResult::Error {
                                             error: format!("Transfer task failed to complete: {e}"),
                                         })
@@ -832,7 +839,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                             }
                         }
 
-                        let _ = result_sender.send(ScpResult::Completed(results)).await;
+                        let _ = sftp_sender.send(ScpResult::Completed(results)).await;
                     });
                 }
             }

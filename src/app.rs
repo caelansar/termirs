@@ -19,7 +19,7 @@ use crate::terminal::{
     LastMouseClick, MouseClickClass, SelectionAutoScroll, SelectionEndpoint,
     SelectionScrollDirection, TerminalPoint, compute_selection_for_view, make_selection_endpoint,
 };
-use crate::transfer::{ScpProgress, ScpResult, ScpTransferProgress};
+use crate::transfer::{ScpProgress, ScpResult};
 use crate::ui::{
     ConnectionForm, TerminalState, draw_connecting_popup, draw_connection_form_popup,
     draw_connection_list, draw_delete_confirmation_popup, draw_error_popup,
@@ -239,8 +239,6 @@ pub enum AppMode {
     },
     ScpProgress {
         progress: ScpProgress,
-        receiver: mpsc::Receiver<ScpResult>,
-        progress_updates: mpsc::Receiver<ScpTransferProgress>,
         return_mode: Option<ScpReturnMode>,
     },
     DeleteConfirmation {
@@ -428,6 +426,10 @@ impl<B: Backend + Write> App<B> {
 
     pub fn set_event_sender(&mut self, sender: tokio::sync::mpsc::Sender<AppEvent>) {
         self.event_tx = Some(sender);
+    }
+
+    pub fn get_event_sender(&self) -> Option<tokio::sync::mpsc::Sender<AppEvent>> {
+        self.event_tx.clone()
     }
 
     pub fn set_tick_control_sender(
@@ -755,20 +757,11 @@ impl<B: Backend + Write> App<B> {
         self.needs_redraw = true; // Mode change requires redraw
     }
 
-    pub fn go_to_scp_progress(
-        &mut self,
-        progress: ScpProgress,
-        receiver: mpsc::Receiver<ScpResult>,
-        progress_updates: mpsc::Receiver<ScpTransferProgress>,
-        return_mode: ScpReturnMode,
-    ) {
+    pub fn go_to_scp_progress(&mut self, progress: ScpProgress, return_mode: ScpReturnMode) {
         self.mode = AppMode::ScpProgress {
             progress,
-            receiver,
-            progress_updates,
             return_mode: Some(return_mode),
         };
-        self.start_ticker();
         self.needs_redraw = true; // Mode change requires redraw
     }
 
@@ -1623,180 +1616,6 @@ impl<B: Backend + Write> App<B> {
                         }
                     }
 
-                    // Update spinner animation for SCP progress and handle results
-                    let mut progress_needs_redraw: bool = false;
-                    if let AppMode::ScpProgress {
-                        progress,
-                        receiver,
-                        progress_updates,
-                        return_mode,
-                    } = &mut self.mode
-                    {
-                        while let Ok(update) = progress_updates.try_recv() {
-                            progress.update_progress(update);
-                            progress_needs_redraw = true;
-                        }
-                        // Mark redraw after handling the progress update
-
-                        // Drain any SCP results
-                        match receiver.try_recv() {
-                            Ok(result) => {
-                                let mut pending_error: Option<AppError> = None;
-
-                                match result {
-                                    ScpResult::Completed(file_results) => {
-                                        let mut all_success = true;
-                                        let mut failure_lines = Vec::new();
-                                        let mut last_success_destination = None;
-
-                                        for (idx, file_result) in file_results.iter().enumerate() {
-                                            progress.mark_completed(
-                                                idx,
-                                                file_result.success,
-                                                file_result.error.clone(),
-                                            );
-
-                                            let (from, to) = match file_result.mode {
-                                                crate::ui::ScpMode::Send => (
-                                                    file_result.local_path.clone(),
-                                                    file_result.remote_path.clone(),
-                                                ),
-                                                crate::ui::ScpMode::Receive => (
-                                                    file_result.remote_path.clone(),
-                                                    file_result.local_path.clone(),
-                                                ),
-                                            };
-
-                                            if file_result.success {
-                                                last_success_destination =
-                                                    Some(file_result.destination_filename.clone());
-                                            } else {
-                                                all_success = false;
-                                                let err = file_result
-                                                    .error
-                                                    .clone()
-                                                    .unwrap_or_else(|| "unknown error".into());
-                                                failure_lines.push(format!(
-                                                    " from {from} to {to} (FAILED: {err})"
-                                                ));
-                                            }
-                                        }
-
-                                        if !all_success {
-                                            let mut message = String::from("sftp transfer issues:");
-                                            for line in failure_lines {
-                                                message.push('\n');
-                                                message.push_str(&line);
-                                            }
-                                            pending_error =
-                                                Some(AppError::SshConnectionError(message));
-                                        }
-
-                                        progress.completed = true;
-                                        progress.last_success_destination =
-                                            last_success_destination;
-                                        progress.completion_results = Some(file_results);
-                                        progress_needs_redraw = true;
-                                    }
-                                    ScpResult::Error { error } => {
-                                        for idx in 0..progress.files.len() {
-                                            progress.mark_completed(
-                                                idx,
-                                                false,
-                                                Some(error.clone()),
-                                            );
-                                        }
-                                        pending_error =
-                                            Some(AppError::SshConnectionError(error.clone()));
-                                        progress.completed = true;
-                                        progress.completion_results = None;
-                                        progress_needs_redraw = true;
-                                    }
-                                }
-
-                                if let Some(err) = pending_error {
-                                    self.set_error(err);
-                                }
-                            }
-                            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
-                            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                                if !progress.completed {
-                                    // Take ownership of return_mode before we change self.mode
-                                    if let Some(return_mode) = return_mode.take() {
-                                        self.set_error(AppError::SshConnectionError(
-                                            "SCP transfer task disconnected unexpectedly"
-                                                .to_string(),
-                                        ));
-
-                                        // Return to the appropriate mode
-                                        match return_mode {
-                                            ScpReturnMode::ConnectionList { current_selected } => {
-                                                self.go_to_connection_list_with_selected(
-                                                    current_selected,
-                                                );
-                                            }
-                                            ScpReturnMode::Connected {
-                                                name,
-                                                client,
-                                                state,
-                                                current_selected,
-                                                cancel_token,
-                                            } => {
-                                                self.go_to_connected(
-                                                    name,
-                                                    client,
-                                                    state,
-                                                    current_selected,
-                                                    cancel_token,
-                                                );
-                                            }
-                                            ScpReturnMode::FileExplorer {
-                                                connection_name,
-                                                left_pane,
-                                                left_explorer,
-                                                left_sftp,
-                                                remote_explorer,
-                                                sftp_session,
-                                                ssh_connection,
-                                                channel,
-                                                active_pane,
-                                                copy_buffer,
-                                                return_to,
-                                                search,
-                                            } => {
-                                                self.mode = AppMode::FileExplorer {
-                                                    connection_name,
-                                                    left_pane,
-                                                    left_explorer,
-                                                    left_sftp,
-                                                    remote_explorer,
-                                                    sftp_session,
-                                                    ssh_connection,
-                                                    channel,
-                                                    active_pane,
-                                                    copy_buffer,
-                                                    return_to,
-                                                    search,
-                                                    showing_source_selector: false,
-                                                    selector_selected: 0,
-                                                    selector_search: SearchState::Off,
-                                                    showing_delete_confirmation: false,
-                                                    delete_file_name: String::new(),
-                                                    delete_pane: ActivePane::Left,
-                                                };
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Mark redraw after all progress handling is done
-                    }
-                    if progress_needs_redraw {
-                        self.mark_redraw();
-                    }
-
                     // Handle connection result polling in Connecting mode
                     if let AppMode::Connecting {
                         connection,
@@ -1977,6 +1796,82 @@ impl<B: Backend + Write> App<B> {
                 AppEvent::TerminalUpdate => {
                     // Terminal has received data from SSH - mark redraw to update display
                     self.mark_redraw();
+                }
+                AppEvent::SftpProgress(result) => {
+                    if let AppMode::ScpProgress { progress, .. } = &mut self.mode {
+                        match result {
+                            ScpResult::Progress(update) => {
+                                progress.update_progress(update);
+                                self.mark_redraw();
+                            }
+                            ScpResult::Completed(file_results) => {
+                                let mut pending_error: Option<AppError> = None;
+                                let mut all_success = true;
+                                let mut failure_lines = Vec::new();
+                                let mut last_success_destination = None;
+
+                                for (idx, file_result) in file_results.iter().enumerate() {
+                                    progress.mark_completed(
+                                        idx,
+                                        file_result.success,
+                                        file_result.error.clone(),
+                                    );
+
+                                    let (from, to) = match file_result.mode {
+                                        crate::ui::ScpMode::Send => (
+                                            file_result.local_path.clone(),
+                                            file_result.remote_path.clone(),
+                                        ),
+                                        crate::ui::ScpMode::Receive => (
+                                            file_result.remote_path.clone(),
+                                            file_result.local_path.clone(),
+                                        ),
+                                    };
+
+                                    if file_result.success {
+                                        last_success_destination =
+                                            Some(file_result.destination_filename.clone());
+                                    } else {
+                                        all_success = false;
+                                        let err = file_result
+                                            .error
+                                            .clone()
+                                            .unwrap_or_else(|| "unknown error".into());
+                                        failure_lines
+                                            .push(format!(" from {from} to {to} (FAILED: {err})"));
+                                    }
+                                }
+
+                                if !all_success {
+                                    let mut message = String::from("sftp transfer issues:");
+                                    for line in failure_lines {
+                                        message.push('\n');
+                                        message.push_str(&line);
+                                    }
+                                    pending_error = Some(AppError::SshConnectionError(message));
+                                }
+
+                                progress.completed = true;
+                                progress.last_success_destination = last_success_destination;
+                                progress.completion_results = Some(file_results);
+                                self.mark_redraw();
+
+                                if let Some(err) = pending_error {
+                                    self.set_error(err);
+                                }
+                            }
+                            ScpResult::Error { error } => {
+                                for idx in 0..progress.files.len() {
+                                    progress.mark_completed(idx, false, Some(error.clone()));
+                                }
+                                let pending_error = AppError::SshConnectionError(error.clone());
+                                progress.completed = true;
+                                progress.completion_results = None;
+                                self.mark_redraw();
+                                self.set_error(pending_error);
+                            }
+                        }
+                    }
                 }
                 AppEvent::Disconnect => {
                     // SSH connection has been disconnected (e.g., user typed 'exit')

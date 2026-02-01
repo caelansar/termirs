@@ -1,6 +1,7 @@
 /// Result summary of SFTP transfer operations
 #[derive(Debug, Clone)]
 pub enum ScpResult {
+    Progress(ScpTransferProgress),
     Completed(Vec<ScpFileResult>),
     Error { error: String },
 }
