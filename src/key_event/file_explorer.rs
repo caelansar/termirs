@@ -703,14 +703,31 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                     // Spawn forwarder task to convert ScpResult -> AppEvent::SftpProgress
                     let event_tx = app.get_event_sender().expect("event sender must be set");
                     tokio::spawn(async move {
+                        use std::time::{Duration, Instant};
+
+                        let mut throttle = {
+                            let mut last = Instant::now();
+                            let interval = Duration::from_millis(50);
+                            move || {
+                                let now = Instant::now();
+                                if now.duration_since(last) >= interval {
+                                    last = now;
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                        };
+
                         while let Some(result) = sftp_receiver.recv().await {
-                            // Forward to main event loop
-                            if event_tx.send(AppEvent::SftpProgress(result)).await.is_err() {
-                                // Main loop shut down - exit forwarder
+                            let should_send =
+                                !matches!(result, ScpResult::Progress(_)) || throttle();
+                            if should_send
+                                && event_tx.send(AppEvent::SftpProgress(result)).await.is_err()
+                            {
                                 break;
                             }
                         }
-                        // Receiver closed - forwarder exits naturally
                     });
 
                     tokio::spawn(async move {
