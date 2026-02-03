@@ -261,15 +261,15 @@ impl SshSession {
             forwarded_tcpip_tx,
         };
 
-        let mut session = {
-            let f = async || {
-                debug!("Establishing TCP connection to {}", connection.host_port());
-                let session = client::connect(config, connection.host_port(), ssh_client).await?;
-                info!("TCP connection established to {}", connection.host_port());
-                Ok::<_, AppError>(session)
-            };
-            cancellable_timeout(timeout.unwrap_or(Duration::from_secs(10)), f, cancel).await?
-        };
+        debug!("Establishing TCP connection to {}", connection.host_port());
+        let mut session = client::connect(config, connection.host_port(), ssh_client)
+            .or_cancel(cancel)
+            .or_timeout(timeout.unwrap_or(Duration::from_secs(10)))
+            .await
+            .flatten()
+            .flatten()?;
+
+        info!("TCP connection established to {}", connection.host_port());
 
         Self::authenticate_session(&mut session, connection).await?;
 
@@ -598,7 +598,7 @@ impl SshSession {
     ) -> Result<Self> {
         let timeout = timeout.unwrap_or(Duration::from_secs(10));
 
-        let f = || async {
+        let f = async {
             let (session, server_key) =
                 Self::new_session_with_timeout(connection, Some(timeout), cancel).await?;
 
@@ -630,7 +630,11 @@ impl SshSession {
             })
         };
 
-        cancellable_timeout(timeout, f, cancel).await
+        f.or_cancel(cancel)
+            .or_timeout(timeout)
+            .await
+            .flatten()
+            .flatten()
     }
 
     pub async fn connect(connection: &Connection, cols: u16, rows: u16) -> Result<Self> {
@@ -1946,21 +1950,45 @@ impl Default for PortForwardingRuntime {
     }
 }
 
-async fn cancellable_timeout<F, T>(
-    dur: Duration,
-    f: F,
-    cancel: &tokio_util::sync::CancellationToken,
-) -> Result<T>
+/// Extension trait for futures that can be cancelled
+pub trait OrCancelExt: Sized {
+    type Output;
+
+    async fn or_cancel(self, token: &CancellationToken) -> Result<Self::Output>;
+}
+
+pub trait OrTimeoutExt: Sized {
+    type Output;
+
+    async fn or_timeout(self, duration: Duration) -> Result<Self::Output>;
+}
+
+/// Extension trait for futures that can be timed out
+impl<F> OrTimeoutExt for F
 where
-    F: AsyncFnOnce() -> Result<T>,
+    F: Future + Send,
+    F::Output: Send,
 {
-    tokio::select! {
-        _ = cancel.cancelled() => Err(AppError::SshConnectionError("cancelled".to_string())),
-        res = tokio::time::timeout(dur, f()) => {
-            match res {
-                Ok(inner) => inner,
-                Err(_) => Err(AppError::SshConnectionError("timeout".to_string())),
-            }
+    type Output = F::Output;
+
+    async fn or_timeout(self, duration: Duration) -> Result<Self::Output> {
+        tokio::time::timeout(duration, self)
+            .await
+            .map_err(|_| AppError::SshConnectionError("timeout".to_string()))
+    }
+}
+
+impl<F> OrCancelExt for F
+where
+    F: Future + Send,
+    F::Output: Send,
+{
+    type Output = F::Output;
+
+    async fn or_cancel(self, token: &CancellationToken) -> Result<Self::Output> {
+        tokio::select! {
+            _ = token.cancelled() => Err(AppError::SshConnectionError("cancelled".to_string())),
+            res = self => Ok(res),
         }
     }
 }
@@ -3178,21 +3206,18 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
         let completed_inner = completed.clone();
 
         let handle = tokio::spawn(async move {
-            cancellable_timeout(
-                Duration::from_secs(5),
-                move || {
-                    let started = started_inner.clone();
-                    let completed = completed_inner.clone();
-                    async move {
-                        started.store(true, Ordering::SeqCst);
-                        tokio::time::sleep(Duration::from_secs(10)).await;
-                        completed.store(true, Ordering::SeqCst);
-                        Ok::<(), AppError>(())
-                    }
-                },
-                &cancel_for_call,
-            )
-            .await
+            let f = async {
+                let started = started_inner.clone();
+                let completed = completed_inner.clone();
+                started.store(true, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                completed.store(true, Ordering::SeqCst);
+                Ok::<(), AppError>(())
+            };
+            f.or_cancel(&cancel_for_call)
+                .or_timeout(Duration::from_secs(5))
+                .await
+                .flatten()
         });
 
         // let the cancellable future start and register its timer
@@ -3231,21 +3256,18 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
         let completed_inner = completed.clone();
 
         let handle = tokio::spawn(async move {
-            cancellable_timeout(
-                Duration::from_secs(1),
-                move || {
-                    let started = started_inner.clone();
-                    let completed = completed_inner.clone();
-                    async move {
-                        started.store(true, Ordering::SeqCst);
-                        tokio::time::sleep(Duration::from_secs(10)).await;
-                        completed.store(true, Ordering::SeqCst);
-                        Ok::<(), AppError>(())
-                    }
-                },
-                &cancel_for_call,
-            )
-            .await
+            let f = async {
+                let started = started_inner.clone();
+                let completed = completed_inner.clone();
+                started.store(true, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                completed.store(true, Ordering::SeqCst);
+                Ok::<(), AppError>(())
+            };
+            f.or_cancel(&cancel_for_call)
+                .or_timeout(Duration::from_secs(1))
+                .await
+                .flatten()
         });
 
         // allow the future to register its timeout and go pending
