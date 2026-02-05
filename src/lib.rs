@@ -3,6 +3,7 @@ mod config;
 mod error;
 mod filesystem;
 mod key_event;
+mod mode_state;
 mod search_state;
 mod ui;
 
@@ -21,6 +22,10 @@ pub use app::{
 pub use async_ssh_client::expand_tilde;
 pub use error::{AppError, Result};
 pub use events::{AppEvent, TickControl};
+pub use mode_state::{
+    ConnectionSelectorState, DeleteConfirmationState, FormWithConnectionSelector,
+    ListSelectionState,
+};
 pub use search_state::SearchState;
 pub use transfer::{
     ScpFileProgress, ScpFileResult, ScpProgress, ScpResult, ScpTransferProgress, ScpTransferSpec,

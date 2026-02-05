@@ -18,26 +18,23 @@ pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
     key: KeyEvent,
 ) -> KeyFlow {
     // Handle search keys using shared handler
-    if let AppMode::PortForwardingList {
-        search, selected, ..
-    } = &mut app.mode
-    {
-        let mut table_state = TableListState::from_parts(*selected, search.clone());
+    if let AppMode::PortForwardingList(state) = &mut app.mode {
+        let mut table_state = TableListState::from_parts(state.selected, state.search.clone());
         if handle_search_keys(&mut table_state, key) {
-            *selected = table_state.selected;
-            *search = table_state.search;
+            state.selected = table_state.selected;
+            state.search = table_state.search;
             app.mark_redraw();
             return KeyFlow::Continue;
         }
     }
 
     // Get the effective list length (filtered if search is active)
-    let len = if let AppMode::PortForwardingList { search, .. } = &app.mode {
-        if search.query().is_empty() {
+    let len = if let AppMode::PortForwardingList(state) = &app.mode {
+        if state.search.query().is_empty() {
             app.config.port_forwards().len()
         } else {
             // Filter port forwards using same logic as the component
-            let query_lower = search.query().to_lowercase();
+            let query_lower = state.search.query().to_lowercase();
             app.config
                 .port_forwards()
                 .iter()
@@ -69,14 +66,11 @@ pub async fn handle_port_forwarding_list_key<B: Backend + Write>(
     };
 
     // Handle navigation keys using shared handler
-    if let AppMode::PortForwardingList {
-        search, selected, ..
-    } = &mut app.mode
-    {
-        let mut table_state = TableListState::from_parts(*selected, search.clone());
+    if let AppMode::PortForwardingList(state) = &mut app.mode {
+        let mut table_state = TableListState::from_parts(state.selected, state.search.clone());
         if handle_navigation_keys(&mut table_state, key, len) {
-            *selected = table_state.selected;
-            *search = table_state.search;
+            state.selected = table_state.selected;
+            state.search = table_state.search;
             app.mark_redraw();
             return KeyFlow::Continue;
         }
@@ -225,40 +219,39 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
 
     match key.code {
         KeyCode::Tab => {
-            if let AppMode::PortForwardingFormNew { form, .. } = &mut app.mode {
-                form.next();
-            } else if let AppMode::PortForwardingFormEdit { form, .. } = &mut app.mode {
-                form.next();
+            if let AppMode::PortForwardingFormNew(state) = &mut app.mode {
+                state.form.next();
+            } else if let AppMode::PortForwardingFormEdit(state) = &mut app.mode {
+                state.form.next();
             }
         }
         KeyCode::BackTab => {
-            if let AppMode::PortForwardingFormNew { form, .. } = &mut app.mode {
-                form.prev();
-            } else if let AppMode::PortForwardingFormEdit { form, .. } = &mut app.mode {
-                form.prev();
+            if let AppMode::PortForwardingFormNew(state) = &mut app.mode {
+                state.form.prev();
+            } else if let AppMode::PortForwardingFormEdit(state) = &mut app.mode {
+                state.form.prev();
             }
         }
         KeyCode::Down => {
             // Check if ForwardType is focused
-            let is_forward_type_focused =
-                if let AppMode::PortForwardingFormNew { form, .. } = &app.mode {
-                    form.focus == FocusField::ForwardType
-                } else if let AppMode::PortForwardingFormEdit { form, .. } = &app.mode {
-                    form.focus == FocusField::ForwardType
-                } else {
-                    false
-                };
+            let is_forward_type_focused = if let AppMode::PortForwardingFormNew(state) = &app.mode {
+                state.form.focus == FocusField::ForwardType
+            } else if let AppMode::PortForwardingFormEdit(state) = &app.mode {
+                state.form.focus == FocusField::ForwardType
+            } else {
+                false
+            };
 
             if is_forward_type_focused {
                 // Cycle forward through types
-                if let AppMode::PortForwardingFormNew { form, .. } = &mut app.mode {
-                    form.forward_type = match form.forward_type {
+                if let AppMode::PortForwardingFormNew(state) = &mut app.mode {
+                    state.form.forward_type = match state.form.forward_type {
                         PortForwardType::Local => PortForwardType::Remote,
                         PortForwardType::Remote => PortForwardType::Dynamic,
                         PortForwardType::Dynamic => PortForwardType::Local,
                     };
-                } else if let AppMode::PortForwardingFormEdit { form, .. } = &mut app.mode {
-                    form.forward_type = match form.forward_type {
+                } else if let AppMode::PortForwardingFormEdit(state) = &mut app.mode {
+                    state.form.forward_type = match state.form.forward_type {
                         PortForwardType::Local => PortForwardType::Remote,
                         PortForwardType::Remote => PortForwardType::Dynamic,
                         PortForwardType::Dynamic => PortForwardType::Local,
@@ -266,34 +259,33 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
                 }
             } else {
                 // Normal navigation
-                if let AppMode::PortForwardingFormNew { form, .. } = &mut app.mode {
-                    form.next();
-                } else if let AppMode::PortForwardingFormEdit { form, .. } = &mut app.mode {
-                    form.next();
+                if let AppMode::PortForwardingFormNew(state) = &mut app.mode {
+                    state.form.next();
+                } else if let AppMode::PortForwardingFormEdit(state) = &mut app.mode {
+                    state.form.next();
                 }
             }
         }
         KeyCode::Up => {
             // Check if ForwardType is focused
-            let is_forward_type_focused =
-                if let AppMode::PortForwardingFormNew { form, .. } = &app.mode {
-                    form.focus == FocusField::ForwardType
-                } else if let AppMode::PortForwardingFormEdit { form, .. } = &app.mode {
-                    form.focus == FocusField::ForwardType
-                } else {
-                    false
-                };
+            let is_forward_type_focused = if let AppMode::PortForwardingFormNew(state) = &app.mode {
+                state.form.focus == FocusField::ForwardType
+            } else if let AppMode::PortForwardingFormEdit(state) = &app.mode {
+                state.form.focus == FocusField::ForwardType
+            } else {
+                false
+            };
 
             if is_forward_type_focused {
                 // Cycle backward through types
-                if let AppMode::PortForwardingFormNew { form, .. } = &mut app.mode {
-                    form.forward_type = match form.forward_type {
+                if let AppMode::PortForwardingFormNew(state) = &mut app.mode {
+                    state.form.forward_type = match state.form.forward_type {
                         PortForwardType::Local => PortForwardType::Dynamic,
                         PortForwardType::Remote => PortForwardType::Local,
                         PortForwardType::Dynamic => PortForwardType::Remote,
                     };
-                } else if let AppMode::PortForwardingFormEdit { form, .. } = &mut app.mode {
-                    form.forward_type = match form.forward_type {
+                } else if let AppMode::PortForwardingFormEdit(state) = &mut app.mode {
+                    state.form.forward_type = match state.form.forward_type {
                         PortForwardType::Local => PortForwardType::Dynamic,
                         PortForwardType::Remote => PortForwardType::Local,
                         PortForwardType::Dynamic => PortForwardType::Remote,
@@ -301,33 +293,32 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
                 }
             } else {
                 // Normal navigation
-                if let AppMode::PortForwardingFormNew { form, .. } = &mut app.mode {
-                    form.prev();
-                } else if let AppMode::PortForwardingFormEdit { form, .. } = &mut app.mode {
-                    form.prev();
+                if let AppMode::PortForwardingFormNew(state) = &mut app.mode {
+                    state.form.prev();
+                } else if let AppMode::PortForwardingFormEdit(state) = &mut app.mode {
+                    state.form.prev();
                 }
             }
         }
         KeyCode::Left => {
             // Check if ForwardType is focused - cycle backward
-            let is_forward_type_focused =
-                if let AppMode::PortForwardingFormNew { form, .. } = &app.mode {
-                    form.focus == FocusField::ForwardType
-                } else if let AppMode::PortForwardingFormEdit { form, .. } = &app.mode {
-                    form.focus == FocusField::ForwardType
-                } else {
-                    false
-                };
+            let is_forward_type_focused = if let AppMode::PortForwardingFormNew(state) = &app.mode {
+                state.form.focus == FocusField::ForwardType
+            } else if let AppMode::PortForwardingFormEdit(state) = &app.mode {
+                state.form.focus == FocusField::ForwardType
+            } else {
+                false
+            };
 
             if is_forward_type_focused {
-                if let AppMode::PortForwardingFormNew { form, .. } = &mut app.mode {
-                    form.forward_type = match form.forward_type {
+                if let AppMode::PortForwardingFormNew(state) = &mut app.mode {
+                    state.form.forward_type = match state.form.forward_type {
                         PortForwardType::Local => PortForwardType::Dynamic,
                         PortForwardType::Remote => PortForwardType::Local,
                         PortForwardType::Dynamic => PortForwardType::Remote,
                     };
-                } else if let AppMode::PortForwardingFormEdit { form, .. } = &mut app.mode {
-                    form.forward_type = match form.forward_type {
+                } else if let AppMode::PortForwardingFormEdit(state) = &mut app.mode {
+                    state.form.forward_type = match state.form.forward_type {
                         PortForwardType::Local => PortForwardType::Dynamic,
                         PortForwardType::Remote => PortForwardType::Local,
                         PortForwardType::Dynamic => PortForwardType::Remote,
@@ -337,24 +328,23 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
         }
         KeyCode::Right => {
             // Check if ForwardType is focused - cycle forward
-            let is_forward_type_focused =
-                if let AppMode::PortForwardingFormNew { form, .. } = &app.mode {
-                    form.focus == FocusField::ForwardType
-                } else if let AppMode::PortForwardingFormEdit { form, .. } = &app.mode {
-                    form.focus == FocusField::ForwardType
-                } else {
-                    false
-                };
+            let is_forward_type_focused = if let AppMode::PortForwardingFormNew(state) = &app.mode {
+                state.form.focus == FocusField::ForwardType
+            } else if let AppMode::PortForwardingFormEdit(state) = &app.mode {
+                state.form.focus == FocusField::ForwardType
+            } else {
+                false
+            };
 
             if is_forward_type_focused {
-                if let AppMode::PortForwardingFormNew { form, .. } = &mut app.mode {
-                    form.forward_type = match form.forward_type {
+                if let AppMode::PortForwardingFormNew(state) = &mut app.mode {
+                    state.form.forward_type = match state.form.forward_type {
                         PortForwardType::Local => PortForwardType::Remote,
                         PortForwardType::Remote => PortForwardType::Dynamic,
                         PortForwardType::Dynamic => PortForwardType::Local,
                     };
-                } else if let AppMode::PortForwardingFormEdit { form, .. } = &mut app.mode {
-                    form.forward_type = match form.forward_type {
+                } else if let AppMode::PortForwardingFormEdit(state) = &mut app.mode {
+                    state.form.forward_type = match state.form.forward_type {
                         PortForwardType::Local => PortForwardType::Remote,
                         PortForwardType::Remote => PortForwardType::Dynamic,
                         PortForwardType::Dynamic => PortForwardType::Local,
@@ -364,8 +354,8 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
         }
         KeyCode::Enter => {
             // Save the port forward
-            if let AppMode::PortForwardingFormNew { form, .. } = &mut app.mode {
-                let form_clone = form.clone();
+            if let AppMode::PortForwardingFormNew(state) = &mut app.mode {
+                let form_clone = state.form.clone();
                 match save_port_forward(app, &form_clone, true).await {
                     Ok(_) => {
                         // After creating a new port forward, go to the end of the list
@@ -395,14 +385,9 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
                         app.error = Some(e);
                     }
                 }
-            } else if let AppMode::PortForwardingFormEdit {
-                form,
-                current_selected,
-                ..
-            } = &mut app.mode
-            {
-                let form_clone = form.clone();
-                let saved_selected = *current_selected;
+            } else if let AppMode::PortForwardingFormEdit(state) = &mut app.mode {
+                let form_clone = state.form.clone();
+                let saved_selected = state.current_selected;
                 match save_port_forward(app, &form_clone, false).await {
                     Ok(_) => {
                         // After editing, return to the same position
@@ -416,94 +401,74 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
             }
         }
         KeyCode::Esc => {
-            if let AppMode::PortForwardingFormNew {
-                current_selected, ..
-            } = &app.mode
-            {
-                app.go_to_port_forwarding_list_with_selected(*current_selected)
+            if let AppMode::PortForwardingFormNew(state) = &app.mode {
+                app.go_to_port_forwarding_list_with_selected(state.current_selected)
                     .await;
-            } else if let AppMode::PortForwardingFormEdit {
-                current_selected, ..
-            } = &app.mode
-            {
-                app.go_to_port_forwarding_list_with_selected(*current_selected)
+            } else if let AppMode::PortForwardingFormEdit(state) = &app.mode {
+                app.go_to_port_forwarding_list_with_selected(state.current_selected)
                     .await;
             } else {
                 app.go_to_port_forwarding_list().await;
             }
         }
         KeyCode::Char(' ') => {
-            if let AppMode::PortForwardingFormNew {
-                form,
-                select_connection_mode,
-                connection_selected,
-                connection_search,
-                ..
-            } = &mut app.mode
-            {
-                if form.focus == FocusField::ForwardType {
+            if let AppMode::PortForwardingFormNew(state) = &mut app.mode {
+                if state.form.focus == FocusField::ForwardType {
                     // Cycle through forward types with Space
-                    form.forward_type = match form.forward_type {
+                    state.form.forward_type = match state.form.forward_type {
                         PortForwardType::Local => PortForwardType::Remote,
                         PortForwardType::Remote => PortForwardType::Dynamic,
                         PortForwardType::Dynamic => PortForwardType::Local,
                     };
-                } else if form.focus == FocusField::Connection {
+                } else if state.form.focus == FocusField::Connection {
                     if app.config.connections().is_empty() {
                         app.error = Some(AppError::ConfigError(
                             "No connections available".to_string(),
                         ));
                     } else {
                         // Find the index of the currently selected connection, or default to 0
-                        *connection_selected = app
+                        state.connection_selector.selected = app
                             .config
                             .connections()
                             .iter()
-                            .position(|c| c.id == form.connection_id)
+                            .position(|c| c.id == state.form.connection_id)
                             .unwrap_or(0);
-                        *select_connection_mode = true;
-                        connection_search.deactivate();
+                        state.connection_selector.show();
+                        state.connection_selector.search.deactivate();
                     }
                 } else {
                     // If not focused on Connection or ForwardType field, pass the key to text input
-                    if let Some(textarea) = form.focused_textarea_mut() {
+                    if let Some(textarea) = state.form.focused_textarea_mut() {
                         textarea.input(key);
                     }
                 }
-            } else if let AppMode::PortForwardingFormEdit {
-                form,
-                select_connection_mode,
-                connection_selected,
-                connection_search,
-                ..
-            } = &mut app.mode
-            {
-                if form.focus == FocusField::ForwardType {
+            } else if let AppMode::PortForwardingFormEdit(state) = &mut app.mode {
+                if state.form.focus == FocusField::ForwardType {
                     // Cycle through forward types with Space
-                    form.forward_type = match form.forward_type {
+                    state.form.forward_type = match state.form.forward_type {
                         PortForwardType::Local => PortForwardType::Remote,
                         PortForwardType::Remote => PortForwardType::Dynamic,
                         PortForwardType::Dynamic => PortForwardType::Local,
                     };
-                } else if form.focus == FocusField::Connection {
+                } else if state.form.focus == FocusField::Connection {
                     if app.config.connections().is_empty() {
                         app.error = Some(AppError::ConfigError(
                             "No connections available".to_string(),
                         ));
                     } else {
                         // Find the index of the currently selected connection, or default to 0
-                        *connection_selected = app
+                        state.connection_selector.selected = app
                             .config
                             .connections()
                             .iter()
-                            .position(|c| c.id == form.connection_id)
+                            .position(|c| c.id == state.form.connection_id)
                             .unwrap_or(0);
-                        *select_connection_mode = true;
-                        connection_search.deactivate();
+                        state.connection_selector.show();
+                        state.connection_selector.search.deactivate();
                     }
                 } else {
                     // If not focused on Connection or ForwardType field, pass the key to text input
-                    if let Some(textarea) = form.focused_textarea_mut() {
+                    if let Some(textarea) = state.form.focused_textarea_mut() {
                         textarea.input(key);
                     }
                 }
@@ -514,12 +479,12 @@ pub async fn handle_port_forwarding_form_key<B: Backend + Write>(
         }
         _ => {
             // Handle text input for focused field
-            if let AppMode::PortForwardingFormNew { form, .. } = &mut app.mode {
-                if let Some(textarea) = form.focused_textarea_mut() {
+            if let AppMode::PortForwardingFormNew(state) = &mut app.mode {
+                if let Some(textarea) = state.form.focused_textarea_mut() {
                     textarea.input(key);
                 }
-            } else if let AppMode::PortForwardingFormEdit { form, .. } = &mut app.mode
-                && let Some(textarea) = form.focused_textarea_mut()
+            } else if let AppMode::PortForwardingFormEdit(state) = &mut app.mode
+                && let Some(textarea) = state.form.focused_textarea_mut()
             {
                 textarea.input(key);
             }
@@ -660,25 +625,14 @@ struct ConnectionSelectorState<'a> {
 
 fn connection_selector_state<'a>(mode: &'a mut AppMode) -> Option<ConnectionSelectorState<'a>> {
     match mode {
-        AppMode::PortForwardingFormNew {
-            form,
-            select_connection_mode,
-            connection_selected,
-            connection_search,
-            ..
+        AppMode::PortForwardingFormNew(state) | AppMode::PortForwardingFormEdit(state) => {
+            Some(ConnectionSelectorState {
+                form: &mut state.form,
+                select_connection_mode: &mut state.connection_selector.showing,
+                connection_selected: &mut state.connection_selector.selected,
+                search: &mut state.connection_selector.search,
+            })
         }
-        | AppMode::PortForwardingFormEdit {
-            form,
-            select_connection_mode,
-            connection_selected,
-            connection_search,
-            ..
-        } => Some(ConnectionSelectorState {
-            form,
-            select_connection_mode,
-            connection_selected,
-            search: connection_search,
-        }),
         _ => None,
     }
 }

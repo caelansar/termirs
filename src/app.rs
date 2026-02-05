@@ -14,6 +14,7 @@ use crate::async_ssh_client::SshSession;
 use crate::config::manager::{ConfigManager, Connection};
 use crate::error::{AppError, Result};
 use crate::events::AppEvent;
+use crate::mode_state::{FormWithConnectionSelector, ListSelectionState};
 use crate::search_state::SearchState;
 use crate::terminal::{
     LastMouseClick, MouseClickClass, SelectionAutoScroll, SelectionEndpoint,
@@ -208,10 +209,7 @@ pub enum ConnectingSource {
 
 #[allow(clippy::large_enum_variant)]
 pub enum AppMode {
-    ConnectionList {
-        selected: usize,
-        search: SearchState,
-    },
+    ConnectionList(ListSelectionState),
     FormNew {
         auto_auth: bool,
         form: ConnectionForm,
@@ -275,24 +273,9 @@ pub enum AppMode {
         delete_file_name: String,
         delete_pane: ActivePane,
     },
-    PortForwardingList {
-        selected: usize,
-        search: SearchState,
-    },
-    PortForwardingFormNew {
-        form: crate::ui::PortForwardingForm,
-        current_selected: usize, // Port forwarding list position
-        select_connection_mode: bool,
-        connection_selected: usize, // Connection list position
-        connection_search: SearchState,
-    },
-    PortForwardingFormEdit {
-        form: crate::ui::PortForwardingForm,
-        current_selected: usize, // Port forwarding list position
-        select_connection_mode: bool,
-        connection_selected: usize, // Connection list position
-        connection_search: SearchState,
-    },
+    PortForwardingList(ListSelectionState),
+    PortForwardingFormNew(FormWithConnectionSelector<crate::ui::PortForwardingForm>),
+    PortForwardingFormEdit(FormWithConnectionSelector<crate::ui::PortForwardingForm>),
     PortForwardDeleteConfirmation {
         port_forward_name: String,
         port_forward_id: String,
@@ -351,10 +334,7 @@ impl<B: Backend + Write> Drop for App<B> {
 impl<B: Backend + Write> App<B> {
     pub fn new(terminal: Terminal<B>) -> Result<Self> {
         Ok(Self {
-            mode: AppMode::ConnectionList {
-                selected: 0,
-                search: SearchState::Off,
-            },
+            mode: AppMode::ConnectionList(ListSelectionState::new(0)),
             error: None,
             info: None,
             config: ConfigManager::new()?,
@@ -748,10 +728,7 @@ impl<B: Backend + Write> App<B> {
 
     pub fn go_to_connection_list_with_selected(&mut self, selected: usize) {
         self.clear_selection();
-        self.mode = AppMode::ConnectionList {
-            selected,
-            search: SearchState::Off,
-        };
+        self.mode = AppMode::ConnectionList(ListSelectionState::new(selected));
         // Stop ticker when returning to connection list (idle state)
         self.stop_ticker();
         self.needs_redraw = true; // Mode change requires redraw
@@ -787,32 +764,23 @@ impl<B: Backend + Write> App<B> {
         // Sync port forwarding status before showing the list
         crate::key_event::port_forwarding::sync_port_forwarding_status(self).await;
 
-        self.mode = AppMode::PortForwardingList {
-            selected,
-            search: SearchState::Off,
-        };
+        self.mode = AppMode::PortForwardingList(ListSelectionState::new(selected));
         self.needs_redraw = true;
     }
 
     pub fn go_to_port_forwarding_form_new(&mut self) {
-        self.mode = AppMode::PortForwardingFormNew {
-            form: crate::ui::PortForwardingForm::new(),
-            current_selected: self.current_selected(),
-            select_connection_mode: false,
-            connection_selected: 0,
-            connection_search: SearchState::Off,
-        };
+        self.mode = AppMode::PortForwardingFormNew(FormWithConnectionSelector::new(
+            crate::ui::PortForwardingForm::new(),
+            self.current_selected(),
+        ));
         self.needs_redraw = true;
     }
 
     pub fn go_to_port_forwarding_form_edit(&mut self, form: crate::ui::PortForwardingForm) {
-        self.mode = AppMode::PortForwardingFormEdit {
+        self.mode = AppMode::PortForwardingFormEdit(FormWithConnectionSelector::new(
             form,
-            current_selected: self.current_selected(),
-            select_connection_mode: false,
-            connection_selected: 0,
-            connection_search: SearchState::Off,
-        };
+            self.current_selected(),
+        ));
         self.needs_redraw = true;
     }
 
@@ -1074,12 +1042,12 @@ impl<B: Backend + Write> App<B> {
 
     pub fn current_selected(&self) -> usize {
         match &self.mode {
-            AppMode::ConnectionList { selected, .. } => {
+            AppMode::ConnectionList(state) => {
                 let len = self.config.connections().len();
                 if len == 0 {
                     0
                 } else {
-                    (*selected).min(len - 1)
+                    state.selected.min(len - 1)
                 }
             }
             AppMode::FormEdit {
@@ -1102,19 +1070,18 @@ impl<B: Backend + Write> App<B> {
             },
             AppMode::FileExplorer { return_to, .. } => *return_to,
             AppMode::FormNew { .. } => 0,
-            AppMode::PortForwardingList { selected, .. } => {
+            AppMode::PortForwardingList(state) => {
                 let len = self.config.port_forwards().len();
                 if len == 0 {
                     0
                 } else {
-                    (*selected).min(len - 1)
+                    state.selected.min(len - 1)
                 }
             }
-            AppMode::PortForwardingFormNew { .. } => 0,
-            AppMode::PortForwardingFormEdit {
-                current_selected, ..
+            AppMode::PortForwardingFormNew(state) | AppMode::PortForwardingFormEdit(state) => {
+                state.current_selected
             }
-            | AppMode::PortForwardDeleteConfirmation {
+            AppMode::PortForwardDeleteConfirmation {
                 current_selected, ..
             } => *current_selected,
         }
@@ -1154,10 +1121,10 @@ impl<B: Backend + Write> App<B> {
         self.terminal.draw(|f| {
             let size = f.area();
             match &mut self.mode {
-                AppMode::ConnectionList { selected, search } => {
+                AppMode::ConnectionList(state) => {
                     let conns = self.config.connections();
 
-                    draw_connection_list(size, conns, *selected, search, f, false);
+                    draw_connection_list(size, conns, state.selected, &state.search, f, false);
                 }
                 AppMode::FormNew {
                     current_selected, ..
@@ -1368,7 +1335,7 @@ impl<B: Backend + Write> App<B> {
                         draw_file_delete_confirmation_popup(f, size, delete_file_name);
                     }
                 }
-                AppMode::PortForwardingList { selected, search } => {
+                AppMode::PortForwardingList(state) => {
                     let connections = self.config.connections();
                     let port_forwards = self.config.port_forwards();
 
@@ -1376,14 +1343,12 @@ impl<B: Backend + Write> App<B> {
                         size,
                         port_forwards,
                         connections,
-                        *selected,
-                        search,
+                        state.selected,
+                        &state.search,
                         f,
                     );
                 }
-                AppMode::PortForwardingFormNew {
-                    current_selected, ..
-                } => {
+                AppMode::PortForwardingFormNew(state) | AppMode::PortForwardingFormEdit(state) => {
                     // Render the port forwarding list background
                     let port_forwards = self.config.port_forwards();
                     let connections = self.config.connections();
@@ -1391,22 +1356,7 @@ impl<B: Backend + Write> App<B> {
                         size,
                         port_forwards,
                         connections,
-                        *current_selected,
-                        &SearchState::Off,
-                        f,
-                    );
-                }
-                AppMode::PortForwardingFormEdit {
-                    current_selected, ..
-                } => {
-                    // Render the port forwarding list background
-                    let port_forwards = self.config.port_forwards();
-                    let connections = self.config.connections();
-                    draw_port_forwarding_list(
-                        size,
-                        port_forwards,
-                        connections,
-                        *current_selected,
+                        state.current_selected,
                         &SearchState::Off,
                         f,
                     );
@@ -1429,54 +1379,44 @@ impl<B: Backend + Write> App<B> {
             }
 
             // Overlay port forwarding form popup if in port forwarding form mode
-            if let AppMode::PortForwardingFormNew { form, .. } = &mut self.mode {
+            if let AppMode::PortForwardingFormNew(state) = &mut self.mode {
                 let connections = self.config.connections();
-                draw_port_forwarding_form_popup(size, form, connections, true, f);
+                draw_port_forwarding_form_popup(size, &mut state.form, connections, true, f);
             }
-            if let AppMode::PortForwardingFormEdit { form, .. } = &mut self.mode {
+            if let AppMode::PortForwardingFormEdit(state) = &mut self.mode {
                 let connections = self.config.connections();
-                draw_port_forwarding_form_popup(size, form, connections, false, f);
+                draw_port_forwarding_form_popup(size, &mut state.form, connections, false, f);
             }
 
             // Overlay port forwarding connection selector popup when active
-            if let AppMode::PortForwardingFormNew {
-                select_connection_mode,
-                connection_selected,
-                connection_search,
-                ..
-            } = &mut self.mode
-                && *select_connection_mode
+            if let AppMode::PortForwardingFormNew(state) = &mut self.mode
+                && state.connection_selector.showing
             {
                 let connections = self.config.connections();
                 crate::ui::draw_connection_selector_popup(
                     f,
                     size,
                     connections,
-                    *connection_selected,
+                    state.connection_selector.selected,
                     None,
                     false,
                     " Choose Connection ",
-                    connection_search,
+                    &state.connection_selector.search,
                 );
             }
-            if let AppMode::PortForwardingFormEdit {
-                select_connection_mode,
-                connection_selected,
-                connection_search,
-                ..
-            } = &mut self.mode
-                && *select_connection_mode
+            if let AppMode::PortForwardingFormEdit(state) = &mut self.mode
+                && state.connection_selector.showing
             {
                 let connections = self.config.connections();
                 crate::ui::draw_connection_selector_popup(
                     f,
                     size,
                     connections,
-                    *connection_selected,
+                    state.connection_selector.selected,
                     None,
                     false,
                     " Choose Connection ",
-                    connection_search,
+                    &state.connection_selector.search,
                 );
             }
 

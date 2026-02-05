@@ -637,10 +637,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
 
                 let old_mode = std::mem::replace(
                     &mut app.mode,
-                    AppMode::ConnectionList {
-                        selected: 0,
-                        search: crate::SearchState::Off,
-                    },
+                    AppMode::ConnectionList(crate::ListSelectionState::new(0)),
                 );
 
                 if let AppMode::FileExplorer {

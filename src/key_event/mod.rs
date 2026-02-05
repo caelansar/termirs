@@ -75,16 +75,13 @@ pub async fn handle_key_event<B: Backend + Write>(app: &mut App<B>, key: KeyEven
         AppMode::ScpProgress { .. } => handle_scp_progress_key(app, key).await,
         AppMode::DeleteConfirmation { .. } => handle_delete_confirmation_key(app, key).await,
         AppMode::FileExplorer { .. } => handle_file_explorer_key(app, key).await,
-        AppMode::PortForwardingList { .. } => handle_port_forwarding_list_key(app, key).await,
-        AppMode::PortForwardingFormNew {
-            select_connection_mode: true,
-            ..
+        AppMode::PortForwardingList(_) => handle_port_forwarding_list_key(app, key).await,
+        AppMode::PortForwardingFormNew(state) | AppMode::PortForwardingFormEdit(state)
+            if state.connection_selector.showing =>
+        {
+            handle_port_forwarding_form_connection_select_key(app, key).await
         }
-        | AppMode::PortForwardingFormEdit {
-            select_connection_mode: true,
-            ..
-        } => handle_port_forwarding_form_connection_select_key(app, key).await,
-        AppMode::PortForwardingFormNew { .. } | AppMode::PortForwardingFormEdit { .. } => {
+        AppMode::PortForwardingFormNew(_) | AppMode::PortForwardingFormEdit(_) => {
             handle_port_forwarding_form_key(app, key).await
         }
         AppMode::PortForwardDeleteConfirmation { .. } => {
@@ -122,13 +119,13 @@ pub async fn handle_paste_event<B: Backend + Write>(app: &mut App<B>, data: &str
                 app.error = Some(e);
             }
         }
-        AppMode::PortForwardingFormNew { form, .. } => {
-            if let Some(textarea) = form.focused_textarea_mut() {
+        AppMode::PortForwardingFormNew(state) => {
+            if let Some(textarea) = state.form.focused_textarea_mut() {
                 textarea.insert_str(data);
             }
         }
-        AppMode::PortForwardingFormEdit { form, .. } => {
-            if let Some(textarea) = form.focused_textarea_mut() {
+        AppMode::PortForwardingFormEdit(state) => {
+            if let Some(textarea) = state.form.focused_textarea_mut() {
                 textarea.insert_str(data);
             }
         }

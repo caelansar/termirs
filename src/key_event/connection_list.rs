@@ -13,26 +13,23 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
     key: KeyEvent,
 ) -> KeyFlow {
     // Handle search keys using shared handler
-    if let AppMode::ConnectionList {
-        search, selected, ..
-    } = &mut app.mode
-    {
-        let mut table_state = TableListState::from_parts(*selected, search.clone());
+    if let AppMode::ConnectionList(state) = &mut app.mode {
+        let mut table_state = TableListState::from_parts(state.selected, state.search.clone());
         if handle_search_keys(&mut table_state, key) {
-            *selected = table_state.selected;
-            *search = table_state.search;
+            state.selected = table_state.selected;
+            state.search = table_state.search;
             app.mark_redraw();
             return KeyFlow::Continue;
         }
     }
 
     // Get the effective list length (filtered if search is active)
-    let len = if let AppMode::ConnectionList { search, .. } = &app.mode {
-        if search.query().is_empty() {
+    let len = if let AppMode::ConnectionList(state) = &app.mode {
+        if state.search.query().is_empty() {
             app.config.connections().len()
         } else {
             // Filter connections using same logic as the component
-            let query_lower = search.query().to_lowercase();
+            let query_lower = state.search.query().to_lowercase();
             app.config
                 .connections()
                 .iter()
@@ -48,14 +45,11 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
     };
 
     // Handle navigation keys using shared handler
-    if let AppMode::ConnectionList {
-        search, selected, ..
-    } = &mut app.mode
-    {
-        let mut table_state = TableListState::from_parts(*selected, search.clone());
+    if let AppMode::ConnectionList(state) = &mut app.mode {
+        let mut table_state = TableListState::from_parts(state.selected, state.search.clone());
         if handle_navigation_keys(&mut table_state, key, len) {
-            *selected = table_state.selected;
-            *search = table_state.search;
+            state.selected = table_state.selected;
+            state.search = table_state.search;
             app.mark_redraw();
             return KeyFlow::Continue;
         }
