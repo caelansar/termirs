@@ -22,19 +22,18 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
 ) -> KeyFlow {
     // Handle delete confirmation popup first (highest priority)
     if let AppMode::FileExplorer {
-        showing_delete_confirmation,
-        delete_pane,
+        delete_confirmation,
         left_explorer,
         remote_explorer,
         ..
     } = &mut app.mode
-        && *showing_delete_confirmation
+        && delete_confirmation.showing
     {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
                 // Perform the deletion
                 debug!("User confirmed file deletion");
-                let result = match delete_pane {
+                let result = match delete_confirmation.pane {
                     ActivePane::Left => {
                         info!("Deleting file from left pane");
                         left_explorer.handle(ratatui_explorer::Input::Delete).await
@@ -57,13 +56,13 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                 }
 
                 // Close the confirmation dialog
-                *showing_delete_confirmation = false;
+                delete_confirmation.hide();
                 app.mark_redraw();
                 return KeyFlow::Continue;
             }
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                 // Cancel deletion
-                *showing_delete_confirmation = false;
+                delete_confirmation.hide();
                 app.mark_redraw();
                 return KeyFlow::Continue;
             }
@@ -76,82 +75,80 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
 
     // Handle source selector popup first (needs separate scope to avoid borrow issues)
     if let AppMode::FileExplorer {
-        showing_source_selector,
-        selector_selected,
-        selector_search,
+        source_selector,
         ssh_connection,
         ..
     } = &mut app.mode
-        && *showing_source_selector
+        && source_selector.showing
     {
         let local_offset = 1;
         let mut filtered_indices = filter_connection_indices(
             app.config.connections(),
             Some(ssh_connection.id.as_str()),
-            selector_search.query(),
+            source_selector.search.query(),
         );
         let mut total_items = filtered_indices.len() + local_offset;
-        if *selector_selected >= total_items {
-            *selector_selected = total_items.saturating_sub(1);
+        if source_selector.selected >= total_items {
+            source_selector.selected = total_items.saturating_sub(1);
         }
 
-        if selector_search.is_on() {
+        if source_selector.search.is_on() {
             match key.code {
                 KeyCode::Char(c) => {
-                    if let Some(query) = selector_search.query_mut() {
+                    if let Some(query) = source_selector.search.query_mut() {
                         query.push(c);
                     }
                     filtered_indices = filter_connection_indices(
                         app.config.connections(),
                         Some(ssh_connection.id.as_str()),
-                        selector_search.query(),
+                        source_selector.search.query(),
                     );
                     total_items = filtered_indices.len() + local_offset;
-                    if selector_search.query().is_empty() {
-                        *selector_selected =
-                            (*selector_selected).min(total_items.saturating_sub(1));
+                    if source_selector.search.query().is_empty() {
+                        source_selector.selected =
+                            source_selector.selected.min(total_items.saturating_sub(1));
                     } else if filtered_indices.is_empty() {
-                        *selector_selected = 0;
+                        source_selector.selected = 0;
                     } else {
-                        *selector_selected = local_offset;
+                        source_selector.selected = local_offset;
                     }
                     app.mark_redraw();
                     return KeyFlow::Continue;
                 }
                 KeyCode::Backspace => {
-                    if let Some(query) = selector_search.query_mut() {
+                    if let Some(query) = source_selector.search.query_mut() {
                         query.pop();
                     }
                     filtered_indices = filter_connection_indices(
                         app.config.connections(),
                         Some(ssh_connection.id.as_str()),
-                        selector_search.query(),
+                        source_selector.search.query(),
                     );
                     total_items = filtered_indices.len() + local_offset;
-                    if selector_search.query().is_empty() {
-                        *selector_selected =
-                            (*selector_selected).min(total_items.saturating_sub(1));
+                    if source_selector.search.query().is_empty() {
+                        source_selector.selected =
+                            source_selector.selected.min(total_items.saturating_sub(1));
                     } else if filtered_indices.is_empty() {
-                        *selector_selected = 0;
+                        source_selector.selected = 0;
                     } else {
-                        *selector_selected = local_offset;
+                        source_selector.selected = local_offset;
                     }
                     app.mark_redraw();
                     return KeyFlow::Continue;
                 }
                 KeyCode::Esc => {
-                    if !selector_search.query().is_empty() {
-                        selector_search.clear_query();
+                    if !source_selector.search.query().is_empty() {
+                        source_selector.search.clear_query();
                         filtered_indices = filter_connection_indices(
                             app.config.connections(),
                             Some(ssh_connection.id.as_str()),
-                            selector_search.query(),
+                            source_selector.search.query(),
                         );
                         total_items = filtered_indices.len() + local_offset;
-                        *selector_selected =
-                            (*selector_selected).min(total_items.saturating_sub(1));
+                        source_selector.selected =
+                            source_selector.selected.min(total_items.saturating_sub(1));
                     } else {
-                        selector_search.deactivate();
+                        source_selector.search.deactivate();
                     }
                     app.mark_redraw();
                     return KeyFlow::Continue;
@@ -162,30 +159,30 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
 
         match key.code {
             KeyCode::Char('/') => {
-                selector_search.activate();
+                source_selector.search.activate();
                 app.mark_redraw();
                 return KeyFlow::Continue;
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                if *selector_selected > 0 {
-                    *selector_selected -= 1;
+                if source_selector.selected > 0 {
+                    source_selector.selected -= 1;
                 } else {
-                    *selector_selected = total_items.saturating_sub(1);
+                    source_selector.selected = total_items.saturating_sub(1);
                 }
                 app.mark_redraw();
                 return KeyFlow::Continue;
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if *selector_selected < total_items.saturating_sub(1) {
-                    *selector_selected += 1;
+                if source_selector.selected < total_items.saturating_sub(1) {
+                    source_selector.selected += 1;
                 } else {
-                    *selector_selected = 0;
+                    source_selector.selected = 0;
                 }
                 app.mark_redraw();
                 return KeyFlow::Continue;
             }
             KeyCode::Enter => {
-                let selected_idx = (*selector_selected).min(total_items.saturating_sub(1));
+                let selected_idx = source_selector.selected.min(total_items.saturating_sub(1));
                 let selection = if selected_idx < local_offset {
                     None
                 } else {
@@ -194,8 +191,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                         .and_then(|conn_idx| app.config.connections().get(*conn_idx).cloned())
                 };
 
-                *showing_source_selector = false;
-                selector_search.deactivate();
+                source_selector.hide();
+                source_selector.search.deactivate();
 
                 if let Some(conn) = selection {
                     app.switch_left_pane_to_ssh(conn).await;
@@ -207,8 +204,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                 return KeyFlow::Continue;
             }
             KeyCode::Esc => {
-                *showing_source_selector = false;
-                selector_search.deactivate();
+                source_selector.hide();
+                source_selector.search.deactivate();
                 app.mark_redraw();
                 return KeyFlow::Continue;
             }
@@ -225,13 +222,9 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
         copy_buffer,
         return_to,
         search,
-        showing_source_selector,
-        selector_selected,
-        selector_search,
+        source_selector,
         ssh_connection,
-        showing_delete_confirmation,
-        delete_file_name,
-        delete_pane,
+        delete_confirmation,
         ..
     } = &mut app.mode
     {
@@ -426,15 +419,15 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
             // Switch left pane source with 's'
             KeyCode::Char('s') => {
                 if matches!(active_pane, ActivePane::Left) {
-                    *showing_source_selector = true;
-                    selector_search.deactivate();
+                    source_selector.show();
+                    source_selector.search.deactivate();
                     // Reset selector to current source
                     let base_indices = filter_connection_indices(
                         app.config.connections(),
                         Some(ssh_connection.id.as_str()),
                         "",
                     );
-                    *selector_selected = match left_pane {
+                    source_selector.selected = match left_pane {
                         FileExplorerPane::Local => 0,
                         FileExplorerPane::RemoteSsh { connection, .. } => {
                             let connections = app.config.connections();
@@ -469,9 +462,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                 }
 
                 // Show delete confirmation dialog
-                *showing_delete_confirmation = true;
-                *delete_file_name = current_file.name().to_string();
-                *delete_pane = pane;
+                delete_confirmation.show(current_file.name().to_string(), pane);
                 app.mark_redraw();
             }
 

@@ -14,7 +14,9 @@ use crate::async_ssh_client::SshSession;
 use crate::config::manager::{ConfigManager, Connection};
 use crate::error::{AppError, Result};
 use crate::events::AppEvent;
-use crate::mode_state::{FormWithConnectionSelector, ListSelectionState};
+use crate::mode_state::{
+    DeleteConfirmationState, FormWithConnectionSelector, ListSelectionState, SourceSelectorState,
+};
 use crate::search_state::SearchState;
 use crate::terminal::{
     LastMouseClick, MouseClickClass, SelectionAutoScroll, SelectionEndpoint,
@@ -22,10 +24,9 @@ use crate::terminal::{
 };
 use crate::transfer::{ScpProgress, ScpResult};
 use crate::ui::{
-    ConnectionForm, TerminalState, draw_connecting_popup, draw_connection_form_popup,
-    draw_connection_list, draw_delete_confirmation_popup, draw_error_popup,
-    draw_file_delete_confirmation_popup, draw_file_explorer, draw_info_popup,
-    draw_port_forward_delete_confirmation_popup, draw_port_forwarding_form_popup,
+    ConnectionForm, DeleteConfirmationConfig, TerminalState, draw_connecting_popup,
+    draw_connection_form_popup, draw_connection_list, draw_delete_confirmation_popup,
+    draw_error_popup, draw_file_explorer, draw_info_popup, draw_port_forwarding_form_popup,
     draw_port_forwarding_list, draw_scp_progress_popup, draw_terminal, rect_with_top_margin,
 };
 
@@ -263,15 +264,9 @@ pub enum AppMode {
         return_to: usize,
         search: SearchState,
 
-        // Connection selector for left pane
-        showing_source_selector: bool,
-        selector_selected: usize,
-        selector_search: SearchState,
-
-        // File delete confirmation
-        showing_delete_confirmation: bool,
-        delete_file_name: String,
-        delete_pane: ActivePane,
+        // UI overlays
+        source_selector: SourceSelectorState,
+        delete_confirmation: DeleteConfirmationState,
     },
     PortForwardingList(ListSelectionState),
     PortForwardingFormNew(FormWithConnectionSelector<crate::ui::PortForwardingForm>),
@@ -882,13 +877,8 @@ impl<B: Backend + Write> App<B> {
             return_to,
             search: SearchState::Off,
 
-            showing_source_selector: false,
-            selector_selected: 0,
-            selector_search: SearchState::Off,
-
-            showing_delete_confirmation: false,
-            delete_file_name: String::new(),
-            delete_pane: ActivePane::Left,
+            source_selector: SourceSelectorState::new(),
+            delete_confirmation: DeleteConfirmationState::new(),
         };
         self.needs_redraw = true;
         Ok(())
@@ -1294,12 +1284,9 @@ impl<B: Backend + Write> App<B> {
                     active_pane,
                     copy_buffer,
                     search,
-                    showing_source_selector,
-                    selector_selected,
-                    selector_search,
+                    source_selector,
                     ssh_connection,
-                    showing_delete_confirmation,
-                    delete_file_name,
+                    delete_confirmation,
                     ..
                 } => {
                     draw_file_explorer(
@@ -1316,23 +1303,28 @@ impl<B: Backend + Write> App<B> {
                     );
 
                     // Draw source selector popup if active
-                    if *showing_source_selector {
+                    if source_selector.showing {
                         let connections = self.config.connections();
                         crate::ui::draw_connection_selector_popup(
                             f,
                             size,
                             connections,
-                            *selector_selected,
+                            source_selector.selected,
                             Some(ssh_connection.id.as_str()),
                             true,
                             " Select Left Pane Source ",
-                            selector_search,
+                            &source_selector.search,
                         );
                     }
 
                     // Draw delete confirmation popup if active
-                    if *showing_delete_confirmation {
-                        draw_file_delete_confirmation_popup(f, size, delete_file_name);
+                    if delete_confirmation.showing {
+                        draw_delete_confirmation_popup(
+                            f,
+                            size,
+                            &crate::ui::DeleteConfirmationConfig::FILE,
+                            &delete_confirmation.file_name,
+                        );
                     }
                 }
                 AppMode::PortForwardingList(state) => {
@@ -1430,7 +1422,12 @@ impl<B: Backend + Write> App<B> {
                 connection_name, ..
             } = &self.mode
             {
-                draw_delete_confirmation_popup(size, connection_name, f);
+                draw_delete_confirmation_popup(
+                    f,
+                    size,
+                    &DeleteConfirmationConfig::CONNECTION,
+                    connection_name,
+                );
             }
 
             // Overlay port forward delete confirmation popup if in port forward delete confirmation mode
@@ -1438,7 +1435,12 @@ impl<B: Backend + Write> App<B> {
                 port_forward_name, ..
             } = &self.mode
             {
-                draw_port_forward_delete_confirmation_popup(size, port_forward_name, f);
+                draw_delete_confirmation_popup(
+                    f,
+                    size,
+                    &DeleteConfirmationConfig::PORT_FORWARD,
+                    port_forward_name,
+                );
             }
 
             // Overlay connection form popup if in form mode

@@ -2,7 +2,7 @@
 
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
+    layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
@@ -306,102 +306,6 @@ fn draw_footer(f: &mut Frame, area: Rect, copy_buffer: &[CopyOperation], search:
         f.render_widget(left, footer_layout[0]);
         f.render_widget(right, footer_layout[1]);
     }
-}
-
-/// Draw the file delete confirmation popup
-pub fn draw_file_delete_confirmation_popup(f: &mut Frame, area: Rect, file_name: &str) {
-    use ratatui::widgets::Clear;
-
-    let popup_w = (area.width as f32 * 0.40) as u16;
-    let popup_h = 8u16.min(area.height.saturating_sub(2)).max(6);
-    let x = area.x + (area.width.saturating_sub(popup_w)) / 2;
-    let y = area.y + (area.height.saturating_sub(popup_h)) / 2;
-    let popup = Rect {
-        x,
-        y,
-        width: popup_w,
-        height: popup_h,
-    };
-
-    f.render_widget(Clear, popup);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(Line::from(Span::styled(
-            "Delete File",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        )));
-
-    let inner = popup.inner(Margin::new(1, 1));
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // warning message
-            Constraint::Length(1), // file name
-            Constraint::Length(1), // empty line
-            Constraint::Length(1), // confirmation question
-            Constraint::Min(1),    // spacer to push buttons to bottom
-            Constraint::Length(1), // buttons hint (bottom-aligned)
-        ])
-        .split(inner);
-
-    // Warning message
-    let warning = Paragraph::new(Line::from(Span::styled(
-        "⚠️  Are you sure you want to delete this file?",
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
-    )));
-    f.render_widget(warning, layout[0]);
-
-    // File name
-    let file_info = Paragraph::new(Line::from(vec![
-        Span::styled("File: ", Style::default().fg(Color::Gray)),
-        Span::styled(
-            file_name,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]));
-    f.render_widget(file_info, layout[1]);
-
-    // Empty line for spacing
-    f.render_widget(Paragraph::new(""), layout[2]);
-
-    // Confirmation question
-    let question = Paragraph::new(Line::from(Span::styled(
-        "This action cannot be undone.",
-        Style::default().fg(Color::Red),
-    )));
-    f.render_widget(question, layout[3]);
-
-    // Button hints
-    let buttons = Paragraph::new(Line::from(vec![
-        Span::styled(
-            "Y",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" - Delete   ", Style::default().fg(Color::White)),
-        Span::styled(
-            "N",
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" - Cancel   ", Style::default().fg(Color::White)),
-        Span::styled(
-            "Esc",
-            Style::default()
-                .fg(Color::Gray)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" - Cancel", Style::default().fg(Color::White)),
-    ]))
-    .alignment(Alignment::Center);
-    f.render_widget(buttons, layout[5]);
-
-    f.render_widget(Paragraph::new("").block(block), popup);
 }
 
 /// Draw a generic connection selector popup

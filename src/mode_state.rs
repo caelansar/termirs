@@ -98,6 +98,43 @@ impl Default for DeleteConfirmationState {
     }
 }
 
+/// Source selector popup state for FileExplorer
+///
+/// Used when opening multiple connections in split pane mode.
+#[derive(Clone, Debug)]
+pub struct SourceSelectorState {
+    pub showing: bool,
+    pub selected: usize,
+    pub search: SearchState,
+}
+
+impl SourceSelectorState {
+    /// Create a new source selector state (hidden by default)
+    pub fn new() -> Self {
+        Self {
+            showing: false,
+            selected: 0,
+            search: SearchState::Off,
+        }
+    }
+
+    /// Show the source selector popup
+    pub fn show(&mut self) {
+        self.showing = true;
+    }
+
+    /// Hide the source selector popup
+    pub fn hide(&mut self) {
+        self.showing = false;
+    }
+}
+
+impl Default for SourceSelectorState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Generic form state with connection selector
 ///
 /// This pattern is used by PortForwardingFormNew and PortForwardingFormEdit

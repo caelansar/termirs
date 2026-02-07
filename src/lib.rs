@@ -24,7 +24,7 @@ pub use error::{AppError, Result};
 pub use events::{AppEvent, TickControl};
 pub use mode_state::{
     ConnectionSelectorState, DeleteConfirmationState, FormWithConnectionSelector,
-    ListSelectionState,
+    ListSelectionState, SourceSelectorState,
 };
 pub use search_state::SearchState;
 pub use transfer::{

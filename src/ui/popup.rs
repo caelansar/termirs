@@ -6,6 +6,163 @@ use tui_textarea::TextArea;
 
 use crate::ui::connection::{ConnectionForm, FocusField};
 
+/// Configuration for delete confirmation popups
+///
+/// This struct provides a generic configuration for rendering delete confirmation
+/// popups across different contexts (files, connections, port forwards).
+#[derive(Clone, Debug)]
+pub struct DeleteConfirmationConfig {
+    /// Title text (e.g., "Delete File", "Delete Connection")
+    pub title: &'static str,
+
+    /// Warning message (e.g., "delete this file", "delete this connection")
+    pub warning_text: &'static str,
+
+    /// Item label prefix (e.g., "File: ", "Connection: ")
+    pub item_label: &'static str,
+
+    /// Popup width as percentage of screen width (e.g., 0.35, 0.40)
+    pub width_percent: f32,
+}
+
+impl DeleteConfirmationConfig {
+    /// Configuration for file deletion confirmation
+    pub const FILE: Self = Self {
+        title: "Delete File",
+        warning_text: "delete this file",
+        item_label: "File: ",
+        width_percent: 0.40,
+    };
+
+    /// Configuration for connection deletion confirmation
+    pub const CONNECTION: Self = Self {
+        title: "Delete Connection",
+        warning_text: "delete this connection",
+        item_label: "Connection: ",
+        width_percent: 0.35,
+    };
+
+    /// Configuration for port forward deletion confirmation
+    pub const PORT_FORWARD: Self = Self {
+        title: "Delete Port Forward",
+        warning_text: "delete this port forward",
+        item_label: "Port Forward: ",
+        width_percent: 0.35,
+    };
+}
+
+/// Generic delete confirmation popup renderer
+///
+/// This function consolidates the common delete confirmation popup logic
+/// used across file, connection, and port forwarding deletions.
+pub fn draw_delete_confirmation_popup(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    config: &DeleteConfirmationConfig,
+    item_name: &str,
+) {
+    // Calculate popup dimensions
+    let popup_w = (area.width as f32 * config.width_percent) as u16;
+    let popup_h = 8u16.min(area.height.saturating_sub(2)).max(6);
+
+    // Center popup
+    let x = area.x + (area.width.saturating_sub(popup_w)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_h)) / 2;
+    let popup = Rect {
+        x,
+        y,
+        width: popup_w,
+        height: popup_h,
+    };
+
+    // Clear background
+    frame.render_widget(Clear, popup);
+
+    // Create bordered block with title
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Red))
+        .title(Span::styled(
+            config.title,
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ));
+
+    // Calculate inner area for content (just use block inner, no extra margin)
+    let inner = block.inner(popup);
+
+    // Create 6-element vertical layout
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Warning
+            Constraint::Length(1), // Item
+            Constraint::Length(1), // Spacer
+            Constraint::Length(1), // Confirmation
+            Constraint::Min(1),    // Spacer to push buttons to bottom
+            Constraint::Length(1), // Buttons
+        ])
+        .split(inner);
+
+    // Render warning message
+    let warning = format!("⚠️  Are you sure you want to {}?", config.warning_text);
+    frame.render_widget(
+        Paragraph::new(warning)
+            .style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .alignment(Alignment::Center),
+        layout[0],
+    );
+
+    // Render item name
+    let item = vec![
+        Span::styled(config.item_label, Style::default().fg(Color::Gray)),
+        Span::styled(
+            item_name,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    frame.render_widget(
+        Paragraph::new(Line::from(item)).alignment(Alignment::Center),
+        layout[1],
+    );
+
+    // Render confirmation message
+    frame.render_widget(
+        Paragraph::new("This action cannot be undone.")
+            .style(Style::default().fg(Color::Red))
+            .alignment(Alignment::Center),
+        layout[3],
+    );
+
+    // Render button hints
+    let hints = vec![
+        Span::styled(
+            "Y",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" - Delete   "),
+        Span::styled(
+            "N",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" - Cancel   "),
+    ];
+    frame.render_widget(
+        Paragraph::new(Line::from(hints)).alignment(Alignment::Center),
+        layout[5],
+    );
+
+    // Render empty paragraph with block
+    frame.render_widget(Paragraph::new("").block(block), popup);
+}
+
 // Error popup renderer
 pub fn draw_error_popup(area: Rect, message: &str, frame: &mut ratatui::Frame<'_>) {
     let popup_w = (area.width as f32 * 0.45) as u16;
@@ -149,104 +306,6 @@ pub fn draw_connecting_popup(area: Rect, message: &str, frame: &mut ratatui::Fra
     .wrap(ratatui::widgets::Wrap { trim: true })
     .block(block);
     frame.render_widget(body, popup);
-}
-
-// Delete confirmation popup renderer
-pub fn draw_delete_confirmation_popup(
-    area: Rect,
-    connection_name: &str,
-    frame: &mut ratatui::Frame<'_>,
-) {
-    let popup_w = (area.width as f32 * 0.35) as u16; // 35% of screen width for more compact look
-    let popup_h = 8u16.min(area.height.saturating_sub(2)).max(6);
-    let x = area.x + (area.width.saturating_sub(popup_w)) / 2;
-    let y = area.y + (area.height.saturating_sub(popup_h)) / 2;
-    let popup = Rect {
-        x,
-        y,
-        width: popup_w,
-        height: popup_h,
-    };
-
-    frame.render_widget(Clear, popup);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(Line::from(Span::styled(
-            "Delete Connection",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        )));
-
-    let inner = popup.inner(Margin::new(1, 1));
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // warning message
-            Constraint::Length(1), // connection name
-            Constraint::Length(1), // empty line
-            Constraint::Length(1), // confirmation question
-            Constraint::Min(1),    // spacer to push buttons to bottom
-            Constraint::Length(1), // buttons hint (bottom-aligned)
-        ])
-        .split(inner);
-
-    // Warning message
-    let warning = Paragraph::new(Line::from(Span::styled(
-        "⚠️  Are you sure you want to delete this connection?",
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
-    )));
-    frame.render_widget(warning, layout[0]);
-
-    // Connection name
-    let connection_info = Paragraph::new(Line::from(vec![
-        Span::styled("Connection: ", Style::default().fg(Color::Gray)),
-        Span::styled(
-            connection_name,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]));
-    frame.render_widget(connection_info, layout[1]);
-
-    // Empty line for spacing
-    frame.render_widget(Paragraph::new(""), layout[2]);
-
-    // Confirmation question
-    let question = Paragraph::new(Line::from(Span::styled(
-        "This action cannot be undone.",
-        Style::default().fg(Color::Red),
-    )));
-    frame.render_widget(question, layout[3]);
-
-    // Button hints
-    let buttons = Paragraph::new(Line::from(vec![
-        Span::styled(
-            "Y",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" - Delete   ", Style::default().fg(Color::White)),
-        Span::styled(
-            "N",
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" - Cancel   ", Style::default().fg(Color::White)),
-        Span::styled(
-            "Esc",
-            Style::default()
-                .fg(Color::Gray)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" - Cancel", Style::default().fg(Color::White)),
-    ]))
-    .alignment(Alignment::Center);
-    frame.render_widget(buttons, layout[5]);
-
-    frame.render_widget(Paragraph::new("").block(block), popup);
 }
 
 pub fn draw_connection_form_popup(
