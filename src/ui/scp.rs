@@ -13,11 +13,63 @@ pub enum ScpMode {
 }
 
 // SCP Progress popup renderer
-pub fn draw_scp_progress_popup(area: Rect, progress: &ScpProgress, frame: &mut ratatui::Frame<'_>) {
-    let file_count = progress.files.len().max(1);
+pub fn draw_scp_progress_popup(
+    area: Rect,
+    progress: &mut ScpProgress,
+    frame: &mut ratatui::Frame<'_>,
+) {
+    let file_count = progress.files.len();
     let popup_w = (area.width as f32 * 0.45) as u16;
-    let ideal_height = 4 + (file_count as u16) * 3;
-    let popup_h = ideal_height.min(area.height.saturating_sub(2)).max(6);
+
+    // Calculate how many files we can show given available space
+    // Layout: 1 (connection) + N*3 (files) + optional 1 (scroll indicator) + 1 (elapsed)
+    let max_popup_h = area.height.saturating_sub(2);
+    // Reserve 4 lines for connection header, footer, and borders
+    let available_for_files = max_popup_h.saturating_sub(6) as usize;
+    let max_visible = (available_for_files / 3).max(1);
+    let needs_scroll = file_count > max_visible;
+
+    // Auto-scroll to keep the active (in-progress) file visible
+    if needs_scroll {
+        let active_idx = progress
+            .files
+            .iter()
+            .position(|f| matches!(f.state, crate::TransferState::InProgress))
+            .or_else(|| {
+                progress
+                    .files
+                    .iter()
+                    .position(|f| matches!(f.state, crate::TransferState::Pending))
+            })
+            .unwrap_or(progress.files.len().saturating_sub(1));
+
+        if active_idx < progress.scroll_offset {
+            progress.scroll_offset = active_idx;
+        } else if active_idx >= progress.scroll_offset + max_visible {
+            progress.scroll_offset = active_idx.saturating_sub(max_visible - 1);
+        }
+        // Clamp
+        let max_offset = file_count.saturating_sub(max_visible);
+        if progress.scroll_offset > max_offset {
+            progress.scroll_offset = max_offset;
+        }
+    } else {
+        progress.scroll_offset = 0;
+    }
+
+    let visible_count = file_count.min(max_visible);
+    let has_above = needs_scroll && progress.scroll_offset > 0;
+    let has_below = needs_scroll && progress.scroll_offset + visible_count < file_count;
+
+    // Calculate popup height
+    let content_lines = 1 // connection info
+        + (visible_count as u16) * 3
+        + if has_above { 1 } else { 0 }
+        + if has_below { 1 } else { 0 }
+        + 1; // elapsed time
+    let ideal_height = content_lines + 2; // +2 for borders
+    let popup_h = ideal_height.min(max_popup_h).max(6);
+
     let x = area.x + (area.width.saturating_sub(popup_w)) / 2;
     let y = area.y + (area.height.saturating_sub(popup_h)) / 2;
     let popup = Rect {
@@ -41,31 +93,52 @@ pub fn draw_scp_progress_popup(area: Rect, progress: &ScpProgress, frame: &mut r
 
     let inner = popup.inner(Margin::new(1, 1));
 
-    let mut constraints = vec![Constraint::Length(1)];
-    for _ in &progress.files {
+    // Build constraints for visible section
+    let mut constraints = vec![Constraint::Length(1)]; // connection info
+    if has_above {
+        constraints.push(Constraint::Length(1));
+    }
+    for _ in 0..visible_count {
         constraints.push(Constraint::Length(3));
     }
-    constraints.push(Constraint::Length(1));
+    if has_below {
+        constraints.push(Constraint::Length(1));
+    }
+    constraints.push(Constraint::Length(1)); // elapsed time
 
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(inner);
 
+    let mut layout_idx = 0;
+
     // Connection info
     let connection_info = Paragraph::new(Line::from(vec![
         Span::styled("Connection: ", Style::default().fg(Color::Gray)),
         Span::styled(&progress.connection_name, Style::default().fg(Color::Cyan)),
     ]));
-    frame.render_widget(connection_info, layout[0]);
+    frame.render_widget(connection_info, layout[layout_idx]);
+    layout_idx += 1;
 
-    for (idx, file) in progress.files.iter().enumerate() {
-        let row = layout.get(idx + 1).copied().unwrap_or(Rect {
-            x: inner.x,
-            y: inner.y,
-            width: inner.width,
-            height: 0,
-        });
+    // Scroll-up indicator
+    if has_above {
+        let above_count = progress.scroll_offset;
+        let indicator = Paragraph::new(Line::from(Span::styled(
+            format!("  ... {above_count} more above ..."),
+            Style::default().fg(Color::DarkGray),
+        )));
+        frame.render_widget(indicator, layout[layout_idx]);
+        layout_idx += 1;
+    }
+
+    // Visible files
+    let visible_files =
+        &progress.files[progress.scroll_offset..progress.scroll_offset + visible_count];
+    for file in visible_files {
+        let row = layout[layout_idx];
+        layout_idx += 1;
+
         if row.height < 3 {
             continue;
         }
@@ -157,7 +230,19 @@ pub fn draw_scp_progress_popup(area: Rect, progress: &ScpProgress, frame: &mut r
         frame.render_widget(gauge, file_chunks[2]);
     }
 
-    if let Some(time_area) = layout.last().copied() {
+    // Scroll-down indicator
+    if has_below {
+        let below_count = file_count - (progress.scroll_offset + visible_count);
+        let indicator = Paragraph::new(Line::from(Span::styled(
+            format!("  ... {below_count} more below ..."),
+            Style::default().fg(Color::DarkGray),
+        )));
+        frame.render_widget(indicator, layout[layout_idx]);
+        layout_idx += 1;
+    }
+
+    // Elapsed time footer
+    if let Some(time_area) = layout.get(layout_idx).copied() {
         // Determine elapsed time - freeze when all files hit 100% or when completed
         let elapsed = if progress.completed {
             if let Some(results) = &progress.completion_results {
@@ -177,6 +262,19 @@ pub fn draw_scp_progress_popup(area: Rect, progress: &ScpProgress, frame: &mut r
         };
 
         let mut elapsed_text = format!("Elapsed: {:.1}s", elapsed.as_secs_f32());
+        if file_count > 0 {
+            let completed = progress
+                .files
+                .iter()
+                .filter(|f| {
+                    matches!(
+                        f.state,
+                        crate::TransferState::Completed | crate::TransferState::Failed(_)
+                    )
+                })
+                .count();
+            elapsed_text = format!("{elapsed_text}  ({completed}/{file_count} files)");
+        }
         // Show completion hint when all files are done or fully completed
         if progress.completed || progress.all_files_done_at.is_some() {
             elapsed_text.push_str("  •  Press Enter or Esc to close");

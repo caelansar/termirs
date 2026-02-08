@@ -103,10 +103,17 @@ fn draw_header(f: &mut Frame, area: Rect, connection_name: &str, copy_buffer: &[
             crate::CopyDirection::LeftToRight => "Left → Right",
             crate::CopyDirection::RightToLeft => "Right → Left",
         };
+        let dir_count = copy_buffer.iter().filter(|op| op.is_dir).count();
+        let file_count = copy_buffer.len() - dir_count;
         let copy_details = if copy_buffer.len() == 1 {
-            format!("{} ({direction})", first.source_name)
+            format!("{} ({direction})", first.source_name.trim_end_matches('/'))
         } else {
-            format!("{} files selected ({direction})", copy_buffer.len())
+            let selection_desc = match (file_count, dir_count) {
+                (f, 0) => format!("{f} files"),
+                (0, d) => format!("{d} dirs"),
+                (f, d) => format!("{f} files + {d} dirs"),
+            };
+            format!("{selection_desc} selected ({direction})")
         };
         format!(
             " SFTP File Transfer - {connection_name} | [COPY MODE] {copy_details} • Tab→switch • v→paste "
@@ -276,10 +283,14 @@ fn draw_footer(f: &mut Frame, area: Rect, copy_buffer: &[CopyOperation], search:
             .split(area);
 
         let hint_text = if !copy_buffer.is_empty() {
-            let count_label = if copy_buffer.len() == 1 {
-                "1 file selected".to_string()
-            } else {
-                format!("{} files selected", copy_buffer.len())
+            let dir_count = copy_buffer.iter().filter(|op| op.is_dir).count();
+            let file_count = copy_buffer.len() - dir_count;
+            let count_label = match (file_count, dir_count) {
+                (1, 0) => "1 file".to_string(),
+                (f, 0) => format!("{f} files"),
+                (0, 1) => "1 dir".to_string(),
+                (0, d) => format!("{d} dirs"),
+                (f, d) => format!("{f} files + {d} dirs"),
             };
             format!("Esc: Clear | Tab: Switch Pane | v: Paste ({count_label}) | q: Quit")
         } else {

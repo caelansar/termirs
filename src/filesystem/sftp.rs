@@ -18,6 +18,53 @@ impl SftpFileSystem {
     pub fn new(session: Arc<SftpSession>) -> Self {
         Self { session }
     }
+
+    /// Expose the inner SFTP session.
+    pub fn session(&self) -> &Arc<SftpSession> {
+        &self.session
+    }
+
+    /// Create a single directory on the remote.
+    pub async fn create_dir(&self, path: &str) -> Result<()> {
+        self.session.create_dir(path).await.map_err(|e| {
+            error!("SFTP mkdir failed for '{}': {}", path, e);
+            Error::other(format!("SFTP mkdir failed for '{path}': {e}"))
+        })
+    }
+
+    /// Create directory and all parents (like `mkdir -p`).
+    /// Ignores "already exists" errors for intermediate components.
+    pub async fn create_dir_all(&self, path: &str) -> Result<()> {
+        let components: Vec<&str> = path.split('/').filter(|c| !c.is_empty()).collect();
+        let mut current = if path.starts_with('/') {
+            String::from("/")
+        } else {
+            String::new()
+        };
+
+        for component in components {
+            if current.len() > 1 || (!current.is_empty() && !current.ends_with('/')) {
+                current.push('/');
+            }
+            current.push_str(component);
+
+            match self.session.create_dir(&current).await {
+                Ok(()) => {}
+                Err(_) => {
+                    // Check if it already exists as a directory
+                    match self.is_dir(&current).await {
+                        Ok(true) => {} // Already exists
+                        _ => {
+                            return Err(Error::other(format!(
+                                "Failed to create directory '{current}'"
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl FileSystem for SftpFileSystem {

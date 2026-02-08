@@ -78,10 +78,12 @@ async fn restore_after_scp_progress<B: Backend + Write>(
             left_pane,
             mut left_explorer,
             left_sftp,
+            left_session,
             mut remote_explorer,
             sftp_session,
             ssh_connection,
             channel,
+            ssh_session,
             active_pane,
             copy_buffer,
             return_to,
@@ -89,7 +91,11 @@ async fn restore_after_scp_progress<B: Backend + Write>(
         } => {
             let any_success = results
                 .as_ref()
-                .map(|items| items.iter().any(|res| res.success))
+                .map(|items| {
+                    // Empty results (e.g. directory-only copy with no files) counts
+                    // as success since directories were created without error.
+                    items.is_empty() || items.iter().any(|res| res.success)
+                })
                 .unwrap_or(false);
 
             if any_success {
@@ -122,10 +128,12 @@ async fn restore_after_scp_progress<B: Backend + Write>(
                 left_pane,
                 left_explorer,
                 left_sftp,
+                left_session,
                 remote_explorer,
                 sftp_session,
                 ssh_connection,
                 channel,
+                ssh_session,
                 active_pane,
                 copy_buffer,
                 return_to,

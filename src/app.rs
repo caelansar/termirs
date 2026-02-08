@@ -152,6 +152,7 @@ pub struct CopyOperation {
     pub source_path: String,
     pub source_name: String,
     pub direction: CopyDirection,
+    pub is_dir: bool,
 }
 
 /// Direction of file transfer (pane-based, not filesystem-based)
@@ -179,11 +180,16 @@ pub enum ScpReturnMode {
         left_pane: FileExplorerPane,
         left_explorer: LeftExplorer,
         left_sftp: Option<(Arc<russh_sftp::client::SftpSession>, Connection)>,
+        left_session: Option<
+            Arc<tokio::sync::Mutex<russh::client::Handle<crate::async_ssh_client::SshClient>>>,
+        >,
 
         remote_explorer: ratatui_explorer::FileExplorer<crate::filesystem::SftpFileSystem>,
         sftp_session: Arc<russh_sftp::client::SftpSession>,
         ssh_connection: Connection,
         channel: Option<russh::Channel<russh::client::Msg>>,
+        ssh_session:
+            Arc<tokio::sync::Mutex<russh::client::Handle<crate::async_ssh_client::SshClient>>>,
 
         active_pane: ActivePane,
         copy_buffer: Vec<CopyOperation>,
@@ -252,12 +258,17 @@ pub enum AppMode {
         left_pane: FileExplorerPane,
         left_explorer: LeftExplorer,
         left_sftp: Option<(Arc<russh_sftp::client::SftpSession>, Connection)>,
+        left_session: Option<
+            Arc<tokio::sync::Mutex<russh::client::Handle<crate::async_ssh_client::SshClient>>>,
+        >,
 
         // Right pane - always Remote SSH (original connection from entry)
         remote_explorer: ratatui_explorer::FileExplorer<crate::filesystem::SftpFileSystem>,
         sftp_session: Arc<russh_sftp::client::SftpSession>,
         ssh_connection: Connection,
         channel: Option<russh::Channel<russh::client::Msg>>,
+        ssh_session:
+            Arc<tokio::sync::Mutex<russh::client::Handle<crate::async_ssh_client::SshClient>>>,
 
         active_pane: ActivePane,
         copy_buffer: Vec<CopyOperation>,
@@ -817,7 +828,7 @@ impl<B: Backend + Write> App<B> {
     pub async fn go_to_file_explorer(&mut self, conn: Connection, return_to: usize) -> Result<()> {
         // For SFTP, we need to create a new session directly since we need both the session and channel
         // We'll use the existing sftp_send_file pattern but adapt it for our needs
-        let (sftp_session, channel) = Self::create_sftp_session(&conn).await?;
+        let (sftp_session, channel, ssh_session) = Self::create_sftp_session(&conn).await?;
         let sftp_session = Arc::new(sftp_session);
 
         // Initialize local file explorer
@@ -865,12 +876,14 @@ impl<B: Backend + Write> App<B> {
             left_pane: FileExplorerPane::Local,
             left_explorer: LeftExplorer::Local(local_explorer),
             left_sftp: None,
+            left_session: None,
 
             // Right pane is the original SSH connection
             remote_explorer,
             sftp_session,
             ssh_connection: conn,
             channel: Some(channel),
+            ssh_session,
 
             active_pane: ActivePane::Left,
             copy_buffer: Vec::new(),
@@ -881,6 +894,7 @@ impl<B: Backend + Write> App<B> {
             delete_confirmation: DeleteConfirmationState::new(),
         };
         self.needs_redraw = true;
+        self.stop_ticker();
         Ok(())
     }
 
@@ -932,6 +946,7 @@ impl<B: Backend + Write> App<B> {
             left_pane,
             left_explorer,
             left_sftp,
+            left_session,
             ssh_connection: right_conn,
             ..
         } = &mut self.mode
@@ -952,7 +967,15 @@ impl<B: Backend + Write> App<B> {
             }
 
             // Switch left pane to SSH connection
-            match Self::setup_left_ssh_pane(&conn, left_pane, left_explorer, left_sftp).await {
+            match Self::setup_left_ssh_pane(
+                &conn,
+                left_pane,
+                left_explorer,
+                left_sftp,
+                left_session,
+            )
+            .await
+            {
                 Ok(()) => {
                     self.needs_redraw = true;
                 }
@@ -969,9 +992,12 @@ impl<B: Backend + Write> App<B> {
         left_pane: &mut FileExplorerPane,
         left_explorer: &mut LeftExplorer,
         left_sftp: &mut Option<(Arc<russh_sftp::client::SftpSession>, Connection)>,
+        left_session: &mut Option<
+            Arc<tokio::sync::Mutex<russh::client::Handle<crate::async_ssh_client::SshClient>>>,
+        >,
     ) -> Result<()> {
         // Create SFTP session
-        let (sftp_session, _explorer_channel) = Self::create_sftp_session(conn)
+        let (sftp_session, _explorer_channel, ssh_session) = Self::create_sftp_session(conn)
             .await
             .map_err(|e| AppError::SftpError(format!("Failed to create SFTP session: {e}")))?;
         let sftp_session = Arc::new(sftp_session);
@@ -997,6 +1023,7 @@ impl<B: Backend + Write> App<B> {
         };
         *left_explorer = LeftExplorer::Remote(remote_explorer);
         *left_sftp = Some((sftp_session, conn.clone()));
+        *left_session = Some(ssh_session);
 
         Ok(())
     }
@@ -1006,6 +1033,7 @@ impl<B: Backend + Write> App<B> {
     ) -> Result<(
         russh_sftp::client::SftpSession,
         russh::Channel<russh::client::Msg>,
+        Arc<tokio::sync::Mutex<russh::client::Handle<crate::async_ssh_client::SshClient>>>,
     )> {
         // Create a new SSH session specifically for SFTP
         let (session, _server_key) = SshSession::new_session_with_timeout(
@@ -1027,7 +1055,10 @@ impl<B: Backend + Write> App<B> {
         let channel = session.channel_open_session().await?;
         channel.request_subsystem(true, "sftp").await?;
 
-        Ok((sftp, channel))
+        // Wrap session in Arc<Mutex> for shared access
+        let session = Arc::new(tokio::sync::Mutex::new(session));
+
+        Ok((sftp, channel, session))
     }
 
     pub fn current_selected(&self) -> usize {
@@ -1413,7 +1444,7 @@ impl<B: Backend + Write> App<B> {
             }
 
             // Overlay SCP progress popup if in SCP progress mode
-            if let AppMode::ScpProgress { progress, .. } = &self.mode {
+            if let AppMode::ScpProgress { progress, .. } = &mut self.mode {
                 draw_scp_progress_popup(size, progress, f);
             }
 

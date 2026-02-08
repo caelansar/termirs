@@ -133,7 +133,7 @@ impl BufferPool {
     }
 }
 
-pub(crate) struct SshClient {
+pub struct SshClient {
     connection: Connection,
     server_key: Arc<OnceCell<String>>,
     // Channel for forwarding remote port forwarding connections
@@ -276,7 +276,7 @@ impl SshSession {
         Ok((session, server_key))
     }
 
-    async fn setup_sftp_session(
+    pub(crate) async fn setup_sftp_session(
         channel: Option<Channel<client::Msg>>,
         connection: &Connection,
         timeout: Option<Duration>,

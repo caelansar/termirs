@@ -83,6 +83,8 @@ pub struct ScpProgress {
     pub last_success_destination: Option<String>,
     /// Tracks when all files reached 100% transfer
     pub all_files_done_at: Option<std::time::Instant>,
+    /// Viewport scroll offset for rendering large file lists
+    pub scroll_offset: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -103,6 +105,7 @@ impl ScpProgress {
             completion_results: None,
             last_success_destination: None,
             all_files_done_at: None,
+            scroll_offset: 0,
         }
     }
 
