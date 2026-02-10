@@ -1508,6 +1508,7 @@ impl<B: Backend + Write> App<B> {
     }
 
     pub async fn run(&mut self, rx: &mut mpsc::Receiver<AppEvent>) -> Result<()> {
+        let mut pending_event: Option<AppEvent> = None;
         loop {
             self.update_mouse_capture_mode()?;
 
@@ -1535,11 +1536,15 @@ impl<B: Backend + Write> App<B> {
             }
 
             // wait for an event (asynchronous)
-            let ev = match rx.recv().await {
-                Some(e) => e,
-                None => {
-                    tracing::warn!("App event channel closed");
-                    break; // exit if channel is closed
+            let ev = if let Some(pending) = pending_event.take() {
+                pending
+            } else {
+                match rx.recv().await {
+                    Some(e) => e,
+                    None => {
+                        tracing::warn!("App event channel closed");
+                        break; // exit if channel is closed
+                    }
                 }
             };
 
@@ -1768,6 +1773,19 @@ impl<B: Backend + Write> App<B> {
                 }
                 AppEvent::TerminalUpdate => {
                     // Terminal has received data from SSH - mark redraw to update display
+                    // Coalesce rapid terminal updates to prevent rendering lag
+                    // during high SSH data throughput. Drain all pending
+                    // TerminalUpdate events from the channel, then draw once.
+                    loop {
+                        match rx.try_recv() {
+                            Ok(AppEvent::TerminalUpdate) => {} // skip redundant
+                            Ok(other) => {
+                                pending_event = Some(other);
+                                break;
+                            }
+                            Err(_) => break,
+                        }
+                    }
                     self.mark_redraw();
                 }
                 AppEvent::SftpProgress(result) => {
