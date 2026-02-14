@@ -3,7 +3,6 @@
 use ratatui_explorer::{FileEntry, FilePermissions, FileSystem};
 use russh_sftp::client::SftpSession;
 use std::io::{Error, Result};
-use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{debug, error};
 
@@ -72,38 +71,25 @@ impl FileSystem for SftpFileSystem {
         debug!("SFTP read_dir: {}", path);
         let mut entries = Vec::new();
 
-        // Normalize the path using PathBuf for safer path manipulation
-        let path_buf = PathBuf::from(path);
+        // Normalize path using string operations
         let normalized_path = if path.is_empty() || path == "." {
-            PathBuf::from(".")
+            ".".to_string()
         } else if path == "/" {
-            PathBuf::from("/")
+            "/".to_string()
         } else {
-            // PathBuf automatically handles trailing slashes
-            let mut normalized = PathBuf::new();
-            for component in path_buf.components() {
-                normalized.push(component);
-            }
-            // Ensure we don't end up with empty path
-            if normalized.as_os_str().is_empty() {
-                PathBuf::from("/")
+            let trimmed = path.trim_end_matches('/');
+            if trimmed.is_empty() {
+                "/".to_string()
             } else {
-                normalized
+                trimmed.to_string()
             }
         };
 
-        // Convert PathBuf to string for SFTP API
-        let normalized_str = normalized_path.to_string_lossy();
-
         // Read directory from SFTP
-        let read_dir = self
-            .session
-            .read_dir(normalized_str.as_ref())
-            .await
-            .map_err(|e| {
-                error!("SFTP read_dir failed for '{}': {}", normalized_str, e);
-                Error::other(format!("SFTP read_dir failed for '{normalized_str}': {e}"))
-            })?;
+        let read_dir = self.session.read_dir(&normalized_path).await.map_err(|e| {
+            error!("SFTP read_dir failed for '{}': {}", normalized_path, e);
+            Error::other(format!("SFTP read_dir failed for '{normalized_path}': {e}"))
+        })?;
 
         for entry_result in read_dir {
             let entry = entry_result;
@@ -111,9 +97,14 @@ impl FileSystem for SftpFileSystem {
             let filename = entry.file_name();
             let is_hidden = filename.starts_with('.');
 
-            // Construct full path using PathBuf's join method
-            let full_path = normalized_path.join(&filename);
-            let full_path_str = full_path.to_string_lossy();
+            // Construct the full path using string concatenation
+            let full_path = if normalized_path == "/" {
+                format!("/{filename}")
+            } else if normalized_path == "." {
+                filename.clone()
+            } else {
+                format!("{normalized_path}/{filename}")
+            };
 
             let file_type = entry.file_type();
 
@@ -121,7 +112,7 @@ impl FileSystem for SftpFileSystem {
             // For symlinks, we need to follow them once to check the target's type
             let (is_dir, is_file) = if file_type.is_symlink() {
                 // Try to follow the symlink to get the target's metadata (single call)
-                match self.session.metadata(full_path_str.as_ref()).await {
+                match self.session.metadata(&full_path).await {
                     Ok(target_metadata) => (target_metadata.is_dir(), target_metadata.is_regular()),
                     Err(_) => (false, false), // If we can't follow the symlink, treat as neither
                 }
@@ -140,7 +131,7 @@ impl FileSystem for SftpFileSystem {
 
             // Read symlink target if this is a symlink
             let symlink_target = if is_symlink {
-                self.session.read_link(full_path_str.as_ref()).await.ok()
+                self.session.read_link(&full_path).await.ok()
             } else {
                 None
             };
@@ -165,7 +156,7 @@ impl FileSystem for SftpFileSystem {
                 } else {
                     filename
                 },
-                path: full_path_str.to_string(),
+                path: full_path,
                 is_file,
                 is_dir,
                 is_hidden,
@@ -186,7 +177,7 @@ impl FileSystem for SftpFileSystem {
 
         debug!(
             "SFTP read_dir completed for '{}': {} entries",
-            normalized_path.display(),
+            normalized_path,
             entries.len()
         );
         Ok(entries)
