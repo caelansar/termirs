@@ -2973,7 +2973,7 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
             "127.0.0.1".to_string(),
             port,
             "tester".to_string(),
-            AuthMethod::Password("testerpass".to_string()),
+            AuthMethod::Password("testerpass".to_string().into()),
         );
         let mut client = SshSession::connect(&conn, 80, 24).await.unwrap();
 
@@ -3324,7 +3324,7 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
             "127.0.0.1".to_string(),
             port,
             "tester".to_string(),
-            AuthMethod::Password("testerpass".to_string()),
+            AuthMethod::Password("testerpass".to_string().into()),
         );
 
         // Create a local test file
@@ -3375,7 +3375,7 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
             "127.0.0.1".to_string(),
             port,
             "tester".to_string(),
-            AuthMethod::Password("testerpass".to_string()),
+            AuthMethod::Password("testerpass".to_string().into()),
         );
 
         // Create a remote test file
@@ -3425,7 +3425,7 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
             "127.0.0.1".to_string(),
             port,
             "tester".to_string(),
-            AuthMethod::Password("testerpass".to_string()),
+            AuthMethod::Password("testerpass".to_string().into()),
         );
 
         // Create an original test file
@@ -3503,7 +3503,7 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
             "127.0.0.1".to_string(),
             ssh_port,
             "tester".to_string(),
-            AuthMethod::Password("testerpass".to_string()),
+            AuthMethod::Password("testerpass".to_string().into()),
         );
 
         let local_listener = TcpListener::bind(("127.0.0.1", 0))
@@ -3587,7 +3587,7 @@ kWCczR3NfAIXj6HNJ5DEAAAAEHRlc3RfY2xpZW50QHRlc3QBAgMEBQ==\n\
             "127.0.0.1".to_string(),
             ssh_port,
             "tester".to_string(),
-            AuthMethod::Password("testerpass".to_string()),
+            AuthMethod::Password("testerpass".to_string().into()),
         );
 
         let local_listener = TcpListener::bind(("127.0.0.1", 0))

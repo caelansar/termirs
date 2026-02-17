@@ -349,7 +349,7 @@ mod tests {
             host: "127.0.0.1".to_string(),
             port: 22,
             username: "test".to_string(),
-            auth_method: AuthMethod::Password("test".to_string()),
+            auth_method: AuthMethod::Password("test".to_string().into()),
         };
 
         let form = ConnectionForm::from_connection(&conn);

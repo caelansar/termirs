@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    fmt, fs,
     path::{Path, PathBuf},
 };
 
@@ -15,6 +15,95 @@ pub const MAX_TERMINAL_SCROLLBACK_LINES: usize = 5000;
 
 fn default_terminal_scrollback_lines() -> usize {
     DEFAULT_TERMINAL_SCROLLBACK_LINES
+}
+
+/// A string that holds a sensitive value (password/passphrase) with an optional
+/// cached encrypted form. When the cached form is present (i.e. the value was
+/// loaded from disk and hasn't been modified), serialization reuses the cache
+/// and skips the expensive AES-256-GCM encryption.
+#[derive(Clone)]
+pub struct SensitiveString {
+    plaintext: String,
+    /// Cached encrypted representation from the last deserialization or save.
+    encrypted_cache: Option<String>,
+}
+
+impl SensitiveString {
+    pub fn new(plaintext: String) -> Self {
+        Self {
+            plaintext,
+            encrypted_cache: None,
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.plaintext
+    }
+}
+
+impl std::ops::Deref for SensitiveString {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.plaintext
+    }
+}
+
+impl From<String> for SensitiveString {
+    fn from(s: String) -> Self {
+        Self::new(s)
+    }
+}
+
+impl AsRef<str> for SensitiveString {
+    fn as_ref(&self) -> &str {
+        &self.plaintext
+    }
+}
+
+impl PartialEq for SensitiveString {
+    fn eq(&self, other: &Self) -> bool {
+        self.plaintext == other.plaintext
+    }
+}
+
+impl fmt::Debug for SensitiveString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.encrypted_cache.as_deref().unwrap_or(""))
+    }
+}
+
+impl Serialize for SensitiveString {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        if let Some(cached) = &self.encrypted_cache {
+            serializer.serialize_str(cached)
+        } else {
+            let enc = crate::config::encryption::PasswordEncryption::new();
+            let encrypted = enc
+                .encrypt_password(&self.plaintext)
+                .map_err(serde::ser::Error::custom)?;
+            serializer.serialize_str(&encrypted)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SensitiveString {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let encrypted = String::deserialize(deserializer)?;
+        let enc = crate::config::encryption::PasswordEncryption::new();
+        let plaintext = enc
+            .decrypt_password(&encrypted)
+            .map_err(serde::de::Error::custom)?;
+        Ok(SensitiveString {
+            plaintext,
+            encrypted_cache: Some(encrypted),
+        })
+    }
 }
 
 /// Application settings
@@ -36,63 +125,6 @@ impl Default for AppSettings {
             terminal_scrollback_lines: DEFAULT_TERMINAL_SCROLLBACK_LINES,
             have_nerd_font: false,
         }
-    }
-}
-
-fn serialize_password<S>(plain: &str, serializer: S) -> std::result::Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    let enc = crate::config::encryption::PasswordEncryption::new();
-    let encrypted = enc
-        .encrypt_password(plain)
-        .map_err(serde::ser::Error::custom)?;
-    serializer.serialize_str(&encrypted)
-}
-
-fn deserialize_password<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let encrypted = String::deserialize(deserializer)?;
-    let enc = crate::config::encryption::PasswordEncryption::new();
-    enc.decrypt_password(&encrypted)
-        .map_err(serde::de::Error::custom)
-}
-
-fn serialize_password_option<S>(
-    plain: &Option<String>,
-    serializer: S,
-) -> std::result::Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    if let Some(plain) = plain {
-        let enc = crate::config::encryption::PasswordEncryption::new();
-        let encrypted = enc
-            .encrypt_password(plain)
-            .map_err(serde::ser::Error::custom)?;
-        serializer.serialize_str(&encrypted)
-    } else {
-        serializer.serialize_none()
-    }
-}
-
-fn deserialize_password_option<'de, D>(
-    deserializer: D,
-) -> std::result::Result<Option<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let maybe_encrypted = Option::<String>::deserialize(deserializer)?;
-    match maybe_encrypted {
-        Some(encrypted) => {
-            let enc = crate::config::encryption::PasswordEncryption::new();
-            enc.decrypt_password(&encrypted)
-                .map(Some)
-                .map_err(serde::de::Error::custom)
-        }
-        None => Ok(None),
     }
 }
 
@@ -287,22 +319,12 @@ impl PortForward {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum AuthMethod {
     #[serde(rename = "password")]
-    Password(
-        #[serde(
-            serialize_with = "serialize_password",
-            deserialize_with = "deserialize_password"
-        )]
-        String,
-    ),
+    Password(SensitiveString),
     #[serde(rename = "public_key")]
     PublicKey {
         private_key_path: String,
-        #[serde(
-            default,
-            serialize_with = "serialize_password_option",
-            deserialize_with = "deserialize_password_option"
-        )]
-        passphrase: Option<String>,
+        #[serde(default)]
+        passphrase: Option<SensitiveString>,
     },
     #[serde(rename = "auto_load_key")]
     AutoLoadKey,
@@ -656,7 +678,7 @@ mod tests {
             "root".to_string(),
             AuthMethod::PublicKey {
                 private_key_path: "path".to_string(),
-                passphrase: None,
+                passphrase: Some("passphrase".to_string().into()),
             },
         );
         let serialized = toml::to_string(&conn).unwrap();
@@ -673,7 +695,7 @@ mod tests {
             "test".to_string(),
             22,
             "root".to_string(),
-            AuthMethod::Password("password".to_string()),
+            AuthMethod::Password("password".to_string().into()),
         );
         let serialized = toml::to_string(&conn).unwrap();
         println!("serialized: {}", serialized);
@@ -698,7 +720,7 @@ mod tests {
             "test1".to_string(),
             23,
             "root".to_string(),
-            AuthMethod::Password("password".to_string()),
+            AuthMethod::Password("password".to_string().into()),
         );
         let config = Config {
             connections: vec![conn, conn1],

@@ -127,7 +127,7 @@ pub async fn handle_form_new_key<B: Backend + Write>(app: &mut App<B>, key: KeyE
                                 }
                             }
                             (_, password, _) if !password.is_empty() => {
-                                AuthMethod::Password(password.to_string())
+                                AuthMethod::Password(password.to_string().into())
                             }
                             (_, _, true) => AuthMethod::AutoLoadKey,
                             _ => AuthMethod::None,
@@ -232,7 +232,7 @@ pub async fn handle_form_edit_key<B: Backend + Write>(app: &mut App<B>, key: Key
                 updated.port = parsed_port;
                 updated.username = form.get_username_value().trim().to_string();
                 updated.auth_method = if new_private_key_path.is_empty() {
-                    AuthMethod::Password(new_password)
+                    AuthMethod::Password(new_password.into())
                 } else {
                     AuthMethod::PublicKey {
                         private_key_path: new_private_key_path,
