@@ -2,8 +2,10 @@ use crossterm::event::Event;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TickControl {
-    Start, // Start sending tick events
-    Stop,  // Stop sending tick events
+    Start,       // Start sending tick events
+    Stop,        // Stop sending tick events
+    PauseInput,  // Stop polling stdin (for external editor)
+    ResumeInput, // Resume polling stdin
 }
 
 #[derive(Debug)]

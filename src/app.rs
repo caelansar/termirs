@@ -410,6 +410,74 @@ impl<B: Backend + Write> App<B> {
         Ok(())
     }
 
+    /// Suspend the TUI so an external process (e.g. editor) can use the terminal.
+    ///
+    /// Pauses the crossterm event stream, disables raw mode, and leaves the
+    /// alternate screen. Call [`restore_tui`] afterwards to bring the TUI back.
+    pub fn suspend_tui(&mut self) -> Result<()> {
+        use crossterm::ExecutableCommand;
+        use crossterm::event::DisableMouseCapture;
+        use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
+
+        // Stop the event loop from polling stdin so the external process
+        // gets exclusive access to terminal input.
+        if let Some(tx) = &self.tick_control_tx {
+            let _ = tx.try_send(crate::events::TickControl::PauseInput);
+        }
+
+        disable_raw_mode()?;
+        self.terminal.backend_mut().execute(LeaveAlternateScreen)?;
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.terminal
+                .backend_mut()
+                .execute(crossterm::event::DisableBracketedPaste)?;
+            self.terminal.backend_mut().execute(DisableMouseCapture)?;
+        }
+
+        Ok(())
+    }
+
+    /// Restore the TUI after an external process has finished.
+    ///
+    /// Re-enables raw mode, enters the alternate screen, and resumes the
+    /// crossterm event stream.
+    pub fn restore_tui(&mut self) -> Result<()> {
+        use crossterm::ExecutableCommand;
+        use crossterm::event::DisableMouseCapture;
+        use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
+
+        enable_raw_mode()?;
+        self.terminal.backend_mut().execute(EnterAlternateScreen)?;
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.terminal
+                .backend_mut()
+                .execute(crossterm::event::EnableBracketedPaste)?;
+            self.terminal.backend_mut().execute(DisableMouseCapture)?;
+        }
+
+        self.mouse_capture_enabled = false;
+        self.terminal.clear()?;
+        self.mark_redraw();
+
+        // Drain any terminal response sequences (e.g. OSC color replies) that
+        // the terminal wrote to stdin during restore. Without this, crossterm
+        // would misinterpret them as user keystrokes.
+        while crossterm::event::poll(std::time::Duration::from_millis(10))? {
+            let _ = crossterm::event::read();
+        }
+
+        // Resume polling stdin in the event loop.
+        if let Some(tx) = &self.tick_control_tx {
+            let _ = tx.try_send(crate::events::TickControl::ResumeInput);
+        }
+
+        Ok(())
+    }
+
     pub fn set_event_sender(&mut self, sender: tokio::sync::mpsc::Sender<AppEvent>) {
         self.event_tx = Some(sender);
     }

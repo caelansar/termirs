@@ -468,6 +468,49 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                 app.mark_redraw();
             }
 
+            // Edit file in external editor
+            KeyCode::Char('e') => {
+                let current_file = match active_pane {
+                    ActivePane::Left => left_explorer.current().clone(),
+                    ActivePane::Right => remote_explorer.current().clone(),
+                };
+
+                if current_file.is_dir() {
+                    app.info = Some("Cannot edit a directory".to_string());
+                    app.mark_redraw();
+                    return KeyFlow::Continue;
+                }
+
+                let file_path = current_file.path().to_string_lossy().into_owned();
+                let pane = *active_pane;
+
+                // Determine if local or remote
+                let is_local = matches!(active_pane, ActivePane::Left)
+                    && matches!(left_pane, FileExplorerPane::Local);
+
+                // Get connection for remote editing
+                let remote_connection = if is_local {
+                    None
+                } else if matches!(active_pane, ActivePane::Left) {
+                    // Left pane is remote SSH
+                    if let FileExplorerPane::RemoteSsh { connection, .. } = left_pane {
+                        Some(connection.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    // Right pane is always remote
+                    Some(ssh_connection.clone())
+                };
+
+                // Drop the borrow on app.mode before calling suspend/restore
+                drop(current_file);
+
+                // Perform the edit operation outside the app.mode borrow
+                do_edit_file(app, &file_path, is_local, remote_connection, pane).await;
+                return KeyFlow::Continue;
+            }
+
             // Copy file: Toggle selection
             KeyCode::Char('c') => {
                 let (current_file, direction) = match active_pane {
@@ -1149,4 +1192,103 @@ async fn create_local_dirs(dirs: &[String]) -> crate::error::Result<()> {
         })?;
     }
     Ok(())
+}
+
+/// Perform file editing outside the `app.mode` borrow scope.
+///
+/// Suspends the TUI, runs the editor, restores the TUI, and refreshes the
+/// active pane if the file was modified.
+async fn do_edit_file<B: Backend + Write>(
+    app: &mut App<B>,
+    file_path: &str,
+    is_local: bool,
+    remote_connection: Option<crate::config::manager::Connection>,
+    pane: ActivePane,
+) {
+    // Binary check before suspending TUI so the user sees the error inline
+    let is_binary = if is_local {
+        crate::file_edit::check_binary(file_path)
+            .await
+            .unwrap_or(false)
+    } else {
+        crate::file_edit::check_remote_binary(remote_connection.as_ref(), file_path)
+            .await
+            .unwrap_or(false)
+    };
+    if is_binary {
+        app.error = Some(crate::error::AppError::SftpError(
+            "Cannot edit binary file".to_string(),
+        ));
+        app.mark_redraw();
+        return;
+    }
+
+    // Suspend TUI for external editor
+    if let Err(e) = app.suspend_tui() {
+        app.error = Some(crate::error::AppError::SftpError(format!(
+            "Failed to suspend TUI: {e}"
+        )));
+        app.mark_redraw();
+        return;
+    }
+
+    let result = if is_local {
+        crate::file_edit::edit_local_file(file_path).await
+    } else if let Some(conn) = remote_connection {
+        crate::file_edit::edit_remote_file(file_path, &conn).await
+    } else {
+        Err(crate::error::AppError::SftpError(
+            "Could not determine connection for remote file".to_string(),
+        ))
+    };
+
+    match result {
+        Ok(crate::file_edit::EditResult::Modified) => {
+            // Refresh the active pane to reflect changes
+            let filename = std::path::Path::new(file_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(file_path);
+            if let AppMode::FileExplorer {
+                left_explorer,
+                remote_explorer,
+                ..
+            } = &mut app.mode
+            {
+                let refresh_result = match pane {
+                    ActivePane::Left => {
+                        let cwd = left_explorer.cwd().to_path_buf();
+                        left_explorer
+                            .set_cwd(cwd)
+                            .await
+                            .and_then(|_| Ok(left_explorer.select_file(filename)))
+                    }
+                    ActivePane::Right => {
+                        let cwd = remote_explorer.cwd().to_path_buf();
+                        remote_explorer
+                            .set_cwd(cwd)
+                            .await
+                            .and_then(|_| Ok(remote_explorer.select_file(filename)))
+                    }
+                };
+                if let Err(e) = refresh_result {
+                    error!("Failed to refresh pane after edit: {}", e);
+                }
+            }
+            // Set info after refresh so the async operation doesn't cause the popup to be dismissed
+            app.info = Some("File saved".to_string());
+        }
+        Ok(crate::file_edit::EditResult::Unchanged) => {
+            // app.info = Some("File unchanged".to_string());
+        }
+        Err(e) => {
+            app.error = Some(e);
+        }
+    }
+
+    // Restore TUI
+    if let Err(e) = app.restore_tui() {
+        error!("Failed to restore TUI after editing: {}", e);
+    }
+    app.mark_redraw();
 }

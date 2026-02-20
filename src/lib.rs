@@ -1,6 +1,7 @@
 mod async_ssh_client;
 mod config;
 mod error;
+mod file_edit;
 mod filesystem;
 mod key_event;
 mod mode_state;

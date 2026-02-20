@@ -294,7 +294,7 @@ fn draw_footer(f: &mut Frame, area: Rect, copy_buffer: &[CopyOperation], search:
             };
             format!("Esc: Clear | Tab: Switch Pane | v: Paste ({count_label}) | q: Quit")
         } else {
-            "↑↓/jk: Move | ←→: Dir | Tab: Switch | s: Switch Source | c: Copy | d: Delete | /: Search | h: Hidden | r: Refresh | q: Quit"
+            "↑↓/jk: Move | ←→: Dir | Tab: Switch | s: Switch Source | c: Copy | d: Delete | e: Edit | /: Search | H: Hidden | r: Refresh | q: Quit"
                 .to_string()
         };
 

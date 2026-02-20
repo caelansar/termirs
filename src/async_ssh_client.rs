@@ -1160,6 +1160,45 @@ impl SshSession {
         result
     }
 
+    /// Read the first `len` bytes from a remote file via SFTP.
+    ///
+    /// Opens a new SSH/SFTP session, reads up to `len` bytes from offset 0,
+    /// and returns the data. Useful for binary detection without downloading
+    /// the entire file.
+    pub async fn sftp_read_head(
+        connection: &Connection,
+        remote_path: &str,
+        len: usize,
+    ) -> Result<Vec<u8>> {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let sftp = Self::setup_sftp_session(None, connection, None, &cancel).await?;
+
+        let handle = sftp
+            .open(remote_path, OpenFlags::READ, FileAttributes::empty())
+            .await
+            .map_err(|e| {
+                AppError::SftpError(format!(
+                    "Failed to open remote file '{}': {}",
+                    remote_path, e
+                ))
+            })?;
+
+        let data = sftp
+            .read(&handle.handle, 0, len as u32)
+            .await
+            .map(|resp| resp.data)
+            .or_else(|e| match e {
+                russh_sftp::client::error::Error::Status(status)
+                    if status.status_code == StatusCode::Eof =>
+                {
+                    Ok(Vec::new())
+                }
+                other => Err(AppError::RusshSftpError(other)),
+            })?;
+
+        Ok(data)
+    }
+
     /// Start a port forwarding task and return the handle and cancellation token
     pub async fn start_port_forwarding_task(
         local_addr: &str,

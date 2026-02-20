@@ -40,6 +40,9 @@ tracing-appender = "0.2"
 grep-searcher = "0.1"
 grep-regex = "0.1"
 grep-matcher = "0.1"
+content_inspector = "0.2"
+edit = "0.1"
+tempfile = "3"
 wezterm-term = { git = "https://github.com/caelansar/wezterm.git", package = "wezterm-term" }
 wezterm-surface = { git = "https://github.com/caelansar/wezterm.git", package = "wezterm-surface" }
 

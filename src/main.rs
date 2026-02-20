@@ -64,10 +64,11 @@ async fn main() -> Result<()> {
     let mut event_stream = event::EventStream::new();
     tokio::spawn(async move {
         let mut tick_enabled = false; // Start with ticker disabled
+        let mut input_enabled = true; // Start with input polling enabled
 
         loop {
             select! {
-                maybe_ev = event_stream.next() => {
+                maybe_ev = event_stream.next(), if input_enabled => {
                     let ev = match maybe_ev {
                         None => break,
                         Some(Err(_)) => break,
@@ -87,6 +88,8 @@ async fn main() -> Result<()> {
                     match control {
                         TickControl::Start => tick_enabled = true,
                         TickControl::Stop => tick_enabled = false,
+                        TickControl::PauseInput => input_enabled = false,
+                        TickControl::ResumeInput => input_enabled = true,
                     }
                 }
             }

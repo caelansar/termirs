@@ -25,8 +25,8 @@ pub async fn handle_scp_progress_key<B: Backend + Write>(
             KeyCode::Enter if can_close => {
                 info!("SCP transfer completed, returning to file explorer");
                 if let Some(mode) = return_mode.take() {
-                    let results = progress.completion_results.clone();
-                    let last_success = progress.last_success_destination.clone();
+                    let results = progress.completion_results.take();
+                    let last_success = progress.last_success_destination.take();
                     restore_after_scp_progress(app, mode, results, last_success).await;
                 }
                 return KeyFlow::Continue;
@@ -35,8 +35,8 @@ pub async fn handle_scp_progress_key<B: Backend + Write>(
                 if let Some(mode) = return_mode.take() {
                     if can_close {
                         debug!("Closing completed SCP transfer dialog");
-                        let results = progress.completion_results.clone();
-                        let last_success = progress.last_success_destination.clone();
+                        let results = progress.completion_results.take();
+                        let last_success = progress.last_success_destination.take();
                         restore_after_scp_progress(app, mode, results, last_success).await;
                     } else {
                         info!("SCP transfer cancelled by user");
