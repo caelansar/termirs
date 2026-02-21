@@ -15,7 +15,7 @@ A modern, async SSH terminal client built with Rust and [Ratatui](https://ratatu
 - **Port Forwarding**: Create and manage local and remote port forwards with automatic status tracking
 - **File Transfer**: SFTP support for secure file uploads with progress tracking
 - **File Explorer**: Dual-pane SFTP browser with copy/paste transfers
-- **Terminal Emulation**: Full VT100 terminal emulation with color support and scrollback
+- **External Editor**: Edit local and remote files in your preferred editor (e.g. vim, nano) directly from the file explorer
 - **Cross Platforms**: Support macOS, Linux and Windows
 
 ### 🔒 Security Features
@@ -110,6 +110,7 @@ cargo build --release --locked
 | `H`                | Toggle whether hidden files should be shown                 |
 | `c`                | Copy highlighted file or folder into the transfer clipboard |
 | `v`                | Paste into the destination pane to start an async transfer  |
+| `e`                | Edit selected file in external editor                       |
 | `r`                | Refresh the current pane listing                            |
 | `Esc`              | Cancel file explorer and return to connection list          |
 
@@ -190,6 +191,13 @@ Create a SOCKS5 proxy on port 1080:
 Configure your browser or applications to use `127.0.0.1:1080` as SOCKS5 proxy. All traffic will be tunneled through the SSH connection.
 
 
+### External Editor
+TermiRs lets you edit files directly from the file explorer using your preferred editor. Press `e` on any file to open it.
+
+- **Editor Selection**: Uses the `VISUAL` or `EDITOR` environment variable (falls back to a system default)
+- **Local Files**: Opened directly in the editor
+- **Remote Files**: Downloaded via SFTP to a temporary file, opened in the editor, and uploaded back automatically if modified
+
 ### Configuration
 
 TermiRs stores configuration in `~/.config/termirs/config.toml`. The file includes:
@@ -238,7 +246,6 @@ created_at = "2023-01-01T00:00:00Z"
 - **Terminal Backend**: [Crossterm](https://crates.io/crates/crossterm) - Cross-platform terminal manipulation
 - **Encryption**: [Ring](https://crates.io/crates/ring) - Cryptographic operations
 - **Configuration**: [TOML](https://crates.io/crates/toml) - Configuration file format
-- **Terminal Emulation**: [vt100](https://crates.io/crates/vt100) - VT100 terminal emulator
 
 ### Async Architecture
 TermiRs is built with a fully asynchronous architecture:
