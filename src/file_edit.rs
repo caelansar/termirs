@@ -112,8 +112,21 @@ pub async fn edit_remote_file(remote_path: &str, connection: &Connection) -> Res
     };
     let tmp_path = tmp_file.path().to_string_lossy().to_string();
 
+    let (session, _server_key) = SshSession::new_session(connection).await?;
+
+    let channel_recv = session.channel_open_session().await?;
+    let channel_send = session.channel_open_session().await?;
+
     // Download remote file to temp
-    SshSession::sftp_receive_file(None, connection, remote_path, &tmp_path, 0, None).await?;
+    SshSession::sftp_receive_file(
+        Some(channel_recv),
+        connection,
+        remote_path,
+        &tmp_path,
+        0,
+        None,
+    )
+    .await?;
 
     // Record mtime before editing
     let mtime_before = std::fs::metadata(tmp_file.path())
@@ -134,7 +147,15 @@ pub async fn edit_remote_file(remote_path: &str, connection: &Connection) -> Res
     }
 
     // Upload modified file back to remote
-    SshSession::sftp_send_file(None, connection, &tmp_path, remote_path, 0, None).await?;
+    SshSession::sftp_send_file(
+        Some(channel_send),
+        connection,
+        &tmp_path,
+        remote_path,
+        0,
+        None,
+    )
+    .await?;
 
     Ok(EditResult::Modified)
 }

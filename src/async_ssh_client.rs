@@ -552,7 +552,7 @@ impl SshSession {
         }
     }
 
-    async fn new_session(
+    pub(crate) async fn new_session(
         connection: &Connection,
     ) -> Result<(client::Handle<SshClient>, Arc<OnceCell<String>>)> {
         Self::new_session_with_timeout(
