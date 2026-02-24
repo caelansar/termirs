@@ -54,7 +54,7 @@ Type "v"
 Sleep 1s
 Enter
 Sleep 1s
-Escape
+Type 'q'
 
 Sleep 500ms
 
@@ -71,4 +71,4 @@ Type "d"
 Sleep 1s
 Type "y"
 Sleep 1s
-Escape
+Type 'q'
