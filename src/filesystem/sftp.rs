@@ -1,5 +1,6 @@
 //! SFTP filesystem implementation.
 
+use futures::{StreamExt, TryStreamExt};
 use ratatui_explorer::{FileEntry, FilePermissions, FileSystem};
 use russh_sftp::client::SftpSession;
 use std::io::{Error, Result};
@@ -69,7 +70,6 @@ impl SftpFileSystem {
 impl FileSystem for SftpFileSystem {
     async fn read_dir(&self, path: &str) -> Result<Vec<FileEntry>> {
         debug!("SFTP read_dir: {}", path);
-        let mut entries = Vec::new();
 
         // Normalize path using string operations
         let normalized_path = if path.is_empty() || path == "." {
@@ -85,88 +85,95 @@ impl FileSystem for SftpFileSystem {
             }
         };
 
-        // Read directory from SFTP
-        let read_dir = self.session.read_dir(&normalized_path).await.map_err(|e| {
-            error!("SFTP read_dir failed for '{}': {}", normalized_path, e);
-            Error::other(format!("SFTP read_dir failed for '{normalized_path}': {e}"))
-        })?;
+        // Read directory from SFTP using streaming, processing entries concurrently
+        let stream = self
+            .session
+            .read_dir_stream(&normalized_path)
+            .await
+            .map_err(|e| {
+                error!("SFTP read_dir failed for '{}': {}", normalized_path, e);
+                Error::other(format!("SFTP read_dir failed for '{normalized_path}': {e}"))
+            })?;
 
-        for entry_result in read_dir {
-            let entry = entry_result;
+        let session = &self.session;
+        let mut entries: Vec<FileEntry> = stream
+            .map(|entry_result| {
+                let normalized_path = &normalized_path;
+                async move {
+                    let entry = entry_result.map_err(|e| {
+                        error!("SFTP read_dir entry error for '{}': {}", normalized_path, e);
+                        Error::other(format!(
+                            "SFTP read_dir entry failed for '{normalized_path}': {e}"
+                        ))
+                    })?;
 
-            let filename = entry.file_name();
-            let is_hidden = filename.starts_with('.');
+                    let filename = entry.file_name();
+                    let is_hidden = filename.starts_with('.');
 
-            // Construct the full path using string concatenation
-            let full_path = if normalized_path == "/" {
-                format!("/{filename}")
-            } else if normalized_path == "." {
-                filename.clone()
-            } else {
-                format!("{normalized_path}/{filename}")
-            };
+                    let full_path = if *normalized_path == "/" {
+                        format!("/{filename}")
+                    } else if *normalized_path == "." {
+                        filename.clone()
+                    } else {
+                        format!("{normalized_path}/{filename}")
+                    };
 
-            let file_type = entry.file_type();
+                    let file_type = entry.file_type();
 
-            // Determine if this is a directory or file
-            // For symlinks, we need to follow them once to check the target's type
-            let (is_dir, is_file) = if file_type.is_symlink() {
-                // Try to follow the symlink to get the target's metadata (single call)
-                match self.session.metadata(&full_path).await {
-                    Ok(target_metadata) => (target_metadata.is_dir(), target_metadata.is_regular()),
-                    Err(_) => (false, false), // If we can't follow the symlink, treat as neither
+                    // For symlinks, follow once to resolve the target's type
+                    let (is_dir, is_file) = if file_type.is_symlink() {
+                        match session.metadata(&full_path).await {
+                            Ok(meta) => (meta.is_dir(), meta.is_regular()),
+                            Err(_) => (false, false),
+                        }
+                    } else {
+                        (file_type.is_dir(), file_type.is_file())
+                    };
+
+                    let size = if !is_dir { entry.metadata().size } else { None };
+                    let modified = entry.metadata().modified().ok();
+                    let is_symlink = file_type.is_symlink();
+
+                    let symlink_target = if is_symlink {
+                        session.read_link(&full_path).await.ok()
+                    } else {
+                        None
+                    };
+
+                    let sftp_perms = entry.metadata().permissions();
+                    let permissions = Some(FilePermissions {
+                        user_read: sftp_perms.owner_read,
+                        user_write: sftp_perms.owner_write,
+                        user_execute: sftp_perms.owner_exec,
+                        group_read: sftp_perms.group_read,
+                        group_write: sftp_perms.group_write,
+                        group_execute: sftp_perms.group_exec,
+                        others_read: sftp_perms.other_read,
+                        others_write: sftp_perms.other_write,
+                        others_execute: sftp_perms.other_exec,
+                    });
+
+                    Ok::<FileEntry, Error>(FileEntry {
+                        name: if is_dir {
+                            format!("{filename}/")
+                        } else {
+                            filename
+                        },
+                        path: full_path,
+                        is_file,
+                        is_dir,
+                        is_hidden,
+                        size,
+                        modified,
+                        permissions,
+                        is_symlink,
+                        symlink_target,
+                    })
                 }
-            } else {
-                (file_type.is_dir(), file_type.is_file())
-            };
-
-            // Get file size from metadata
-            let size = if !is_dir { entry.metadata().size } else { None };
-
-            // Get modified time from SFTP metadata
-            let modified = entry.metadata().modified().ok();
-
-            // Check if it's a symlink
-            let is_symlink = file_type.is_symlink();
-
-            // Read symlink target if this is a symlink
-            let symlink_target = if is_symlink {
-                self.session.read_link(&full_path).await.ok()
-            } else {
-                None
-            };
-
-            // Get permissions and convert to ratatui_explorer::FilePermissions
-            let sftp_perms = entry.metadata().permissions();
-            let permissions = Some(FilePermissions {
-                user_read: sftp_perms.owner_read,
-                user_write: sftp_perms.owner_write,
-                user_execute: sftp_perms.owner_exec,
-                group_read: sftp_perms.group_read,
-                group_write: sftp_perms.group_write,
-                group_execute: sftp_perms.group_exec,
-                others_read: sftp_perms.other_read,
-                others_write: sftp_perms.other_write,
-                others_execute: sftp_perms.other_exec,
-            });
-
-            entries.push(FileEntry {
-                name: if is_dir {
-                    format!("{filename}/")
-                } else {
-                    filename
-                },
-                path: full_path,
-                is_file,
-                is_dir,
-                is_hidden,
-                size,
-                modified,
-                permissions,
-                is_symlink,
-                symlink_target,
-            });
-        }
+            })
+            .buffer_unordered(16)
+            .try_collect()
+            .await?;
 
         // Sort: directories first, then alphabetically
         entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {

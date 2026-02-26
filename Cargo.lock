@@ -4684,13 +4684,13 @@ dependencies = [
 [[package]]
 name = "russh-sftp"
 version = "2.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3bb94393cafad0530145b8f626d8687f1ee1dedb93d7ba7740d6ae81868b13b5"
+source = "git+https://github.com/caelansar/russh-sftp.git#ed99dd328b7673a67e2e0b721a097f1abcc5c1b7"
 dependencies = [
  "bitflags 2.9.4",
  "bytes",
  "chrono",
  "flurry",
+ "futures-core",
  "log",
  "serde",
  "thiserror 2.0.16",

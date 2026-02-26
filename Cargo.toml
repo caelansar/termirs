@@ -24,7 +24,7 @@ chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "fs"] }
 tokio-util = "0.7.16"
 russh = "0.57.0"
-russh-sftp = "2.1.1"
+russh-sftp = { git = "https://github.com/caelansar/russh-sftp.git" }
 futures = "0.3"
 anyhow = { version = "1", optional = true }
 tui-textarea = "0.7"
