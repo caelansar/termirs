@@ -1196,8 +1196,9 @@ async fn create_local_dirs(dirs: &[String]) -> crate::error::Result<()> {
 
 /// Perform file editing outside the `app.mode` borrow scope.
 ///
-/// Suspends the TUI, runs the editor, restores the TUI, and refreshes the
-/// active pane if the file was modified.
+/// The edit functions in [`crate::file_edit`] handle suspending/restoring the
+/// terminal and running the editor on a blocking thread. This helper only
+/// deals with binary checks, result handling, and app-level state updates.
 async fn do_edit_file<B: Backend + Write>(
     app: &mut App<B>,
     file_path: &str,
@@ -1205,7 +1206,7 @@ async fn do_edit_file<B: Backend + Write>(
     remote_connection: Option<crate::config::manager::Connection>,
     pane: ActivePane,
 ) {
-    // Binary check before suspending TUI so the user sees the error inline
+    // Binary check before opening the editor so the user sees the error inline
     let is_binary = if is_local {
         crate::file_edit::check_binary(file_path)
             .await
@@ -1223,24 +1224,31 @@ async fn do_edit_file<B: Backend + Write>(
         return;
     }
 
-    // Suspend TUI for external editor
-    if let Err(e) = app.suspend_tui() {
-        app.error = Some(crate::error::AppError::SftpError(format!(
-            "Failed to suspend TUI: {e}"
-        )));
-        app.mark_redraw();
-        return;
-    }
+    let tick_tx = match app.get_tick_control_sender() {
+        Some(tx) => tx,
+        None => {
+            app.error = Some(crate::error::AppError::SftpError(
+                "Tick control sender not available".to_string(),
+            ));
+            app.mark_redraw();
+            return;
+        }
+    };
 
     let result = if is_local {
-        crate::file_edit::edit_local_file(file_path).await
+        crate::file_edit::edit_local_file(file_path, &tick_tx).await
     } else if let Some(conn) = remote_connection {
-        crate::file_edit::edit_remote_file(file_path, &conn).await
+        crate::file_edit::edit_remote_file(file_path, &conn, &tick_tx).await
     } else {
         Err(crate::error::AppError::SftpError(
             "Could not determine connection for remote file".to_string(),
         ))
     };
+
+    // App-level state cleanup after terminal restore
+    if let Err(e) = app.post_editor_cleanup() {
+        error!("Failed to clean up after editing: {}", e);
+    }
 
     match result {
         Ok(crate::file_edit::EditResult::Modified) => {
@@ -1261,14 +1269,14 @@ async fn do_edit_file<B: Backend + Write>(
                         left_explorer
                             .set_cwd(cwd)
                             .await
-                            .and_then(|_| Ok(left_explorer.select_file(filename)))
+                            .map(|_| left_explorer.select_file(filename))
                     }
                     ActivePane::Right => {
                         let cwd = remote_explorer.cwd().to_path_buf();
                         remote_explorer
                             .set_cwd(cwd)
                             .await
-                            .and_then(|_| Ok(remote_explorer.select_file(filename)))
+                            .map(|_| remote_explorer.select_file(filename))
                     }
                 };
                 if let Err(e) = refresh_result {
@@ -1286,9 +1294,5 @@ async fn do_edit_file<B: Backend + Write>(
         }
     }
 
-    // Restore TUI
-    if let Err(e) = app.restore_tui() {
-        error!("Failed to restore TUI after editing: {}", e);
-    }
     app.mark_redraw();
 }

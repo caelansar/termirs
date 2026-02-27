@@ -7,8 +7,11 @@ use std::io;
 use std::path::Path;
 use std::time::SystemTime;
 
+use tokio::sync::mpsc::Sender;
+
 use crate::config::manager::Connection;
 use crate::error::{AppError, Result};
+use crate::events::TickControl;
 
 /// Result of an edit operation.
 pub enum EditResult {
@@ -55,11 +58,74 @@ pub async fn check_remote_binary(connection: Option<&Connection>, path: &str) ->
     Ok(is_binary(&head))
 }
 
+/// Suspend the terminal so an external process can use it.
+///
+/// Pauses the event stream, disables raw mode, and leaves the alternate screen.
+fn suspend_terminal(tick_tx: &Sender<TickControl>) -> Result<()> {
+    use crossterm::ExecutableCommand;
+    use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
+
+    let _ = tick_tx.try_send(TickControl::PauseInput);
+
+    disable_raw_mode()?;
+    std::io::stdout().execute(LeaveAlternateScreen)?;
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::io::stdout().execute(crossterm::event::DisableBracketedPaste)?;
+        std::io::stdout().execute(crossterm::event::DisableMouseCapture)?;
+    }
+
+    Ok(())
+}
+
+/// Restore the terminal after an external process has finished.
+///
+/// Re-enables raw mode, enters the alternate screen, and resumes the event stream.
+fn restore_terminal(tick_tx: &Sender<TickControl>) -> Result<()> {
+    use crossterm::ExecutableCommand;
+    use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
+
+    enable_raw_mode()?;
+    std::io::stdout().execute(EnterAlternateScreen)?;
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::io::stdout().execute(crossterm::event::EnableBracketedPaste)?;
+        std::io::stdout().execute(crossterm::event::DisableMouseCapture)?;
+    }
+
+    // Resume polling stdin in the event loop. The event task will drain
+    // any stale terminal response sequences before delivering new events.
+    let _ = tick_tx.try_send(TickControl::ResumeInput);
+
+    Ok(())
+}
+
+/// Run `edit::edit_file` on a blocking thread, with the terminal suspended.
+///
+/// Suspends the terminal before the editor starts and restores it afterwards,
+/// even if the editor returns an error.
+async fn run_editor(path: &Path, tick_tx: &Sender<TickControl>) -> Result<()> {
+    suspend_terminal(tick_tx)?;
+
+    let path_buf = path.to_path_buf();
+    let result = tokio::task::spawn_blocking(move || edit::edit_file(&path_buf))
+        .await
+        .map_err(|e| AppError::SftpError(format!("Editor task failed: {e}")))?;
+
+    // Always restore, regardless of editor outcome.
+    restore_terminal(tick_tx)?;
+
+    result.map_err(|e| AppError::SftpError(format!("Editor failed: {e}")))?;
+    Ok(())
+}
+
 /// Open a local file in the user's preferred editor.
 ///
 /// Returns an error if the file is binary. Compares mtime before and after
 /// the editor exits to determine whether the file was changed.
-pub async fn edit_local_file(path: &str) -> Result<EditResult> {
+pub async fn edit_local_file(path: &str, tick_tx: &Sender<TickControl>) -> Result<EditResult> {
     let file_path = Path::new(path);
 
     // Record mtime before editing
@@ -67,9 +133,9 @@ pub async fn edit_local_file(path: &str) -> Result<EditResult> {
         .and_then(|m| m.modified())
         .unwrap_or(SystemTime::UNIX_EPOCH);
 
-    // Open in editor (blocking)
+    // Open in editor (blocking, on a dedicated thread)
     tracing::info!("Opening local file in editor: {}", file_path.display());
-    edit::edit_file(file_path).map_err(|e| AppError::SftpError(format!("Editor failed: {e}")))?;
+    run_editor(file_path, tick_tx).await?;
 
     // Compare mtime
     let mtime_after = std::fs::metadata(file_path)
@@ -85,10 +151,11 @@ pub async fn edit_local_file(path: &str) -> Result<EditResult> {
 
 /// Download a remote file to a temp file, open it in the editor, and upload
 /// back if modified.
-///
-/// This function is blocking (spawns editor) and should only be called when
-/// the TUI is suspended.
-pub async fn edit_remote_file(remote_path: &str, connection: &Connection) -> Result<EditResult> {
+pub async fn edit_remote_file(
+    remote_path: &str,
+    connection: &Connection,
+    tick_tx: &Sender<TickControl>,
+) -> Result<EditResult> {
     use crate::async_ssh_client::SshSession;
 
     // Determine a file extension to preserve syntax highlighting in editors
@@ -133,9 +200,8 @@ pub async fn edit_remote_file(remote_path: &str, connection: &Connection) -> Res
         .and_then(|m| m.modified())
         .unwrap_or(SystemTime::UNIX_EPOCH);
 
-    // Open in editor (blocking)
-    edit::edit_file(tmp_file.path())
-        .map_err(|e| AppError::SftpError(format!("Editor failed: {e}")))?;
+    // Open in editor (blocking, on a dedicated thread)
+    run_editor(tmp_file.path(), tick_tx).await?;
 
     // Compare mtime
     let mtime_after = std::fs::metadata(tmp_file.path())
