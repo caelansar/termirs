@@ -69,6 +69,7 @@ async fn main() -> Result<()> {
         loop {
             select! {
                 maybe_ev = event_stream.next(), if input_enabled => {
+                    tracing::info!("Receiving input event: {:?}", maybe_ev);
                     let ev = match maybe_ev {
                         None => break,
                         Some(Err(_)) => break,
@@ -88,8 +89,28 @@ async fn main() -> Result<()> {
                     match control {
                         TickControl::Start => tick_enabled = true,
                         TickControl::Stop => tick_enabled = false,
-                        TickControl::PauseInput => input_enabled = false,
-                        TickControl::ResumeInput => input_enabled = true,
+                        TickControl::PauseInput => {
+                            input_enabled = false;
+                            tracing::info!("Pausing input polling");
+                        },
+                        TickControl::ResumeInput => {
+                            // Drain any stale terminal response sequences (e.g.
+                            // OSC color replies) that accumulated in stdin while
+                            // input was paused. Without this, they would be
+                            // misinterpreted as user keystrokes.
+                            //
+                            // Uses sync poll/read which is safe here because
+                            // EventStream is not being polled (input_enabled is
+                            // false), so there is no concurrent access to the
+                            // internal event reader.
+                            while crossterm::event::poll(std::time::Duration::from_millis(10))
+                                .unwrap_or(false)
+                            {
+                                let _ = crossterm::event::read();
+                            }
+                            input_enabled = true;
+                            tracing::info!("Resuming input polling (drained stale events)");
+                        },
                     }
                 }
             }

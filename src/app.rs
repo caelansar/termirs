@@ -410,71 +410,16 @@ impl<B: Backend + Write> App<B> {
         Ok(())
     }
 
-    /// Suspend the TUI so an external process (e.g. editor) can use the terminal.
+    /// Reset app-level state after the terminal has been restored from an
+    /// external process (e.g. editor). Clears the ratatui buffer so stale
+    /// content from the editor doesn't linger and schedules a full redraw.
     ///
-    /// Pauses the crossterm event stream, disables raw mode, and leaves the
-    /// alternate screen. Call [`restore_tui`] afterwards to bring the TUI back.
-    pub fn suspend_tui(&mut self) -> Result<()> {
-        use crossterm::ExecutableCommand;
-        use crossterm::event::DisableMouseCapture;
-        use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
-
-        // Stop the event loop from polling stdin so the external process
-        // gets exclusive access to terminal input.
-        if let Some(tx) = &self.tick_control_tx {
-            let _ = tx.try_send(crate::events::TickControl::PauseInput);
-        }
-
-        disable_raw_mode()?;
-        self.terminal.backend_mut().execute(LeaveAlternateScreen)?;
-
-        #[cfg(not(target_os = "windows"))]
-        {
-            self.terminal
-                .backend_mut()
-                .execute(crossterm::event::DisableBracketedPaste)?;
-            self.terminal.backend_mut().execute(DisableMouseCapture)?;
-        }
-
-        Ok(())
-    }
-
-    /// Restore the TUI after an external process has finished.
-    ///
-    /// Re-enables raw mode, enters the alternate screen, and resumes the
-    /// crossterm event stream.
-    pub fn restore_tui(&mut self) -> Result<()> {
-        use crossterm::ExecutableCommand;
-        use crossterm::event::DisableMouseCapture;
-        use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
-
-        enable_raw_mode()?;
-        self.terminal.backend_mut().execute(EnterAlternateScreen)?;
-
-        #[cfg(not(target_os = "windows"))]
-        {
-            self.terminal
-                .backend_mut()
-                .execute(crossterm::event::EnableBracketedPaste)?;
-            self.terminal.backend_mut().execute(DisableMouseCapture)?;
-        }
-
+    /// Terminal-level suspend/restore (raw mode, alternate screen, event
+    /// stream) is handled by [`crate::file_edit`].
+    pub fn post_editor_cleanup(&mut self) -> Result<()> {
         self.mouse_capture_enabled = false;
         self.terminal.clear()?;
         self.mark_redraw();
-
-        // Drain any terminal response sequences (e.g. OSC color replies) that
-        // the terminal wrote to stdin during restore. Without this, crossterm
-        // would misinterpret them as user keystrokes.
-        while crossterm::event::poll(std::time::Duration::from_millis(10))? {
-            let _ = crossterm::event::read();
-        }
-
-        // Resume polling stdin in the event loop.
-        if let Some(tx) = &self.tick_control_tx {
-            let _ = tx.try_send(crate::events::TickControl::ResumeInput);
-        }
-
         Ok(())
     }
 
@@ -484,6 +429,12 @@ impl<B: Backend + Write> App<B> {
 
     pub fn get_event_sender(&self) -> Option<tokio::sync::mpsc::Sender<AppEvent>> {
         self.event_tx.clone()
+    }
+
+    pub fn get_tick_control_sender(
+        &self,
+    ) -> Option<tokio::sync::mpsc::Sender<crate::events::TickControl>> {
+        self.tick_control_tx.clone()
     }
 
     pub fn set_tick_control_sender(
