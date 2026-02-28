@@ -1791,6 +1791,8 @@ impl<B: Backend + Write> App<B> {
                     }
                 }
                 AppEvent::TerminalUpdate => {
+                    // batch most SSH output bursts
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
                     // Terminal has received data from SSH - mark redraw to update display
                     // Coalesce rapid terminal updates to prevent rendering lag
                     // during high SSH data throughput. Drain all pending
