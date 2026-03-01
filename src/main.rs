@@ -1,8 +1,9 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use clap::Parser;
 use crossterm::event;
-use futures::StreamExt;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use tokio::{select, sync::mpsc, time};
@@ -60,57 +61,73 @@ async fn main() -> Result<()> {
     let mut ticker = time::interval(Duration::from_millis(50));
     let tx_tick = tx.clone();
 
-    // asynchronous: keyboard/terminal event listening
-    let mut event_stream = event::EventStream::new();
-    tokio::spawn(async move {
-        let mut tick_enabled = false; // Start with ticker disabled
-        let mut input_enabled = true; // Start with input polling enabled
+    // Shared flag: the blocking poll thread only reads events when true.
+    let input_enabled = Arc::new(AtomicBool::new(true));
+    let input_enabled_poller = input_enabled.clone();
 
+    // Shared flag: set to false on shutdown so the blocking thread exits.
+    let running = Arc::new(AtomicBool::new(true));
+    let running_poller = running.clone();
+
+    // Sync event polling on a dedicated blocking thread.
+    // Uses crossterm's sync poll/read API directly, avoiding EventStream's
+    // background thread and its global mutex deadlock.
+    let tx_input = tx.clone();
+    tokio::task::spawn_blocking(move || {
         loop {
-            select! {
-                maybe_ev = event_stream.next(), if input_enabled => {
-                    tracing::info!("Receiving input event: {:?}", maybe_ev);
-                    let ev = match maybe_ev {
-                        None => break,
-                        Some(Err(_)) => break,
-                        Some(Ok(e)) => e,
-                    };
-                    if tx.send(AppEvent::Input(ev)).await.is_err() {
+            if !running_poller.load(Ordering::SeqCst) {
+                break;
+            }
+            if !input_enabled_poller.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            match event::poll(Duration::from_millis(10)) {
+                Ok(true) => match event::read() {
+                    Ok(ev) => {
+                        if tx_input.blocking_send(AppEvent::Input(ev)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Error reading event: {:?}", e);
                         break;
                     }
+                },
+                Ok(false) => {} // no event within 10ms
+                Err(e) => {
+                    tracing::error!("Error polling event: {:?}", e);
+                    break;
                 }
+            }
+        }
+    });
+
+    // Tick and control handling
+    tokio::spawn(async move {
+        let mut tick_enabled = false;
+        loop {
+            select! {
                 _ = ticker.tick(), if tick_enabled => {
-                    // Only fires when tick_enabled is true
                     if tx_tick.send(AppEvent::Tick).await.is_err() {
                         break;
                     }
                 }
-                Some(control) = tick_control_rx.recv() => {
-                    match control {
-                        TickControl::Start => tick_enabled = true,
-                        TickControl::Stop => tick_enabled = false,
-                        TickControl::PauseInput => {
-                            input_enabled = false;
-                            tracing::info!("Pausing input polling");
+                result = tick_control_rx.recv() => {
+                    match result {
+                        Some(control) => match control {
+                            TickControl::Start => tick_enabled = true,
+                            TickControl::Stop => tick_enabled = false,
+                            TickControl::PauseInput => {
+                                input_enabled.store(false, Ordering::SeqCst);
+                                tracing::info!("Pausing input polling");
+                            },
+                            TickControl::ResumeInput => {
+                                input_enabled.store(true, Ordering::SeqCst);
+                                tracing::info!("Resuming input polling");
+                            },
                         },
-                        TickControl::ResumeInput => {
-                            // Drain any stale terminal response sequences (e.g.
-                            // OSC color replies) that accumulated in stdin while
-                            // input was paused. Without this, they would be
-                            // misinterpreted as user keystrokes.
-                            //
-                            // Uses sync poll/read which is safe here because
-                            // EventStream is not being polled (input_enabled is
-                            // false), so there is no concurrent access to the
-                            // internal event reader.
-                            while crossterm::event::poll(std::time::Duration::from_millis(10))
-                                .unwrap_or(false)
-                            {
-                                let _ = crossterm::event::read();
-                            }
-                            input_enabled = true;
-                            tracing::info!("Resuming input polling (drained stale events)");
-                        },
+                        None => break, // channel closed, shut down
                     }
                 }
             }
@@ -123,6 +140,9 @@ async fn main() -> Result<()> {
         .run(&mut rx)
         .await
         .inspect_err(|e| tracing::error!("Error in main event loop: {}", e));
+
+    // Signal the blocking poll thread to exit.
+    running.store(false, Ordering::SeqCst);
 
     // app drop restores terminal
     tracing::info!("Application shutting down");

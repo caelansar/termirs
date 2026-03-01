@@ -65,16 +65,12 @@ fn suspend_terminal(tick_tx: &Sender<TickControl>) -> Result<()> {
     use crossterm::ExecutableCommand;
     use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 
-    let _ = tick_tx.try_send(TickControl::PauseInput);
+    tick_tx
+        .try_send(TickControl::PauseInput)
+        .map_err(|e| AppError::SftpError(format!("Failed to send pause input event: {e}")))?;
 
     disable_raw_mode()?;
     std::io::stdout().execute(LeaveAlternateScreen)?;
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        std::io::stdout().execute(crossterm::event::DisableBracketedPaste)?;
-        std::io::stdout().execute(crossterm::event::DisableMouseCapture)?;
-    }
 
     Ok(())
 }
@@ -86,18 +82,14 @@ fn restore_terminal(tick_tx: &Sender<TickControl>) -> Result<()> {
     use crossterm::ExecutableCommand;
     use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
 
-    enable_raw_mode()?;
     std::io::stdout().execute(EnterAlternateScreen)?;
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        std::io::stdout().execute(crossterm::event::EnableBracketedPaste)?;
-        std::io::stdout().execute(crossterm::event::DisableMouseCapture)?;
-    }
+    enable_raw_mode()?;
 
     // Resume polling stdin in the event loop. The event task will drain
     // any stale terminal response sequences before delivering new events.
-    let _ = tick_tx.try_send(TickControl::ResumeInput);
+    tick_tx
+        .try_send(TickControl::ResumeInput)
+        .map_err(|e| AppError::SftpError(format!("Failed to send resume input event: {e}")))?;
 
     Ok(())
 }
@@ -117,7 +109,10 @@ async fn run_editor(path: &Path, tick_tx: &Sender<TickControl>) -> Result<()> {
     // Always restore, regardless of editor outcome.
     restore_terminal(tick_tx)?;
 
-    result.map_err(|e| AppError::SftpError(format!("Editor failed: {e}")))?;
+    result.map_err(|e| {
+        tracing::error!("Editor failed: {e}");
+        AppError::SftpError(format!("Editor failed: {e}"))
+    })?;
     Ok(())
 }
 
