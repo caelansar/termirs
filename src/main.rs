@@ -75,11 +75,11 @@ async fn main() -> Result<()> {
     let tx_input = tx.clone();
     tokio::task::spawn_blocking(move || {
         loop {
-            if !running_poller.load(Ordering::SeqCst) {
+            if !running_poller.load(Ordering::Relaxed) {
                 break;
             }
-            if !input_enabled_poller.load(Ordering::SeqCst) {
-                std::thread::sleep(Duration::from_millis(10));
+            if !input_enabled_poller.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(25));
                 continue;
             }
             match event::poll(Duration::from_millis(10)) {
@@ -119,11 +119,11 @@ async fn main() -> Result<()> {
                             TickControl::Start => tick_enabled = true,
                             TickControl::Stop => tick_enabled = false,
                             TickControl::PauseInput => {
-                                input_enabled.store(false, Ordering::SeqCst);
+                                input_enabled.store(false, Ordering::Relaxed);
                                 tracing::info!("Pausing input polling");
                             },
                             TickControl::ResumeInput => {
-                                input_enabled.store(true, Ordering::SeqCst);
+                                input_enabled.store(true, Ordering::Relaxed);
                                 tracing::info!("Resuming input polling");
                             },
                         },
@@ -142,7 +142,7 @@ async fn main() -> Result<()> {
         .inspect_err(|e| tracing::error!("Error in main event loop: {}", e));
 
     // Signal the blocking poll thread to exit.
-    running.store(false, Ordering::SeqCst);
+    running.store(false, Ordering::Relaxed);
 
     // app drop restores terminal
     tracing::info!("Application shutting down");
