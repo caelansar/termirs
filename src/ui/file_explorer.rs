@@ -235,8 +235,6 @@ fn draw_pane<F: ratatui_explorer::FileSystem>(
 
 /// Draw the footer showing available keybindings
 fn draw_footer(f: &mut Frame, area: Rect, copy_buffer: &[CopyOperation], search: &SearchState) {
-    use ratatui::layout::{Alignment, Constraint, Direction, Layout};
-
     if search.is_on() {
         // Search mode: show search input with placeholder
         let mut spans = vec![Span::styled(
@@ -276,16 +274,10 @@ fn draw_footer(f: &mut Frame, area: Rect, copy_buffer: &[CopyOperation], search:
         .style(Style::default().bg(Color::Reset));
         f.render_widget(search_line, area);
     } else {
-        // Normal mode: show hints
-        let footer_layout = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(area);
-
         let hint_text = if !copy_buffer.is_empty() {
             let dir_count = copy_buffer.iter().filter(|op| op.is_dir).count();
             let file_count = copy_buffer.len() - dir_count;
-            let count_label = match (file_count, dir_count) {
+            let count_label: String = match (file_count, dir_count) {
                 (1, 0) => "1 file".to_string(),
                 (f, 0) => format!("{f} files"),
                 (0, 1) => "1 dir".to_string(),
@@ -298,24 +290,7 @@ fn draw_footer(f: &mut Frame, area: Rect, copy_buffer: &[CopyOperation], search:
                 .to_string()
         };
 
-        let left = Paragraph::new(Line::from(Span::styled(
-            hint_text,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::DIM),
-        )))
-        .alignment(Alignment::Left);
-
-        let right = Paragraph::new(Line::from(Span::styled(
-            format!("TermiRs v{}", env!("CARGO_PKG_VERSION")),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::DIM),
-        )))
-        .alignment(Alignment::Right);
-
-        f.render_widget(left, footer_layout[0]);
-        f.render_widget(right, footer_layout[1]);
+        super::render_normal_footer(f, area, &hint_text);
     }
 }
 
