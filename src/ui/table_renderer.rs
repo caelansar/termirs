@@ -6,7 +6,7 @@ use super::table::{TableListComponent, TableListState};
 use crate::SearchState;
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
+    layout::{Constraint, Direction, Layout, Margin, Rect},
     prelude::Stylize,
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -236,35 +236,6 @@ fn render_footer(frame: &mut Frame<'_>, footer_area: Rect, search: &SearchState,
         frame.render_widget(search_line, footer_area);
     } else {
         // Normal mode: show hints + version
-        render_normal_footer(frame, footer_area, hints);
+        super::render_normal_footer(frame, footer_area, hints);
     }
-}
-
-/// Render normal mode footer with hints and version.
-///
-/// Layout: 80% hints (left-aligned) + 20% version (right-aligned)
-fn render_normal_footer(frame: &mut Frame<'_>, footer_area: Rect, hints: &str) {
-    let footer_layout = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])
-        .split(footer_area);
-
-    let left = Paragraph::new(Line::from(Span::styled(
-        hints,
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::DIM),
-    )))
-    .alignment(Alignment::Left);
-
-    let right = Paragraph::new(Line::from(Span::styled(
-        format!("TermiRs v{}", env!("CARGO_PKG_VERSION")),
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::DIM),
-    )))
-    .alignment(Alignment::Right);
-
-    frame.render_widget(left, footer_layout[0]);
-    frame.render_widget(right, footer_layout[1]);
 }

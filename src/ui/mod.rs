@@ -16,6 +16,13 @@ pub use popup::{
 pub use port_forwarding::{
     PortForwardingForm, draw_port_forwarding_form_popup, draw_port_forwarding_list,
 };
+use ratatui::{
+    Frame,
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::Paragraph,
+};
 pub use scp::{ScpMode, draw_scp_progress_popup};
 pub use terminal::{TerminalSelection, TerminalState, draw_terminal};
 
@@ -34,4 +41,33 @@ pub fn rect_with_top_margin(rect: ratatui::layout::Rect, top_margin: u16) -> rat
         width: rect.width,
         height: rect.height.saturating_sub(top_margin),
     }
+}
+
+/// Render normal mode footer with hints and version.
+///
+/// Layout: 80% hints (left-aligned) + 20% version (right-aligned)
+pub fn render_normal_footer(frame: &mut Frame<'_>, footer_area: Rect, hints: &str) {
+    let footer_layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])
+        .split(footer_area);
+
+    let left = Paragraph::new(Line::from(Span::styled(
+        hints,
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::DIM),
+    )))
+    .alignment(Alignment::Left);
+
+    let right = Paragraph::new(Line::from(Span::styled(
+        format!("TermiRs v{}", env!("CARGO_PKG_VERSION")),
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::DIM),
+    )))
+    .alignment(Alignment::Right);
+
+    frame.render_widget(left, footer_layout[0]);
+    frame.render_widget(right, footer_layout[1]);
 }
