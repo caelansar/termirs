@@ -29,6 +29,8 @@ Type "cae"
 Sleep 500ms
 Enter
 
+Sleep 200ms
+
 Type "ls"
 Enter
 Sleep 1s
