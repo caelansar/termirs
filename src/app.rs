@@ -315,6 +315,7 @@ pub struct App<B: Backend + Write> {
     selection_auto_scroll: Option<SelectionAutoScroll>,
     last_click: Option<LastMouseClick>,
     selection_force_nonempty: bool,
+    clipboard: Option<Clipboard>,
 }
 
 impl<B: Backend + Write> Drop for App<B> {
@@ -357,6 +358,7 @@ impl<B: Backend + Write> App<B> {
             selection_auto_scroll: None,
             last_click: None,
             selection_force_nonempty: false,
+            clipboard: Clipboard::new().ok(),
         })
     }
 
@@ -645,16 +647,24 @@ impl<B: Backend + Write> App<B> {
         if text.is_empty() {
             return;
         }
-        match Clipboard::new() {
-            Ok(mut clipboard) => {
+        match &mut self.clipboard {
+            Some(clipboard) => {
                 if let Err(err) = clipboard.set_text(text.trim_end()) {
                     self.set_error(AppError::ClipboardError(err.to_string()));
                 }
             }
-            Err(err) => {
-                self.set_error(AppError::ClipboardError(err.to_string()));
+            None => {
+                self.set_error(AppError::ClipboardError(
+                    "Clipboard not available".to_string(),
+                ));
             }
         }
+    }
+
+    pub fn get_text_from_clipboard(&mut self) -> Option<String> {
+        self.clipboard
+            .as_mut()
+            .and_then(|clipboard| clipboard.get_text().ok())
     }
 
     pub fn viewport_cell_at(&self, column: u16, row: u16) -> Option<TerminalPoint> {

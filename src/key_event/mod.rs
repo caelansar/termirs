@@ -188,8 +188,7 @@ pub async fn handle_mouse_event<B: Backend + Write>(app: &mut App<B>, event: Mou
 
     match event.kind {
         MouseEventKind::Down(MouseButton::Middle) => {
-            let text = arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text());
-            if let Ok(text) = text {
+            if let Some(text) = app.get_text_from_clipboard() {
                 handle_paste_event(app, &text).await;
             }
         }
