@@ -226,27 +226,25 @@ pub fn collect_selection_text(
         start_col = start_col.min(width);
         end_col = end_col.min(width);
 
-        if end_col > start_col {
-            // Calculate the absolute line index based on view_row and scrollback
-            let start_row = total_lines
-                .saturating_sub(phys_rows)
-                .saturating_sub(scrollback_offset);
-            let abs_row = start_row + view_row as usize;
+        // Calculate the absolute line index based on view_row and scrollback
+        let start_row = total_lines
+            .saturating_sub(phys_rows)
+            .saturating_sub(scrollback_offset);
+        let abs_row = start_row + view_row as usize;
 
-            if abs_row < all_lines.len() {
-                let segment =
-                    extract_line_segment_wez(&all_lines[abs_row], start_col, end_col, width);
-                result.push_str(&segment);
-            }
+        if end_col > start_col && abs_row < all_lines.len() {
+            let segment = extract_line_segment_wez(&all_lines[abs_row], start_col, end_col, width);
+            result.push_str(&segment);
         }
 
         if current_rev == bottom.rev_row {
             break;
         }
 
-        // For wezterm, we can check if line is wrapped via line.last_cell_was_wrapped()
-        // For now, we'll add newline unconditionally (simplification)
-        result.push('\n');
+        // Only add newline if the line was not soft-wrapped
+        if abs_row < all_lines.len() && !all_lines[abs_row].last_cell_was_wrapped() {
+            result.push('\n');
+        }
 
         if current_rev == i64::MIN {
             break;
