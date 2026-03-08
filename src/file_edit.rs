@@ -98,7 +98,11 @@ fn restore_terminal(tick_tx: &Sender<TickControl>) -> Result<()> {
 ///
 /// Suspends the terminal before the editor starts and restores it afterwards,
 /// even if the editor returns an error.
-async fn run_editor(path: &Path, tick_tx: &Sender<TickControl>) -> Result<()> {
+async fn run_editor(path: &Path, tick_tx: &Sender<TickControl>) -> Result<EditResult> {
+    let mtime_before = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+
     suspend_terminal(tick_tx)?;
 
     let path_buf = path.to_path_buf();
@@ -113,27 +117,8 @@ async fn run_editor(path: &Path, tick_tx: &Sender<TickControl>) -> Result<()> {
         tracing::error!("Editor failed: {e}");
         AppError::SftpError(format!("Editor failed: {e}"))
     })?;
-    Ok(())
-}
 
-/// Open a local file in the user's preferred editor.
-///
-/// Returns an error if the file is binary. Compares mtime before and after
-/// the editor exits to determine whether the file was changed.
-pub async fn edit_local_file(path: &str, tick_tx: &Sender<TickControl>) -> Result<EditResult> {
-    let file_path = Path::new(path);
-
-    // Record mtime before editing
-    let mtime_before = std::fs::metadata(file_path)
-        .and_then(|m| m.modified())
-        .unwrap_or(SystemTime::UNIX_EPOCH);
-
-    // Open in editor (blocking, on a dedicated thread)
-    tracing::info!("Opening local file in editor: {}", file_path.display());
-    run_editor(file_path, tick_tx).await?;
-
-    // Compare mtime
-    let mtime_after = std::fs::metadata(file_path)
+    let mtime_after = std::fs::metadata(path)
         .and_then(|m| m.modified())
         .unwrap_or(SystemTime::UNIX_EPOCH);
 
@@ -142,6 +127,15 @@ pub async fn edit_local_file(path: &str, tick_tx: &Sender<TickControl>) -> Resul
     } else {
         Ok(EditResult::Unchanged)
     }
+}
+
+/// Open a local file in the user's preferred editor.
+///
+/// Returns an error if the file is binary. Compares mtime before and after
+/// the editor exits to determine whether the file was changed.
+pub async fn edit_local_file(path: &str, tick_tx: &Sender<TickControl>) -> Result<EditResult> {
+    tracing::debug!("Opening local file in editor: {}", path);
+    run_editor(Path::new(path), tick_tx).await
 }
 
 /// Download a remote file to a temp file, open it in the editor, and upload
@@ -190,33 +184,21 @@ pub async fn edit_remote_file(
     )
     .await?;
 
-    // Record mtime before editing
-    let mtime_before = std::fs::metadata(tmp_file.path())
-        .and_then(|m| m.modified())
-        .unwrap_or(SystemTime::UNIX_EPOCH);
+    tracing::debug!("Opening remote file in editor: {}", tmp_path);
+    let edit_result = run_editor(tmp_file.path(), tick_tx).await?;
 
-    // Open in editor (blocking, on a dedicated thread)
-    run_editor(tmp_file.path(), tick_tx).await?;
-
-    // Compare mtime
-    let mtime_after = std::fs::metadata(tmp_file.path())
-        .and_then(|m| m.modified())
-        .unwrap_or(SystemTime::UNIX_EPOCH);
-
-    if mtime_after == mtime_before {
-        return Ok(EditResult::Unchanged);
+    if matches!(edit_result, EditResult::Modified) {
+        // Upload modified file back to remote
+        SshSession::sftp_send_file(
+            Some(channel_send),
+            connection,
+            &tmp_path,
+            remote_path,
+            0,
+            None,
+        )
+        .await?;
     }
 
-    // Upload modified file back to remote
-    SshSession::sftp_send_file(
-        Some(channel_send),
-        connection,
-        &tmp_path,
-        remote_path,
-        0,
-        None,
-    )
-    .await?;
-
-    Ok(EditResult::Modified)
+    Ok(edit_result)
 }
