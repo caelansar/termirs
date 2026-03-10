@@ -1558,6 +1558,10 @@ impl<B: Backend + Write> App<B> {
                 }
             }
 
+            if terminal_size_changed {
+                self.clear_selection();
+            }
+
             // Only render when needed
             // Terminal content updates now trigger via TerminalUpdate event (event-driven)
             if self.should_redraw() || terminal_size_changed {

@@ -502,7 +502,8 @@ fn classify_char(ch: char) -> CharKind {
     // (punctuation/symbols) forms its own cluster.
     if ch.is_whitespace() {
         CharKind::Whitespace
-    } else if ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '.' {
+    } else if ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '.' || ch == '/' || ch == '+'
+    {
         CharKind::Word
     } else {
         CharKind::Other
