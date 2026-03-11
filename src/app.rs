@@ -1821,6 +1821,8 @@ impl<B: Backend + Write> App<B> {
                             Err(_) => break,
                         }
                     }
+
+                    self.clear_selection();
                     self.mark_redraw();
                 }
                 AppEvent::SftpProgress(result) => {
