@@ -3,6 +3,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use futures::future::join_all;
 use ratatui::backend::Backend;
+use ratatui_async_explorer::Input;
 use std::io::Write;
 use tracing::{debug, error, info};
 
@@ -36,13 +37,11 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                 let result = match delete_confirmation.pane {
                     ActivePane::Left => {
                         info!("Deleting file from left pane");
-                        left_explorer.handle(ratatui_explorer::Input::Delete).await
+                        left_explorer.handle(Input::Delete).await
                     }
                     ActivePane::Right => {
                         info!("Deleting file from right pane");
-                        remote_explorer
-                            .handle(ratatui_explorer::Input::Delete)
-                            .await
+                        remote_explorer.handle(Input::Delete).await
                     }
                 };
 
@@ -342,8 +341,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
             // Navigation: Move selection up
             KeyCode::Char('k') | KeyCode::Up => {
                 let result = match active_pane {
-                    ActivePane::Left => left_explorer.handle(ratatui_explorer::Input::Up).await,
-                    ActivePane::Right => remote_explorer.handle(ratatui_explorer::Input::Up).await,
+                    ActivePane::Left => left_explorer.handle(Input::Up).await,
+                    ActivePane::Right => remote_explorer.handle(Input::Up).await,
                 };
                 if let Err(e) = result {
                     app.error = Some(crate::error::AppError::SftpError(format!(
@@ -356,9 +355,15 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
             // Navigation: Move selection down
             KeyCode::Char('j') | KeyCode::Down => {
                 let result = match active_pane {
-                    ActivePane::Left => left_explorer.handle(ratatui_explorer::Input::Down).await,
+                    ActivePane::Left => {
+                        left_explorer
+                            .handle(ratatui_async_explorer::Input::Down)
+                            .await
+                    }
                     ActivePane::Right => {
-                        remote_explorer.handle(ratatui_explorer::Input::Down).await
+                        remote_explorer
+                            .handle(ratatui_async_explorer::Input::Down)
+                            .await
                     }
                 };
                 if let Err(e) = result {
@@ -372,10 +377,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
             // Navigation: Enter directory
             KeyCode::Right | KeyCode::Enter | KeyCode::Char('l') => {
                 let result = match active_pane {
-                    ActivePane::Left => left_explorer.handle(ratatui_explorer::Input::Right).await,
-                    ActivePane::Right => {
-                        remote_explorer.handle(ratatui_explorer::Input::Right).await
-                    }
+                    ActivePane::Left => left_explorer.handle(Input::Right).await,
+                    ActivePane::Right => remote_explorer.handle(Input::Right).await,
                 };
                 if let Err(e) = result {
                     app.error = Some(crate::error::AppError::SftpError(format!(
@@ -392,10 +395,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
             // Navigation: Go to parent directory
             KeyCode::Left | KeyCode::Backspace | KeyCode::Char('h') => {
                 let result = match active_pane {
-                    ActivePane::Left => left_explorer.handle(ratatui_explorer::Input::Left).await,
-                    ActivePane::Right => {
-                        remote_explorer.handle(ratatui_explorer::Input::Left).await
-                    }
+                    ActivePane::Left => left_explorer.handle(Input::Left).await,
+                    ActivePane::Right => remote_explorer.handle(Input::Left).await,
                 };
                 if let Err(e) = result {
                     app.error = Some(crate::error::AppError::SftpError(format!(
@@ -1065,10 +1066,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
             // Home/End for quick navigation
             KeyCode::Home => {
                 let result = match active_pane {
-                    ActivePane::Left => left_explorer.handle(ratatui_explorer::Input::Home).await,
-                    ActivePane::Right => {
-                        remote_explorer.handle(ratatui_explorer::Input::Home).await
-                    }
+                    ActivePane::Left => left_explorer.handle(Input::Home).await,
+                    ActivePane::Right => remote_explorer.handle(Input::Home).await,
                 };
                 if let Err(e) = result {
                     app.error = Some(crate::error::AppError::SftpError(format!(
@@ -1080,8 +1079,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
 
             KeyCode::End => {
                 let result = match active_pane {
-                    ActivePane::Left => left_explorer.handle(ratatui_explorer::Input::End).await,
-                    ActivePane::Right => remote_explorer.handle(ratatui_explorer::Input::End).await,
+                    ActivePane::Left => left_explorer.handle(Input::End).await,
+                    ActivePane::Right => remote_explorer.handle(Input::End).await,
                 };
                 if let Err(e) = result {
                     app.error = Some(crate::error::AppError::SftpError(format!(
@@ -1094,12 +1093,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
             // Page up/down for faster scrolling
             KeyCode::PageUp => {
                 let result = match active_pane {
-                    ActivePane::Left => left_explorer.handle(ratatui_explorer::Input::PageUp).await,
-                    ActivePane::Right => {
-                        remote_explorer
-                            .handle(ratatui_explorer::Input::PageUp)
-                            .await
-                    }
+                    ActivePane::Left => left_explorer.handle(Input::PageUp).await,
+                    ActivePane::Right => remote_explorer.handle(Input::PageUp).await,
                 };
                 if let Err(e) = result {
                     app.error = Some(crate::error::AppError::SftpError(format!(
@@ -1111,16 +1106,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
 
             KeyCode::PageDown => {
                 let result = match active_pane {
-                    ActivePane::Left => {
-                        left_explorer
-                            .handle(ratatui_explorer::Input::PageDown)
-                            .await
-                    }
-                    ActivePane::Right => {
-                        remote_explorer
-                            .handle(ratatui_explorer::Input::PageDown)
-                            .await
-                    }
+                    ActivePane::Left => left_explorer.handle(Input::PageDown).await,
+                    ActivePane::Right => remote_explorer.handle(Input::PageDown).await,
                 };
                 if let Err(e) = result {
                     app.error = Some(crate::error::AppError::SftpError(format!(

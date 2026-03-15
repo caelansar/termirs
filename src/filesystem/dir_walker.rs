@@ -7,7 +7,7 @@
 use std::collections::VecDeque;
 use std::io::{Error, Result};
 
-use ratatui_explorer::FileSystem;
+use ratatui_async_explorer::FileSystem;
 
 use super::SftpFileSystem;
 

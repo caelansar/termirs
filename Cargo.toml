@@ -29,7 +29,7 @@ futures = "0.3"
 anyhow = { version = "1", optional = true }
 tui-textarea = "0.7"
 bytes = "1.10.1"
-ratatui-explorer = { git = "https://github.com/caelansar/ratatui-explorer.git" }
+ratatui-async-explorer = "0.3"
 ssh2-config = { git = "https://github.com/caelansar/ssh2-config.git", branch = "develop" }
 arboard = "3"
 clap = { version = "4.5", features = ["derive"] }

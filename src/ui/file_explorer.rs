@@ -22,7 +22,7 @@ pub fn draw_file_explorer(
     connection_name: &str,
     left_pane: &FileExplorerPane,
     left_explorer: &mut LeftExplorer,
-    remote_explorer: &mut ratatui_explorer::FileExplorer<SftpFileSystem>,
+    remote_explorer: &mut ratatui_async_explorer::FileExplorer<SftpFileSystem>,
     active_pane: &ActivePane,
     copy_buffer: &[CopyOperation],
     search: &SearchState,
@@ -142,11 +142,11 @@ fn draw_header(f: &mut Frame, area: Rect, connection_name: &str, copy_buffer: &[
 }
 
 /// Draw a single pane (local or remote)
-fn draw_pane<F: ratatui_explorer::FileSystem>(
+fn draw_pane<F: ratatui_async_explorer::FileSystem>(
     f: &mut Frame,
     area: Rect,
     title: &str,
-    explorer: &mut ratatui_explorer::FileExplorer<F>,
+    explorer: &mut ratatui_async_explorer::FileExplorer<F>,
     is_active: bool,
     copy_buffer: &[CopyOperation],
     use_icons: bool,
@@ -186,7 +186,7 @@ fn draw_pane<F: ratatui_explorer::FileSystem>(
 
     if is_active {
         explorer.set_theme(
-            ratatui_explorer::Theme::new()
+            ratatui_async_explorer::Theme::new()
                 .with_item_style(Style::default().fg(Color::White))
                 .with_dir_style(Style::default().fg(Color::LightBlue))
                 .with_highlight_dir_style(Style::default().fg(Color::LightBlue).bg(Color::Cyan))
@@ -196,7 +196,7 @@ fn draw_pane<F: ratatui_explorer::FileSystem>(
     } else {
         // Don't highlight the items and directories
         explorer.set_theme(
-            ratatui_explorer::Theme::new()
+            ratatui_async_explorer::Theme::new()
                 .with_item_style(Style::default().fg(Color::White))
                 .with_dir_style(Style::default().fg(Color::LightBlue))
                 .with_highlight_dir_style(Style::default().fg(Color::LightBlue))

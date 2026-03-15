@@ -51,13 +51,13 @@ pub enum ActivePane {
 
 /// Wrapper enum for left pane explorer (can be Local or Remote)
 pub enum LeftExplorer {
-    Local(ratatui_explorer::FileExplorer<ratatui_explorer::LocalFileSystem>),
-    Remote(ratatui_explorer::FileExplorer<crate::filesystem::SftpFileSystem>),
+    Local(ratatui_async_explorer::FileExplorer<ratatui_async_explorer::LocalFileSystem>),
+    Remote(ratatui_async_explorer::FileExplorer<crate::filesystem::SftpFileSystem>),
 }
 
 impl LeftExplorer {
     /// Get the current file/directory
-    pub fn current(&self) -> &ratatui_explorer::File {
+    pub fn current(&self) -> &ratatui_async_explorer::File {
         match self {
             LeftExplorer::Local(explorer) => explorer.current(),
             LeftExplorer::Remote(explorer) => explorer.current(),
@@ -81,7 +81,7 @@ impl LeftExplorer {
     }
 
     /// Handle input
-    pub async fn handle(&mut self, input: ratatui_explorer::Input) -> std::io::Result<()> {
+    pub async fn handle(&mut self, input: ratatui_async_explorer::Input) -> std::io::Result<()> {
         match self {
             LeftExplorer::Local(explorer) => explorer.handle(input).await,
             LeftExplorer::Remote(explorer) => explorer.handle(input).await,
@@ -97,7 +97,7 @@ impl LeftExplorer {
     }
 
     /// Get all files in the current directory
-    pub fn files(&self) -> Vec<&ratatui_explorer::File> {
+    pub fn files(&self) -> &[ratatui_async_explorer::File] {
         match self {
             LeftExplorer::Local(explorer) => explorer.files(),
             LeftExplorer::Remote(explorer) => explorer.files(),
@@ -184,7 +184,7 @@ pub enum ScpReturnMode {
             Arc<tokio::sync::Mutex<russh::client::Handle<crate::async_ssh_client::SshClient>>>,
         >,
 
-        remote_explorer: ratatui_explorer::FileExplorer<crate::filesystem::SftpFileSystem>,
+        remote_explorer: ratatui_async_explorer::FileExplorer<crate::filesystem::SftpFileSystem>,
         sftp_session: Arc<russh_sftp::client::SftpSession>,
         ssh_connection: Connection,
         channel: Option<russh::Channel<russh::client::Msg>>,
@@ -263,7 +263,7 @@ pub enum AppMode {
         >,
 
         // Right pane - always Remote SSH (original connection from entry)
-        remote_explorer: ratatui_explorer::FileExplorer<crate::filesystem::SftpFileSystem>,
+        remote_explorer: ratatui_async_explorer::FileExplorer<crate::filesystem::SftpFileSystem>,
         sftp_session: Arc<russh_sftp::client::SftpSession>,
         ssh_connection: Connection,
         channel: Option<russh::Channel<russh::client::Msg>>,
@@ -868,8 +868,8 @@ impl<B: Backend + Write> App<B> {
             .or_else(|| dirs::home_dir().map(|p| p.to_string_lossy().to_string()))
             .unwrap_or_else(|| "/tmp".to_string());
 
-        let local_explorer = ratatui_explorer::FileExplorer::with_fs(
-            Arc::new(ratatui_explorer::LocalFileSystem),
+        let local_explorer = ratatui_async_explorer::FileExplorer::with_fs(
+            Arc::new(ratatui_async_explorer::LocalFileSystem),
             local_start_dir.clone(),
         )
         .await
@@ -886,7 +886,7 @@ impl<B: Backend + Write> App<B> {
         })?;
 
         let sftp_fs = crate::filesystem::SftpFileSystem::new(sftp_session.clone());
-        let remote_explorer = ratatui_explorer::FileExplorer::with_fs(
+        let remote_explorer = ratatui_async_explorer::FileExplorer::with_fs(
             Arc::new(sftp_fs),
             remote_home_canonical.clone(),
         )
@@ -948,8 +948,8 @@ impl<B: Backend + Write> App<B> {
                 .or_else(|| dirs::home_dir().map(|p| p.to_string_lossy().to_string()))
                 .unwrap_or_else(|| "/tmp".to_string());
 
-            match ratatui_explorer::FileExplorer::with_fs(
-                Arc::new(ratatui_explorer::LocalFileSystem),
+            match ratatui_async_explorer::FileExplorer::with_fs(
+                Arc::new(ratatui_async_explorer::LocalFileSystem),
                 local_start_dir.clone(),
             )
             .await
@@ -1039,7 +1039,7 @@ impl<B: Backend + Write> App<B> {
         // Create file explorer for the remote filesystem
         let sftp_fs = crate::filesystem::SftpFileSystem::new(sftp_session.clone());
         let remote_explorer =
-            ratatui_explorer::FileExplorer::with_fs(Arc::new(sftp_fs), remote_home.clone())
+            ratatui_async_explorer::FileExplorer::with_fs(Arc::new(sftp_fs), remote_home.clone())
                 .await
                 .map_err(|e| {
                     AppError::SftpError(format!("Failed to initialize remote explorer: {e}"))

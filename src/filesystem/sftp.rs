@@ -1,7 +1,7 @@
 //! SFTP filesystem implementation.
 
 use futures::{StreamExt, TryStreamExt};
-use ratatui_explorer::{FileEntry, FilePermissions, FileSystem};
+use ratatui_async_explorer::{FileEntry, FilePermissions, FileSystem};
 use russh_sftp::client::SftpSession;
 use std::io::{Error, Result};
 use std::sync::Arc;

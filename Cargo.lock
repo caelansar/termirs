@@ -4386,9 +4386,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "ratatui-explorer"
-version = "0.2.1"
-source = "git+https://github.com/caelansar/ratatui-explorer.git#f30dd6567f62754a985ce21fe451507f352d0490"
+name = "ratatui-async-explorer"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb1ef52cd0a72c45ff66431f5b4f11207829de17136404c3e8dd78a49ee4d9a7"
 dependencies = [
  "educe",
  "ratatui",
@@ -5349,7 +5350,7 @@ dependencies = [
  "grep-searcher",
  "rand 0.8.5",
  "ratatui",
- "ratatui-explorer",
+ "ratatui-async-explorer",
  "ring",
  "russh",
  "russh-sftp",
