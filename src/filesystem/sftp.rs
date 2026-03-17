@@ -15,12 +15,14 @@ pub struct SftpFileSystem {
 
 impl SftpFileSystem {
     /// Create a new `SftpFileSystem` with the given SFTP session.
-    pub fn new(session: Arc<SftpSession>) -> Self {
-        Self { session }
+    pub fn new(session: SftpSession) -> Self {
+        Self {
+            session: Arc::new(session),
+        }
     }
 
     /// Expose the inner SFTP session.
-    pub fn session(&self) -> &Arc<SftpSession> {
+    pub fn session(&self) -> &SftpSession {
         &self.session
     }
 

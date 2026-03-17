@@ -216,9 +216,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
     if let AppMode::FileExplorer {
         left_pane,
         left_explorer,
-        left_sftp,
         remote_explorer,
-        sftp_session,
         active_pane,
         copy_buffer,
         return_to,
@@ -612,39 +610,28 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                         let manifest_result = match direction {
                             CopyDirection::LeftToRight => {
                                 // Source is left pane
-                                match left_pane {
-                                    FileExplorerPane::Local => {
+                                match left_explorer {
+                                    crate::LeftExplorer::Local(_) => {
                                         crate::filesystem::dir_walker::walk_local_dir(
                                             &item.source_path,
                                             &dest_dir_path,
                                         )
                                         .await
                                     }
-                                    FileExplorerPane::RemoteSsh { .. } => {
-                                        if let Some((left_session, _)) = left_sftp {
-                                            let sftp_fs = crate::filesystem::SftpFileSystem::new(
-                                                left_session.clone(),
-                                            );
-                                            crate::filesystem::dir_walker::walk_remote_dir(
-                                                &sftp_fs,
-                                                &item.source_path,
-                                                &dest_dir_path,
-                                            )
-                                            .await
-                                        } else {
-                                            Err(std::io::Error::other(
-                                                "Left SFTP session not available",
-                                            ))
-                                        }
+                                    crate::LeftExplorer::Remote(explorer) => {
+                                        crate::filesystem::dir_walker::walk_remote_dir(
+                                            explorer.filesystem(),
+                                            &item.source_path,
+                                            &dest_dir_path,
+                                        )
+                                        .await
                                     }
                                 }
                             }
                             CopyDirection::RightToLeft => {
                                 // Source is right pane (always SSH)
-                                let sftp_fs =
-                                    crate::filesystem::SftpFileSystem::new(sftp_session.clone());
                                 crate::filesystem::dir_walker::walk_remote_dir(
-                                    &sftp_fs,
+                                    remote_explorer.filesystem(),
                                     &item.source_path,
                                     &dest_dir_path,
                                 )
@@ -751,10 +738,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                     connection_name,
                     left_pane,
                     left_explorer,
-                    left_sftp,
                     left_session,
                     remote_explorer,
-                    sftp_session,
                     ssh_connection,
                     channel: _channel,
                     ssh_session,
@@ -784,10 +769,11 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                     //     }
                     // }
 
-                    // Clone left_sftp if it exists for SSH-to-SSH transfers (before moving into return_mode)
-                    let left_sftp_for_transfer = left_sftp
-                        .as_ref()
-                        .map(|(session, conn)| (session.clone(), conn.clone()));
+                    // Clone left_pane if it exists for SSH-to-SSH transfers (before moving into return_mode)
+                    let left_pane_for_transfer = left_pane.clone();
+
+                    // Clone left_explorer for use in the transfer async block (before moving into return_mode)
+                    let left_explorer_for_transfer = left_explorer.clone();
 
                     // Clone session handles for SSH-to-SSH transfers
                     let ssh_session_for_transfer = ssh_session.clone();
@@ -796,10 +782,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                         connection_name: connection_name.clone(),
                         left_pane,
                         left_explorer,
-                        left_sftp,
                         left_session,
                         remote_explorer,
-                        sftp_session,
                         ssh_connection: ssh_connection.clone(),
                         channel: None,
                         ssh_session,
@@ -833,8 +817,13 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                                     }
                                     crate::ui::ScpMode::Receive => {
                                         // Dest is left SSH
-                                        if let Some((_, left_conn)) = &left_sftp_for_transfer {
-                                            create_remote_dirs(left_conn, &all_dirs_to_create).await
+                                        if let crate::FileExplorerPane::RemoteSsh {
+                                            connection_name: _,
+                                            connection,
+                                        } = &left_pane_for_transfer
+                                        {
+                                            create_remote_dirs(connection, &all_dirs_to_create)
+                                                .await
                                         } else {
                                             create_local_dirs(&all_dirs_to_create).await
                                         }
@@ -871,8 +860,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                         for (index, spec) in transfer_specs.into_iter().enumerate() {
                             let ssh_connection = ssh_connection.clone();
                             let unified_tx = sftp_sender.clone();
-                            let left_sftp_clone = left_sftp_for_transfer.clone();
                             let ssh_session_clone = ssh_session_for_transfer.clone();
+                            let left_explorer_clone = left_explorer_for_transfer.clone();
 
                             // Open a channel from the right SSH session for this transfer
                             let channel = {
@@ -887,8 +876,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                                     match spec.mode {
                                         crate::ui::ScpMode::Send => {
                                             // Left SSH → Right SSH: Open channel from RIGHT session
-                                            if let Some((left_sftp_session, _left_conn)) = left_sftp_clone {
-                                                match crate::filesystem::sftp_file::open_for_read(left_sftp_session.clone(), &spec.local_path).await {
+                                            if let crate::LeftExplorer::Remote(explorer) = &left_explorer_clone {
+                                                match crate::filesystem::sftp_file::open_for_read(explorer.filesystem().session(), &spec.local_path).await {
                                                     Ok(sftp_file) => {
                                                         let file_size = sftp_file.file_size().await;
                                                         let progress_reporter = crate::async_ssh_client::TxProgressReporter::new(Some(unified_tx.clone()), index, file_size.ok());
@@ -915,8 +904,8 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                                         }
                                         crate::ui::ScpMode::Receive => {
                                             // Right SSH → Left SSH: Open channel from LEFT session (if available)
-                                            if let Some((left_sftp_session, _left_conn)) = left_sftp_clone {
-                                                match crate::filesystem::sftp_file::open_for_write(left_sftp_session.clone(), &spec.local_path).await {
+                                            if let crate::LeftExplorer::Remote(explorer) = &left_explorer_clone {
+                                                match crate::filesystem::sftp_file::open_for_write(explorer.filesystem().session(), &spec.local_path).await {
                                                     Ok(sftp_file) => {
                                                         let progress_reporter = crate::async_ssh_client::TxProgressReporter::new(Some(unified_tx.clone()), index, None);
 

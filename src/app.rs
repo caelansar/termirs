@@ -50,6 +50,7 @@ pub enum ActivePane {
 }
 
 /// Wrapper enum for left pane explorer (can be Local or Remote)
+#[derive(Clone)]
 pub enum LeftExplorer {
     Local(ratatui_async_explorer::FileExplorer<ratatui_async_explorer::LocalFileSystem>),
     Remote(ratatui_async_explorer::FileExplorer<crate::filesystem::SftpFileSystem>),
@@ -137,15 +138,6 @@ impl LeftExplorer {
     }
 }
 
-impl Clone for LeftExplorer {
-    fn clone(&self) -> Self {
-        match self {
-            LeftExplorer::Local(explorer) => LeftExplorer::Local(explorer.clone()),
-            LeftExplorer::Remote(explorer) => LeftExplorer::Remote(explorer.clone()),
-        }
-    }
-}
-
 /// Copy operation state for file transfer
 #[derive(Clone, Debug)]
 pub struct CopyOperation {
@@ -179,13 +171,11 @@ pub enum ScpReturnMode {
 
         left_pane: FileExplorerPane,
         left_explorer: LeftExplorer,
-        left_sftp: Option<(Arc<russh_sftp::client::SftpSession>, Connection)>,
         left_session: Option<
             Arc<tokio::sync::Mutex<russh::client::Handle<crate::async_ssh_client::SshClient>>>,
         >,
 
         remote_explorer: ratatui_async_explorer::FileExplorer<crate::filesystem::SftpFileSystem>,
-        sftp_session: Arc<russh_sftp::client::SftpSession>,
         ssh_connection: Connection,
         channel: Option<russh::Channel<russh::client::Msg>>,
         ssh_session:
@@ -257,14 +247,12 @@ pub enum AppMode {
         // Left pane - switchable between Local and SSH
         left_pane: FileExplorerPane,
         left_explorer: LeftExplorer,
-        left_sftp: Option<(Arc<russh_sftp::client::SftpSession>, Connection)>,
         left_session: Option<
             Arc<tokio::sync::Mutex<russh::client::Handle<crate::async_ssh_client::SshClient>>>,
         >,
 
         // Right pane - always Remote SSH (original connection from entry)
         remote_explorer: ratatui_async_explorer::FileExplorer<crate::filesystem::SftpFileSystem>,
-        sftp_session: Arc<russh_sftp::client::SftpSession>,
         ssh_connection: Connection,
         channel: Option<russh::Channel<russh::client::Msg>>,
         ssh_session:
@@ -858,7 +846,6 @@ impl<B: Backend + Write> App<B> {
         // For SFTP, we need to create a new session directly since we need both the session and channel
         // We'll use the existing sftp_send_file pattern but adapt it for our needs
         let (sftp_session, channel, ssh_session) = Self::create_sftp_session(&conn).await?;
-        let sftp_session = Arc::new(sftp_session);
 
         // Initialize local file explorer
         // Use current directory as it's more reliable than HOME which might be on a slow network mount
@@ -885,7 +872,7 @@ impl<B: Backend + Write> App<B> {
             AppError::SftpError(format!("Failed to resolve remote home directory: {e}"))
         })?;
 
-        let sftp_fs = crate::filesystem::SftpFileSystem::new(sftp_session.clone());
+        let sftp_fs = crate::filesystem::SftpFileSystem::new(sftp_session);
         let remote_explorer = ratatui_async_explorer::FileExplorer::with_fs(
             Arc::new(sftp_fs),
             remote_home_canonical.clone(),
@@ -904,12 +891,10 @@ impl<B: Backend + Write> App<B> {
             // Left pane starts as Local
             left_pane: FileExplorerPane::Local,
             left_explorer: LeftExplorer::Local(local_explorer),
-            left_sftp: None,
             left_session: None,
 
             // Right pane is the original SSH connection
             remote_explorer,
-            sftp_session,
             ssh_connection: conn,
             channel: Some(channel),
             ssh_session,
@@ -932,7 +917,6 @@ impl<B: Backend + Write> App<B> {
         if let AppMode::FileExplorer {
             left_pane,
             left_explorer,
-            left_sftp,
             ..
         } = &mut self.mode
         {
@@ -957,7 +941,6 @@ impl<B: Backend + Write> App<B> {
                 Ok(local_explorer) => {
                     *left_pane = FileExplorerPane::Local;
                     *left_explorer = LeftExplorer::Local(local_explorer);
-                    *left_sftp = None; // Drop old SFTP session
                     self.needs_redraw = true;
                 }
                 Err(e) => {
@@ -974,7 +957,6 @@ impl<B: Backend + Write> App<B> {
         if let AppMode::FileExplorer {
             left_pane,
             left_explorer,
-            left_sftp,
             left_session,
             ssh_connection: right_conn,
             ..
@@ -996,15 +978,7 @@ impl<B: Backend + Write> App<B> {
             }
 
             // Switch left pane to SSH connection
-            match Self::setup_left_ssh_pane(
-                &conn,
-                left_pane,
-                left_explorer,
-                left_sftp,
-                left_session,
-            )
-            .await
-            {
+            match Self::setup_left_ssh_pane(&conn, left_pane, left_explorer, left_session).await {
                 Ok(()) => {
                     self.needs_redraw = true;
                 }
@@ -1020,7 +994,6 @@ impl<B: Backend + Write> App<B> {
         conn: &Connection,
         left_pane: &mut FileExplorerPane,
         left_explorer: &mut LeftExplorer,
-        left_sftp: &mut Option<(Arc<russh_sftp::client::SftpSession>, Connection)>,
         left_session: &mut Option<
             Arc<tokio::sync::Mutex<russh::client::Handle<crate::async_ssh_client::SshClient>>>,
         >,
@@ -1029,7 +1002,6 @@ impl<B: Backend + Write> App<B> {
         let (sftp_session, _explorer_channel, ssh_session) = Self::create_sftp_session(conn)
             .await
             .map_err(|e| AppError::SftpError(format!("Failed to create SFTP session: {e}")))?;
-        let sftp_session = Arc::new(sftp_session);
 
         // Get home directory
         let remote_home = sftp_session.canonicalize(".").await.map_err(|e| {
@@ -1037,7 +1009,7 @@ impl<B: Backend + Write> App<B> {
         })?;
 
         // Create file explorer for the remote filesystem
-        let sftp_fs = crate::filesystem::SftpFileSystem::new(sftp_session.clone());
+        let sftp_fs = crate::filesystem::SftpFileSystem::new(sftp_session);
         let remote_explorer =
             ratatui_async_explorer::FileExplorer::with_fs(Arc::new(sftp_fs), remote_home.clone())
                 .await
@@ -1051,7 +1023,6 @@ impl<B: Backend + Write> App<B> {
             connection: conn.clone(),
         };
         *left_explorer = LeftExplorer::Remote(remote_explorer);
-        *left_sftp = Some((sftp_session, conn.clone()));
         *left_session = Some(ssh_session);
 
         Ok(())
