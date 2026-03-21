@@ -231,6 +231,7 @@ pub enum AppMode {
         state: Arc<Mutex<TerminalState>>,
         current_selected: usize,
         cancel_token: tokio_util::sync::CancellationToken, // Token to cancel the read task
+        return_to_explorer: Option<ScpReturnMode>,
     },
     ScpProgress {
         progress: ScpProgress,
@@ -713,12 +714,25 @@ impl<B: Backend + Write> App<B> {
         current_selected: usize,
         cancel_token: tokio_util::sync::CancellationToken,
     ) {
+        self.go_to_connected_with_return(name, client, state, current_selected, cancel_token, None);
+    }
+
+    pub fn go_to_connected_with_return(
+        &mut self,
+        name: String,
+        client: SshSession,
+        state: Arc<Mutex<TerminalState>>,
+        current_selected: usize,
+        cancel_token: tokio_util::sync::CancellationToken,
+        return_to_explorer: Option<ScpReturnMode>,
+    ) {
         self.mode = AppMode::Connected {
             name,
             client,
             state,
             current_selected,
             cancel_token,
+            return_to_explorer,
         };
         self.clear_selection();
         // Stop ticker - terminal updates are now event-driven via TerminalUpdate
@@ -1874,26 +1888,63 @@ impl<B: Backend + Write> App<B> {
                 }
                 AppEvent::Disconnect => {
                     // SSH connection has been disconnected (e.g., user typed 'exit')
-                    // Automatically return to the connection list
                     tracing::info!("SSH connection disconnected");
+                    // Take ownership of the mode to avoid borrow issues
+                    let old_mode = std::mem::replace(
+                        &mut self.mode,
+                        AppMode::ConnectionList(crate::ListSelectionState::new(0)),
+                    );
                     if let AppMode::Connected {
                         current_selected,
                         cancel_token,
                         name,
                         client,
+                        return_to_explorer,
                         ..
-                    } = &self.mode
+                    } = old_mode
                     {
                         tracing::debug!("Closing connection to '{}'", name);
-                        let current_selected = *current_selected;
                         // Cancel the read task
                         cancel_token.cancel();
-                        // Close the SSH connection
+                        // Close the SSH connection (no-op if session is None)
                         if let Err(e) = client.close().await {
                             tracing::error!("Error closing SSH connection: {}", e);
                         }
-                        // Go back to connection list
-                        self.go_to_connection_list_with_selected(current_selected);
+                        // Check if we should return to file explorer
+                        if let Some(ScpReturnMode::FileExplorer {
+                            connection_name,
+                            left_pane,
+                            left_explorer,
+                            left_session,
+                            remote_explorer,
+                            ssh_connection,
+                            channel,
+                            ssh_session,
+                            active_pane,
+                            copy_buffer,
+                            return_to,
+                            search,
+                        }) = return_to_explorer
+                        {
+                            self.mode = AppMode::FileExplorer {
+                                connection_name,
+                                left_pane,
+                                left_explorer,
+                                left_session,
+                                remote_explorer,
+                                ssh_connection,
+                                channel,
+                                ssh_session,
+                                active_pane,
+                                copy_buffer,
+                                return_to,
+                                search,
+                                source_selector: Default::default(),
+                                delete_confirmation: Default::default(),
+                            };
+                        } else {
+                            self.go_to_connection_list_with_selected(current_selected);
+                        }
                         self.stop_ticker();
                         self.mark_redraw();
                     }

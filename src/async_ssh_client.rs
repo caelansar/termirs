@@ -599,6 +599,46 @@ impl SshSession {
             .flatten()
     }
 
+    /// Open a new interactive terminal on an existing SSH session, optionally
+    /// starting in `start_dir`. Uses `exec` instead of `request_shell` so the
+    /// `cd` happens before the shell prompt — no PTY echo artifacts.
+    /// The session handle is NOT stored — close() will be a no-op.
+    pub async fn open_terminal_on(
+        session_handle: &tokio::sync::Mutex<client::Handle<SshClient>>,
+        cols: u16,
+        rows: u16,
+        start_dir: Option<&str>,
+    ) -> Result<Self> {
+        // Only hold the session lock for channel_open_session; subsequent
+        // channel operations don't need the session handle.
+        let channel = session_handle.lock().await.channel_open_session().await?;
+
+        let _ = channel.set_env(false, "LC_CTYPE", "C.UTF-8").await;
+        channel
+            .request_pty(true, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
+            .await?;
+
+        match start_dir {
+            Some(dir) => {
+                let escaped = dir.replace('\'', "'\\''");
+                let cmd = format!("cd '{}' && exec $SHELL -l", escaped);
+                channel.exec(true, cmd.as_bytes()).await?;
+            }
+            None => {
+                channel.request_shell(true).await?;
+            }
+        }
+
+        let (r, w) = channel.split();
+
+        Ok(Self {
+            session: Arc::new(tokio::sync::Mutex::new(None)),
+            r: Some(r),
+            w,
+            server_key: Arc::new(OnceCell::new()),
+        })
+    }
+
     pub async fn connect(connection: &Connection, cols: u16, rows: u16) -> Result<Self> {
         Self::connect_with_cancel(
             connection,

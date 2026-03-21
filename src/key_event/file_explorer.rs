@@ -214,9 +214,12 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
 
     // Main file explorer handling
     if let AppMode::FileExplorer {
+        connection_name,
         left_pane,
         left_explorer,
+        left_session,
         remote_explorer,
+        ssh_session,
         active_pane,
         copy_buffer,
         return_to,
@@ -467,25 +470,136 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                 app.mark_redraw();
             }
 
-            // Edit file in external editor
-            KeyCode::Char('e') => {
-                let current_file = match active_pane {
-                    ActivePane::Left => left_explorer.current().clone(),
-                    ActivePane::Right => remote_explorer.current().clone(),
+            // Open file / open terminal on remote directory
+            KeyCode::Char('o') => {
+                let current = match active_pane {
+                    ActivePane::Left => left_explorer.current(),
+                    ActivePane::Right => remote_explorer.current(),
                 };
+                let is_dir = current.is_dir();
+                let is_local = matches!(active_pane, ActivePane::Left)
+                    && matches!(left_pane, FileExplorerPane::Local);
 
-                if current_file.is_dir() {
-                    app.info = Some("Cannot edit a directory".to_string());
-                    app.mark_redraw();
+                if is_dir {
+                    // On a remote directory: open SSH terminal there
+                    if is_local {
+                        app.info = Some("Cannot open terminal on local directory".to_string());
+                        app.mark_redraw();
+                        return KeyFlow::Continue;
+                    }
+
+                    let target_path = current.path().to_string_lossy().into_owned();
+                    let (session_arc, conn_name) = match active_pane {
+                        ActivePane::Right => (ssh_session.clone(), connection_name.clone()),
+                        ActivePane::Left => match left_pane {
+                            FileExplorerPane::RemoteSsh {
+                                connection_name: cn,
+                                ..
+                            } => match left_session {
+                                Some(s) => (s.clone(), cn.clone()),
+                                None => {
+                                    app.info =
+                                        Some("Cannot open terminal: no SSH session".to_string());
+                                    app.mark_redraw();
+                                    return KeyFlow::Continue;
+                                }
+                            },
+                            FileExplorerPane::Local => unreachable!(),
+                        },
+                    };
+                    let return_to_idx = *return_to;
+
+                    // Open terminal channel on existing session
+                    let (cols, rows) = app.ssh_terminal_size().unwrap_or((80, 24));
+                    let mut client = match crate::async_ssh_client::SshSession::open_terminal_on(
+                        &session_arc,
+                        cols,
+                        rows,
+                        Some(&target_path),
+                    )
+                    .await
+                    {
+                        Ok(c) => c,
+                        Err(e) => {
+                            app.set_error(e);
+                            return KeyFlow::Continue;
+                        }
+                    };
+
+                    // Save FileExplorer state
+                    let old_mode = std::mem::replace(
+                        &mut app.mode,
+                        AppMode::ConnectionList(crate::ListSelectionState::new(0)),
+                    );
+
+                    let saved_return_mode = if let AppMode::FileExplorer {
+                        connection_name,
+                        left_pane,
+                        left_explorer,
+                        left_session,
+                        remote_explorer,
+                        ssh_connection,
+                        channel: _,
+                        ssh_session,
+                        active_pane,
+                        copy_buffer: _,
+                        return_to,
+                        search,
+                        ..
+                    } = old_mode
+                    {
+                        crate::ScpReturnMode::FileExplorer {
+                            connection_name,
+                            left_pane,
+                            left_explorer,
+                            left_session,
+                            remote_explorer,
+                            ssh_connection,
+                            channel: None,
+                            ssh_session,
+                            active_pane,
+                            copy_buffer: Vec::new(),
+                            return_to,
+                            search,
+                        }
+                    } else {
+                        unreachable!("mode was just FileExplorer");
+                    };
+
+                    // Set up terminal + read loop
+                    let scrollback = app.config.terminal_scrollback_lines();
+                    let state = std::sync::Arc::new(tokio::sync::Mutex::new(
+                        crate::ui::TerminalState::new_with_scrollback(rows, cols, scrollback),
+                    ));
+                    let reader = client.take_reader().expect("reader already taken");
+                    let cancel_token = tokio_util::sync::CancellationToken::new();
+                    let cancel_for_task = cancel_token.clone();
+                    let event_tx = app.get_event_sender();
+                    let state_for_task = state.clone();
+                    tokio::spawn(async move {
+                        crate::async_ssh_client::SshSession::read_loop(
+                            reader,
+                            state_for_task,
+                            cancel_for_task,
+                            event_tx,
+                        )
+                        .await;
+                    });
+
+                    app.go_to_connected_with_return(
+                        conn_name,
+                        client,
+                        state,
+                        return_to_idx,
+                        cancel_token,
+                        Some(saved_return_mode),
+                    );
                     return KeyFlow::Continue;
                 }
 
-                let file_path = current_file.path().to_string_lossy().into_owned();
+                // File edit path — extract owned path before releasing borrow
+                let file_path = current.path().to_string_lossy().into_owned();
                 let pane = *active_pane;
-
-                // Determine if local or remote
-                let is_local = matches!(active_pane, ActivePane::Left)
-                    && matches!(left_pane, FileExplorerPane::Local);
 
                 // Get connection for remote editing
                 let remote_connection = if is_local {
@@ -501,9 +615,6 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                     // Right pane is always remote
                     Some(ssh_connection.clone())
                 };
-
-                // Drop the borrow on app.mode before calling suspend/restore
-                drop(current_file);
 
                 // Perform the edit operation outside the app.mode borrow
                 do_edit_file(app, &file_path, is_local, remote_connection, pane).await;

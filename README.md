@@ -110,7 +110,7 @@ cargo build --release --locked
 | `H`                | Toggle whether hidden files should be shown                 |
 | `c`                | Copy highlighted file or folder into the transfer clipboard |
 | `v`                | Paste into the destination pane to start an async transfer  |
-| `e`                | Edit selected file in external editor                       |
+| `o`                | Open file in editor, or open terminal on remote directory   |
 | `r`                | Refresh the current pane listing                            |
 | `Esc`              | Cancel file explorer and return to connection list          |
 
