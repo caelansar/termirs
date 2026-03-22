@@ -76,14 +76,27 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
     if let AppMode::FileExplorer {
         source_selector,
         ssh_connection,
+        left_pane,
         ..
     } = &mut app.mode
         && source_selector.showing
     {
-        let local_offset = 1;
+        let is_left = matches!(source_selector.target_pane, ActivePane::Left);
+        let local_offset: usize = if is_left { 1 } else { 0 };
+
+        // Exclude the *other* pane's connection to prevent duplicates
+        let exclude_id: Option<String> = if is_left {
+            Some(ssh_connection.id.clone())
+        } else {
+            match left_pane {
+                FileExplorerPane::RemoteSsh { connection, .. } => Some(connection.id.clone()),
+                FileExplorerPane::Local => None,
+            }
+        };
+
         let mut filtered_indices = filter_connection_indices(
             app.config.connections(),
-            Some(ssh_connection.id.as_str()),
+            exclude_id.as_deref(),
             source_selector.search.query(),
         );
         let mut total_items = filtered_indices.len() + local_offset;
@@ -99,7 +112,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                     }
                     filtered_indices = filter_connection_indices(
                         app.config.connections(),
-                        Some(ssh_connection.id.as_str()),
+                        exclude_id.as_deref(),
                         source_selector.search.query(),
                     );
                     total_items = filtered_indices.len() + local_offset;
@@ -120,7 +133,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                     }
                     filtered_indices = filter_connection_indices(
                         app.config.connections(),
-                        Some(ssh_connection.id.as_str()),
+                        exclude_id.as_deref(),
                         source_selector.search.query(),
                     );
                     total_items = filtered_indices.len() + local_offset;
@@ -140,7 +153,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                         source_selector.search.clear_query();
                         filtered_indices = filter_connection_indices(
                             app.config.connections(),
-                            Some(ssh_connection.id.as_str()),
+                            exclude_id.as_deref(),
                             source_selector.search.query(),
                         );
                         total_items = filtered_indices.len() + local_offset;
@@ -190,13 +203,18 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                         .and_then(|conn_idx| app.config.connections().get(*conn_idx).cloned())
                 };
 
+                let target = source_selector.target_pane;
                 source_selector.hide();
                 source_selector.search.deactivate();
 
-                if let Some(conn) = selection {
-                    app.switch_left_pane_to_ssh(conn).await;
-                } else {
-                    app.switch_left_pane_to_local().await;
+                if matches!(target, ActivePane::Left) {
+                    if let Some(conn) = selection {
+                        app.switch_left_pane_to_ssh(conn).await;
+                    } else {
+                        app.switch_left_pane_to_local().await;
+                    }
+                } else if let Some(conn) = selection {
+                    app.switch_right_pane_to_ssh(conn).await;
                 }
 
                 app.mark_redraw();
@@ -422,10 +440,11 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
 
             // Switch left pane source with 's'
             KeyCode::Char('s') => {
+                source_selector.show_for(*active_pane);
+                source_selector.search.deactivate();
+
                 if matches!(active_pane, ActivePane::Left) {
-                    source_selector.show();
-                    source_selector.search.deactivate();
-                    // Reset selector to current source
+                    // Left pane: exclude right connection, include Local option
                     let base_indices = filter_connection_indices(
                         app.config.connections(),
                         Some(ssh_connection.id.as_str()),
@@ -447,8 +466,28 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                                 .unwrap_or(0)
                         }
                     };
-                    app.mark_redraw();
+                } else {
+                    // Right pane: exclude left connection (if remote), no Local option
+                    let exclude_id = match left_pane {
+                        FileExplorerPane::RemoteSsh { connection, .. } => {
+                            Some(connection.id.as_str())
+                        }
+                        FileExplorerPane::Local => None,
+                    };
+                    let base_indices =
+                        filter_connection_indices(app.config.connections(), exclude_id, "");
+                    let connections = app.config.connections();
+                    source_selector.selected = base_indices
+                        .iter()
+                        .position(|idx| {
+                            connections
+                                .get(*idx)
+                                .map(|conn| conn.id == ssh_connection.id)
+                                .unwrap_or(false)
+                        })
+                        .unwrap_or(0);
                 }
+                app.mark_redraw();
             }
 
             // Delete file: Show delete confirmation

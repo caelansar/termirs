@@ -106,6 +106,7 @@ pub struct SourceSelectorState {
     pub showing: bool,
     pub selected: usize,
     pub search: SearchState,
+    pub target_pane: ActivePane,
 }
 
 impl SourceSelectorState {
@@ -115,12 +116,14 @@ impl SourceSelectorState {
             showing: false,
             selected: 0,
             search: SearchState::Off,
+            target_pane: ActivePane::Left,
         }
     }
 
-    /// Show the source selector popup
-    pub fn show(&mut self) {
+    /// Show the source selector popup for the given pane
+    pub fn show_for(&mut self, pane: ActivePane) {
         self.showing = true;
+        self.target_pane = pane;
     }
 
     /// Hide the source selector popup

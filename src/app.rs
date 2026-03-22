@@ -1003,6 +1003,81 @@ impl<B: Backend + Write> App<B> {
         }
     }
 
+    /// Switch right pane to a different SSH connection
+    pub async fn switch_right_pane_to_ssh(&mut self, conn: Connection) {
+        if let AppMode::FileExplorer {
+            connection_name,
+            remote_explorer,
+            ssh_connection,
+            channel,
+            ssh_session,
+            left_pane,
+            ..
+        } = &mut self.mode
+        {
+            // Validate: left and right cannot be the same connection
+            if let FileExplorerPane::RemoteSsh {
+                connection: left_conn,
+                ..
+            } = left_pane
+            {
+                if conn.id == left_conn.id {
+                    self.error = Some(AppError::SftpError(
+                        "Left and right panes cannot use the same SSH connection".to_string(),
+                    ));
+                    return;
+                }
+            }
+
+            // Check if already using this connection
+            if conn.id == ssh_connection.id {
+                return;
+            }
+
+            // Create new SFTP session for the right pane
+            match Self::create_sftp_session(&conn).await {
+                Ok((sftp_session, new_channel, new_ssh_session)) => {
+                    let remote_home = match sftp_session.canonicalize(".").await {
+                        Ok(h) => h,
+                        Err(e) => {
+                            self.error = Some(AppError::SftpError(format!(
+                                "Failed to get remote home directory: {e}"
+                            )));
+                            return;
+                        }
+                    };
+
+                    let sftp_fs = crate::filesystem::SftpFileSystem::new(sftp_session);
+                    match ratatui_async_explorer::FileExplorer::with_fs(
+                        Arc::new(sftp_fs),
+                        remote_home.clone(),
+                    )
+                    .await
+                    {
+                        Ok(new_explorer) => {
+                            *connection_name = conn.display_name.clone();
+                            *remote_explorer = new_explorer;
+                            *channel = Some(new_channel);
+                            *ssh_session = new_ssh_session;
+                            *ssh_connection = conn;
+                            self.needs_redraw = true;
+                        }
+                        Err(e) => {
+                            self.error = Some(AppError::SftpError(format!(
+                                "Failed to initialize remote explorer: {e}"
+                            )));
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.error = Some(AppError::SftpError(format!(
+                        "Failed to create SFTP session: {e}"
+                    )));
+                }
+            }
+        }
+    }
+
     /// Setup left pane to connect to an SSH server
     async fn setup_left_ssh_pane(
         conn: &Connection,
@@ -1350,14 +1425,29 @@ impl<B: Backend + Write> App<B> {
                     // Draw source selector popup if active
                     if source_selector.showing {
                         let connections = self.config.connections();
+                        let is_left = matches!(source_selector.target_pane, ActivePane::Left);
+                        let exclude_id: Option<&str> = if is_left {
+                            Some(ssh_connection.id.as_str())
+                        } else {
+                            match left_pane {
+                                FileExplorerPane::RemoteSsh { connection, .. } => {
+                                    Some(connection.id.as_str())
+                                }
+                                FileExplorerPane::Local => None,
+                            }
+                        };
                         crate::ui::draw_connection_selector_popup(
                             f,
                             size,
                             connections,
                             source_selector.selected,
-                            Some(ssh_connection.id.as_str()),
-                            true,
-                            " Select Left Pane Source ",
+                            exclude_id,
+                            is_left,
+                            if is_left {
+                                " Select Left Pane Source "
+                            } else {
+                                " Select Right Pane Source "
+                            },
                             &source_selector.search,
                         );
                     }
