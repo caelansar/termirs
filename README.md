@@ -195,6 +195,10 @@ Configure your browser or applications to use `127.0.0.1:1080` as SOCKS5 proxy. 
 TermiRs lets you edit files directly from the file explorer using your preferred editor. Press `e` on any file to open it.
 
 - **Editor Selection**: Uses the `VISUAL` or `EDITOR` environment variable (falls back to a system default)
+  ```bash
+  export EDITOR=vim                    # for Vim
+  export EDITOR='cursor --wait'        # for Cursor (--wait wait for the files to be closed before returning)
+  ```
 - **Local Files**: Opened directly in the editor
 - **Remote Files**: Downloaded via SFTP to a temporary file, opened in the editor, and uploaded back automatically if modified
 
@@ -206,11 +210,16 @@ TermiRs stores configuration in `~/.config/termirs/config.toml`. The file includ
 - Server public keys for host verification
 - Application settings
 
+When `have_nerd_font` is enabled, the file explorer displays file type icons using [Nerd Font](https://www.nerdfonts.com/) glyphs:
+
+![File Explorer with Nerd Font icons](assets/file_explorer.png)
+
 Example configuration structure:
 ```toml
 [settings]
 default_port = 22
 connection_timeout = 20
+have_nerd_font = true  # enables file type icons in the file explorer (requires a Nerd Font)
 
 [[connections]]
 id = "uuid-string"
