@@ -40,17 +40,31 @@ pub(crate) trait ByteProcessor {
     fn process_bytes(&mut self, bytes: &[u8]);
 }
 
+pub(crate) struct HostFileMetadata {
+    pub size: u64,
+    pub permissions: Option<u32>,
+}
+
 pub(crate) trait HostFile: AsyncRead + AsyncWrite + Unpin {
-    async fn file_size(&self) -> Result<u64>;
+    async fn file_metadata(&self) -> Result<HostFileMetadata>;
 }
 
 impl HostFile for tokio::fs::File {
-    async fn file_size(&self) -> Result<u64> {
+    async fn file_metadata(&self) -> Result<HostFileMetadata> {
         let metadata = self
             .metadata()
             .await
             .map_err(|e| AppError::SftpError(format!("Failed to get metadata: {e}")))?;
-        Ok(metadata.len())
+        Ok(HostFileMetadata {
+            size: metadata.len(),
+            #[cfg(unix)]
+            permissions: Some({
+                use std::os::unix::fs::PermissionsExt;
+                metadata.permissions().mode()
+            }),
+            #[cfg(not(unix))]
+            permissions: None,
+        })
     }
 }
 
@@ -768,12 +782,23 @@ impl SshSession {
         let sftp = Self::setup_sftp_session(channel, connection, timeout, cancel).await?;
         progress_reporter.report_progress(0);
 
+        let file_attrs = match from.file_metadata().await {
+            Ok(meta) => FileAttributes {
+                permissions: meta.permissions,
+                ..FileAttributes::empty()
+            },
+            Err(e) => {
+                warn!("Failed to read source file permissions, using server defaults: {e}");
+                FileAttributes::empty()
+            }
+        };
+
         // Open remote file for writing
         let remote_handle = sftp
             .open(
                 to,
                 OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
-                FileAttributes::empty(),
+                file_attrs,
             )
             .await
             .map_err(|e| {
@@ -863,8 +888,7 @@ impl SshSession {
                 e
             })?;
 
-        // Open local file and get its size
-        let file_size = local_file.file_size().await;
+        let file_size = local_file.file_metadata().await.map(|m| m.size);
 
         let progress_reporter = TxProgressReporter::new(progress, file_index, file_size.ok());
 

@@ -990,7 +990,7 @@ pub async fn handle_file_explorer_key<B: Backend + Write>(
                                             if let crate::LeftExplorer::Remote(explorer) = &left_explorer_clone {
                                                 match crate::filesystem::sftp_file::open_for_read(explorer.filesystem().session(), &spec.local_path).await {
                                                     Ok(sftp_file) => {
-                                                        let file_size = sftp_file.file_size().await;
+                                                        let file_size = sftp_file.file_metadata().await.map(|m| m.size);
                                                         let progress_reporter = crate::async_ssh_client::TxProgressReporter::new(Some(unified_tx.clone()), index, file_size.ok());
 
 

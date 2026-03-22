@@ -3,7 +3,7 @@
 //! This module provides a thin wrapper around `russh_sftp::client::fs::File`
 //! to implement our `HostFile` trait, enabling SSH-to-SSH file transfers.
 
-use crate::async_ssh_client::HostFile;
+use crate::async_ssh_client::{HostFile, HostFileMetadata};
 use crate::error::{AppError, Result};
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
@@ -12,12 +12,15 @@ use russh_sftp::protocol::OpenFlags;
 pub type SftpFile = russh_sftp::client::fs::File;
 
 impl HostFile for SftpFile {
-    async fn file_size(&self) -> Result<u64> {
+    async fn file_metadata(&self) -> Result<HostFileMetadata> {
         let metadata = self
             .metadata()
             .await
             .map_err(|e| AppError::SftpError(format!("Failed to get file metadata: {e}")))?;
-        Ok(metadata.len())
+        Ok(HostFileMetadata {
+            size: metadata.len(),
+            permissions: metadata.permissions,
+        })
     }
 }
 
