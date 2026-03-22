@@ -184,6 +184,12 @@ fn draw_pane<F: ratatui_async_explorer::FileSystem>(
     };
     let inner = area.inner(inner_margin);
 
+    let icon_display = if use_icons {
+        ratatui_async_explorer::IconDisplay::Dark
+    } else {
+        ratatui_async_explorer::IconDisplay::None
+    };
+
     if is_active {
         explorer.set_theme(
             ratatui_async_explorer::Theme::new()
@@ -191,7 +197,7 @@ fn draw_pane<F: ratatui_async_explorer::FileSystem>(
                 .with_dir_style(Style::default().fg(Color::LightBlue))
                 .with_highlight_dir_style(Style::default().fg(Color::LightBlue).bg(Color::Cyan))
                 .with_highlight_item_style(Style::default().fg(Color::White).bg(Color::Cyan))
-                .use_icons(use_icons),
+                .with_icons(icon_display),
         );
     } else {
         // Don't highlight the items and directories
@@ -201,7 +207,7 @@ fn draw_pane<F: ratatui_async_explorer::FileSystem>(
                 .with_dir_style(Style::default().fg(Color::LightBlue))
                 .with_highlight_dir_style(Style::default().fg(Color::LightBlue))
                 .with_highlight_item_style(Style::default().fg(Color::White))
-                .use_icons(use_icons),
+                .with_icons(icon_display),
         );
     }
 

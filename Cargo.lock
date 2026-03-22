@@ -4387,9 +4387,9 @@ dependencies = [
 
 [[package]]
 name = "ratatui-async-explorer"
-version = "0.3.1"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6b35fb3b5194487489d28a06827f7b4d5866453d763be0bf1bbe1bd5c67f2c1"
+checksum = "ef0a5e03b7f92c2d530d2a3b7b2b71728fb9e405ca8d02ccf502bf9cde3718cb"
 dependencies = [
  "educe",
  "ratatui",
