@@ -1996,6 +1996,10 @@ impl<B: Backend + Write> App<B> {
                         tracing::debug!("Closing connection to '{}'", name);
                         // Cancel the read task
                         cancel_token.cancel();
+                        // Close the SSH channel
+                        if let Err(e) = client.close_channel().await {
+                            tracing::error!("Error close SSH channel: {}", e);
+                        }
                         // Close the SSH connection (no-op if session is None)
                         if let Err(e) = client.close().await {
                             tracing::error!("Error closing SSH connection: {}", e);
