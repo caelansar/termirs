@@ -931,6 +931,7 @@ impl<B: Backend + Write> App<B> {
         if let AppMode::FileExplorer {
             left_pane,
             left_explorer,
+            left_session,
             ..
         } = &mut self.mode
         {
@@ -953,6 +954,10 @@ impl<B: Backend + Write> App<B> {
             .await
             {
                 Ok(local_explorer) => {
+                    // Disconnect old left SSH session before clearing
+                    if let Some(old_session) = left_session.take() {
+                        Self::disconnect_session(&old_session).await;
+                    }
                     *left_pane = FileExplorerPane::Local;
                     *left_explorer = LeftExplorer::Local(local_explorer);
                     self.needs_redraw = true;
@@ -1055,6 +1060,8 @@ impl<B: Backend + Write> App<B> {
                     .await
                     {
                         Ok(new_explorer) => {
+                            // Disconnect old right SSH session before replacing
+                            Self::disconnect_session(ssh_session).await;
                             *connection_name = conn.display_name.clone();
                             *remote_explorer = new_explorer;
                             *channel = Some(new_channel);
@@ -1106,6 +1113,11 @@ impl<B: Backend + Write> App<B> {
                     AppError::SftpError(format!("Failed to initialize remote explorer: {e}"))
                 })?;
 
+        // Disconnect old left SSH session before replacing
+        if let Some(old_session) = left_session.take() {
+            Self::disconnect_session(&old_session).await;
+        }
+
         // Update state
         *left_pane = FileExplorerPane::RemoteSsh {
             connection_name: conn.display_name.clone(),
@@ -1115,6 +1127,18 @@ impl<B: Backend + Write> App<B> {
         *left_session = Some(ssh_session);
 
         Ok(())
+    }
+
+    /// Send SSH disconnect on a session handle, ignoring errors.
+    async fn disconnect_session(
+        handle: &tokio::sync::Mutex<russh::client::Handle<crate::async_ssh_client::SshClient>>,
+    ) {
+        let guard = handle.lock().await;
+        if !guard.is_closed() {
+            let _ = guard
+                .disconnect(russh::Disconnect::ByApplication, "", "")
+                .await;
+        }
     }
 
     async fn create_sftp_session(
