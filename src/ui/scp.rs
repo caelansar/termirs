@@ -22,11 +22,11 @@ pub fn draw_scp_progress_popup(
     let popup_w = (area.width as f32 * 0.45) as u16;
 
     // Calculate how many files we can show given available space
-    // Layout: 1 (connection) + N*3 (files) + optional 1 (scroll indicator) + 1 (elapsed)
+    // Layout: 1 (connection) + N*4 (files) + optional 1 (scroll indicator) + 1 (elapsed)
     let max_popup_h = area.height.saturating_sub(2);
     // Reserve 4 lines for connection header, footer, and borders
     let available_for_files = max_popup_h.saturating_sub(6) as usize;
-    let max_visible = (available_for_files / 3).max(1);
+    let max_visible = (available_for_files / 4).max(1);
     let needs_scroll = file_count > max_visible;
 
     // Auto-scroll to keep the active (in-progress) file visible
@@ -63,7 +63,7 @@ pub fn draw_scp_progress_popup(
 
     // Calculate popup height
     let content_lines = 1 // connection info
-        + (visible_count as u16) * 3
+        + (visible_count as u16) * 4
         + if has_above { 1 } else { 0 }
         + if has_below { 1 } else { 0 }
         + 1; // elapsed time
@@ -99,7 +99,7 @@ pub fn draw_scp_progress_popup(
         constraints.push(Constraint::Length(1));
     }
     for _ in 0..visible_count {
-        constraints.push(Constraint::Length(3));
+        constraints.push(Constraint::Length(4));
     }
     if has_below {
         constraints.push(Constraint::Length(1));
@@ -139,13 +139,14 @@ pub fn draw_scp_progress_popup(
         let row = layout[layout_idx];
         layout_idx += 1;
 
-        if row.height < 3 {
+        if row.height < 4 {
             continue;
         }
 
         let file_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
+                Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Length(1),
@@ -184,13 +185,16 @@ pub fn draw_scp_progress_popup(
             ScpMode::Send => (&file.local_path, &file.remote_path),
             ScpMode::Receive => (&file.remote_path, &file.local_path),
         };
-        let path_line = Paragraph::new(Line::from(vec![
+        let from_line = Paragraph::new(Line::from(vec![
             Span::styled("From: ", Style::default().fg(Color::Gray)),
             Span::styled(from_path.as_str(), Style::default().fg(Color::White)),
+        ]));
+        frame.render_widget(from_line, file_chunks[1]);
+        let to_line = Paragraph::new(Line::from(vec![
             Span::styled("  To: ", Style::default().fg(Color::Gray)),
             Span::styled(to_path.as_str(), Style::default().fg(Color::White)),
         ]));
-        frame.render_widget(path_line, file_chunks[1]);
+        frame.render_widget(to_line, file_chunks[2]);
 
         let ratio = file.ratio();
         let gauge_label = if let Some(total) = file.total_bytes {
@@ -227,7 +231,7 @@ pub fn draw_scp_progress_popup(
             .ratio(ratio)
             .label(gauge_label)
             .use_unicode(true);
-        frame.render_widget(gauge, file_chunks[2]);
+        frame.render_widget(gauge, file_chunks[3]);
     }
 
     // Scroll-down indicator
