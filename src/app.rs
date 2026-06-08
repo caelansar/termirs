@@ -347,7 +347,9 @@ impl<B: Backend + Write> App<B> {
             selection_auto_scroll: None,
             last_click: None,
             selection_force_nonempty: false,
-            clipboard: Clipboard::new().ok(),
+            clipboard: Clipboard::new()
+                .inspect_err(|e| tracing::error!("Failed to new clipboard: {}", e))
+                .ok(),
         })
     }
 
@@ -643,9 +645,7 @@ impl<B: Backend + Write> App<B> {
                 }
             }
             None => {
-                self.set_error(AppError::ClipboardError(
-                    "Clipboard not available".to_string(),
-                ));
+                tracing::warn!("Clipboard not available");
             }
         }
     }
