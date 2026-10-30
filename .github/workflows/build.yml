@@ -9,11 +9,8 @@ on:
       - master
 
 jobs:
-  build-rust:
-    strategy:
-      matrix:
-        platform: [ubuntu-latest]
-    runs-on: ${{ matrix.platform }}
+  test:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - name: Install Rust
@@ -29,3 +26,17 @@ jobs:
         run: cargo check --all
       - name: Execute rust tests
         run: cargo nextest run --all-features
+
+  # Windows is a shipped target but used to be built only when a tag was pushed,
+  # so native-dependency breakages were discovered after the release had started.
+  check-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        run: rustup toolchain install stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows
+      - name: Check the package for errors
+        run: cargo check --all-targets

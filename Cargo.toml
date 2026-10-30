@@ -1,6 +1,6 @@
 [package]
 name = "termirs"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2024"
 authors = ["Caelansar"]
 description = "A modern, async SSH terminal client"
@@ -23,7 +23,15 @@ uuid = { version = "1.0", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "fs"] }
 tokio-util = "0.7.16"
-russh = "0.57.0"
+# Default features pull in aws-lc-rs, whose build requires CMake + a Visual Studio
+# generator that the `cmake` crate can resolve. That breaks on Windows runners once
+# the image ships a VS version the crate does not know about, so use the `ring`
+# backend instead: same cipher suite, no CMake, no NASM, much faster builds.
+russh = { version = "0.57.0", default-features = false, features = [
+    "ring",
+    "flate2",
+    "rsa",
+] }
 russh-sftp = { git = "https://github.com/caelansar/russh-sftp.git" }
 futures = "0.3"
 anyhow = { version = "1", optional = true }
