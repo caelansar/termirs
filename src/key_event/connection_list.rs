@@ -23,23 +23,15 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
         }
     }
 
-    // Get the effective list length (filtered if search is active)
+    // Get the effective list length (filtered if search is active).
+    // Uses the shared filter so this matches exactly what the table renders.
     let len = if let AppMode::ConnectionList(state) = &app.mode {
-        if state.search.query().is_empty() {
-            app.config.connections().len()
-        } else {
-            // Filter connections using same logic as the component
-            let query_lower = state.search.query().to_lowercase();
-            app.config
-                .connections()
-                .iter()
-                .filter(|c| {
-                    c.host.to_lowercase().contains(&query_lower)
-                        || c.username.to_lowercase().contains(&query_lower)
-                        || c.display_name.to_lowercase().contains(&query_lower)
-                })
-                .count()
-        }
+        crate::ui::connection::visible_connection_indices(
+            app.config.connections(),
+            None,
+            state.search.query(),
+        )
+        .len()
     } else {
         app.config.connections().len()
     };
@@ -62,8 +54,8 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
         }
         KeyCode::Char('i') | KeyCode::Char('I') => {
             // Open file explorer for the selected connection
-            let selected_idx = app.current_selected();
-            if let Some(conn) = app.config.connections().get(selected_idx).cloned() {
+            if let Some(conn) = app.selected_connection() {
+                let selected_idx = app.current_selected();
                 let _ = app.config.touch_last_used(&conn.id);
                 let return_from = crate::ConnectingSource::ConnectionList {
                     file_explorer: true,
@@ -91,12 +83,8 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
             app.go_to_port_forwarding_list().await;
         }
         KeyCode::Enter => {
-            if let Some(conn) = app
-                .config
-                .connections()
-                .get(app.current_selected())
-                .cloned()
-            {
+            if let Some(conn) = app.selected_connection() {
+                let selected_idx = app.current_selected();
                 // Initiate connection with current terminal size
                 let (cols, rows) = app.ssh_terminal_size().unwrap_or((80, 24));
                 let (cancel_token, receiver) =
@@ -112,7 +100,7 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
                 app.go_to_connecting(
                     conn,
                     connection_name,
-                    app.current_selected(),
+                    selected_idx,
                     return_from,
                     cancel_token,
                     receiver,
@@ -122,12 +110,12 @@ pub async fn handle_connection_list_key<B: Backend + Write>(
             }
         }
         KeyCode::Char('e') | KeyCode::Char('E') => {
-            if let Some(original) = app.config.connections().get(app.current_selected()) {
-                app.go_to_form_edit(original.into(), original.clone());
+            if let Some(conn) = app.selected_connection() {
+                app.go_to_form_edit((&conn).into(), conn.clone());
             }
         }
         KeyCode::Char('d') | KeyCode::Char('D') => {
-            if let Some(conn) = app.config.connections().get(app.current_selected()) {
+            if let Some(conn) = app.selected_connection() {
                 let connection_name = conn.display_name.clone();
                 let connection_id = conn.id.clone();
                 let current_selected = app.current_selected();

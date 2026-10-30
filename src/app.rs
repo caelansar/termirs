@@ -1174,16 +1174,24 @@ impl<B: Backend + Write> App<B> {
         Ok((sftp, channel, session))
     }
 
+    /// Index into `config.connections()` of the currently highlighted connection.
+    ///
+    /// In `ConnectionList` the highlight is a **row number in the filtered view**
+    /// (that is what navigation moves and what the table renders), so it must be
+    /// mapped back through the same filter before being used as a slice index.
+    /// All other modes already carry an unfiltered index.
+    ///
+    /// Skipping this mapping is what made the list connect to the wrong host
+    /// whenever a search filter was active.
     pub fn current_selected(&self) -> usize {
         match &self.mode {
-            AppMode::ConnectionList(state) => {
-                let len = self.config.connections().len();
-                if len == 0 {
-                    0
-                } else {
-                    state.selected.min(len - 1)
-                }
-            }
+            AppMode::ConnectionList(state) => crate::ui::connection::resolve_visible_selection(
+                self.config.connections(),
+                None,
+                state.search.query(),
+                state.selected,
+            )
+            .unwrap_or(0),
             AppMode::FormEdit {
                 current_selected, ..
             }
@@ -1219,6 +1227,18 @@ impl<B: Backend + Write> App<B> {
                 current_selected, ..
             } => *current_selected,
         }
+    }
+
+    /// The connection currently highlighted in the connection list, if any.
+    ///
+    /// Prefer this over `config.connections().get(app.current_selected())`: it
+    /// keeps the filtered-view mapping in one place and makes it impossible to
+    /// accidentally index the unfiltered slice.
+    pub fn selected_connection(&self) -> Option<Connection> {
+        self.config
+            .connections()
+            .get(self.current_selected())
+            .cloned()
     }
 
     /// Mark that UI needs redrawing

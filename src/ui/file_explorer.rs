@@ -476,30 +476,15 @@ pub fn draw_connection_selector_popup(
 }
 
 /// Build the list of connection indices shown in a connection selector after filtering.
+///
+/// Returns indices into the **unfiltered** slice, so callers can map a row
+/// number from the filtered view back to the real connection. Delegates to
+/// [`super::connection::visible_connection_indices`] so every selector shares
+/// one filtering rule with the main connection list.
 pub fn filter_connection_indices(
     connections: &[Connection],
     exclude_connection_id: Option<&str>,
     search_query: &str,
 ) -> Vec<usize> {
-    let query = search_query.trim().to_lowercase();
-    connections
-        .iter()
-        .enumerate()
-        .filter(|(_, conn)| {
-            exclude_connection_id
-                .map(|id| id != conn.id.as_str())
-                .unwrap_or(true)
-        })
-        .filter(|(_, conn)| {
-            if query.is_empty() {
-                return true;
-            }
-
-            let display = conn.display_name.to_lowercase();
-            let host = conn.host.to_lowercase();
-            let username = conn.username.to_lowercase();
-            display.contains(&query) || host.contains(&query) || username.contains(&query)
-        })
-        .map(|(idx, _)| idx)
-        .collect()
+    super::connection::visible_connection_indices(connections, exclude_connection_id, search_query)
 }

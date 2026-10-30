@@ -215,6 +215,73 @@ pub struct ConnectionListItem<'a> {
     pub last_used: Option<String>,
 }
 
+/// Check whether a connection matches a search query.
+///
+/// This is the single source of truth for connection filtering: the table
+/// renderer, the key handlers and the selection resolver all call it, so the
+/// rows the user sees and the connection they act on can never diverge.
+///
+/// Matching is case-insensitive on host, username and display name. A blank
+/// query matches everything.
+pub fn connection_matches(conn: &Connection, query: &str) -> bool {
+    connection_fields_match(&conn.host, &conn.username, &conn.display_name, query)
+}
+
+/// Shared predicate behind [`connection_matches`], usable with borrowed row
+/// fields so the renderer does not have to rebuild a `Connection`.
+fn connection_fields_match(host: &str, username: &str, name: &str, query: &str) -> bool {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return true;
+    }
+
+    host.to_lowercase().contains(&q)
+        || username.to_lowercase().contains(&q)
+        || name.to_lowercase().contains(&q)
+}
+
+/// Indices (into `conns`) of the connections visible for a given query.
+///
+/// The returned indices are **indices into the original unfiltered slice**,
+/// listed in display order. This is the mapping every consumer needs when it
+/// turns a row number from the filtered view back into a real connection.
+///
+/// # Arguments
+/// * `conns` - All connections, in config order
+/// * `exclude_id` - Optional connection id to hide (used by split-pane selectors)
+/// * `query` - Search query; blank means "show everything"
+pub fn visible_connection_indices(
+    conns: &[Connection],
+    exclude_id: Option<&str>,
+    query: &str,
+) -> Vec<usize> {
+    conns
+        .iter()
+        .enumerate()
+        .filter(|(_, conn)| exclude_id.map(|id| id != conn.id.as_str()).unwrap_or(true))
+        .filter(|(_, conn)| connection_matches(conn, query))
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
+/// Resolve a row index from the filtered view into an index into `conns`.
+///
+/// `selected` is a **view row** (0-based, counted after filtering), which is
+/// exactly what the table renders and what navigation keys move. The return
+/// value is a **slice index**, safe to pass to `conns.get(..)`.
+///
+/// Returns `None` when the filter leaves nothing to select.
+pub fn resolve_visible_selection(
+    conns: &[Connection],
+    exclude_id: Option<&str>,
+    query: &str,
+    selected: usize,
+) -> Option<usize> {
+    let visible = visible_connection_indices(conns, exclude_id, query);
+    let clamped = selected.min(visible.len().checked_sub(1)?);
+    visible.get(clamped).copied()
+}
+
 pub fn draw_connection_list(
     area: Rect,
     conns: &[Connection],
@@ -315,10 +382,7 @@ impl super::table::TableListComponent<7> for ConnectionTableComponentWithMode {
     }
 
     fn matches_query(&self, item: &ConnectionListItem<'_>, query: &str) -> bool {
-        let lower = query.to_lowercase();
-        item.host.to_lowercase().contains(&lower)
-            || item.username.to_lowercase().contains(&lower)
-            || item.name.to_lowercase().contains(&lower)
+        connection_fields_match(item.host, item.username, item.name, query)
     }
 
     fn footer_hints(&self) -> &'static str {
@@ -354,5 +418,110 @@ mod tests {
 
         let form = ConnectionForm::from_connection(&conn);
         assert_eq!(form.get_password_value(), "test");
+    }
+
+    fn conn(id: &str, name: &str, host: &str, user: &str) -> Connection {
+        Connection {
+            id: id.to_string(),
+            created_at: Utc::now(),
+            last_used: None,
+            public_key: None,
+            display_name: name.to_string(),
+            host: host.to_string(),
+            port: 22,
+            username: user.to_string(),
+            auth_method: AuthMethod::None,
+        }
+    }
+
+    /// Config order: Alpha, Beta(prod), Gamma(prod), Delta.
+    /// Searching "prod" leaves Beta and Gamma as view rows 0 and 1.
+    fn fixture() -> Vec<Connection> {
+        vec![
+            conn("1", "Alpha", "10.0.0.1", "root"),
+            conn("2", "Beta", "prod-db.example.com", "admin"),
+            conn("3", "Gamma", "prod-web.example.com", "admin"),
+            conn("4", "Delta", "10.0.0.4", "root"),
+        ]
+    }
+
+    #[test]
+    fn test_visible_connection_indices_returns_source_indices() {
+        let conns = fixture();
+
+        assert_eq!(
+            visible_connection_indices(&conns, None, ""),
+            vec![0, 1, 2, 3]
+        );
+        assert_eq!(visible_connection_indices(&conns, None, "prod"), vec![1, 2]);
+        assert_eq!(
+            visible_connection_indices(&conns, None, "PROD"),
+            vec![1, 2],
+            "matching must be case-insensitive"
+        );
+        assert_eq!(
+            visible_connection_indices(&conns, None, "   "),
+            vec![0, 1, 2, 3],
+            "blank query matches everything, same as the renderer"
+        );
+        assert!(visible_connection_indices(&conns, None, "no-such-host").is_empty());
+    }
+
+    #[test]
+    fn test_resolve_visible_selection_row_zero_is_not_source_zero() {
+        let conns = fixture();
+
+        // The row the user sees first after filtering is Beta, not Alpha.
+        assert_eq!(resolve_visible_selection(&conns, None, "prod", 0), Some(1));
+        // Second visible row is Gamma (source index 2), never Beta (index 1).
+        assert_eq!(resolve_visible_selection(&conns, None, "prod", 1), Some(2));
+        // Without a filter the row number is the source index.
+        assert_eq!(resolve_visible_selection(&conns, None, "", 2), Some(2));
+    }
+
+    #[test]
+    fn test_resolve_visible_selection_picks_expected_connection() {
+        let conns = fixture();
+
+        // Regression: search "prod", move down once, Enter must target Gamma.
+        let idx = resolve_visible_selection(&conns, None, "prod", 1).expect("selection resolves");
+        assert_eq!(conns[idx].display_name, "Gamma");
+        assert_eq!(conns[idx].host, "prod-web.example.com");
+    }
+
+    #[test]
+    fn test_resolve_visible_selection_clamps_and_handles_empty() {
+        let conns = fixture();
+
+        // Stale row numbers (filter narrowed the list) clamp to the last match.
+        assert_eq!(resolve_visible_selection(&conns, None, "prod", 99), Some(2));
+        // No matches -> nothing to connect to.
+        assert_eq!(resolve_visible_selection(&conns, None, "zzz", 0), None);
+        // Empty config -> nothing to connect to.
+        assert_eq!(resolve_visible_selection(&[], None, "", 0), None);
+    }
+
+    #[test]
+    fn test_resolve_visible_selection_respects_exclude_id() {
+        let conns = fixture();
+
+        // Hiding Beta shifts the mapping: view row 1 is Gamma (source index 2).
+        assert_eq!(
+            visible_connection_indices(&conns, Some("2"), ""),
+            vec![0, 2, 3]
+        );
+        assert_eq!(resolve_visible_selection(&conns, Some("2"), "", 1), Some(2));
+    }
+
+    #[test]
+    fn test_connection_matches_fields() {
+        let conns = fixture();
+
+        assert!(connection_matches(&conns[1], "prod-db"));
+        assert!(connection_matches(&conns[1], "ADMIN"));
+        assert!(connection_matches(&conns[0], "alpha"));
+        assert!(!connection_matches(&conns[0], "prod"));
+        // Blank queries match, so the unfiltered list never collapses.
+        assert!(connection_matches(&conns[0], ""));
     }
 }
